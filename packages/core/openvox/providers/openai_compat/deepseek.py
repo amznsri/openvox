@@ -1,0 +1,19 @@
+"""DeepSeek — OpenAI-compatible API."""
+
+from __future__ import annotations
+
+from openvox.config import get_settings
+from openvox.providers.base import ProviderCapability
+from openvox.providers.openai_compat._openai_base import OpenAICompatLLM
+
+
+class DeepSeekLLM(OpenAICompatLLM):
+    id = "deepseek"
+    display_name = "DeepSeek"
+    capabilities = {ProviderCapability.STREAMING, ProviderCapability.TOOL_CALLING}
+    default_model = "deepseek-chat"
+    base_url = "https://api.deepseek.com/v1/chat/completions"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.api_key = get_settings().deepseek_api_key
