@@ -60,6 +60,16 @@ class Agent(Base):
     skills: Mapped[list[str]] = mapped_column(JSON, default=list)
     # Channel config (telephony / whatsapp / web — JSON blob)
     channels: Mapped[dict] = mapped_column(JSON, default=dict)
+    # MCP server configs — each entry shape:
+    #   {name, transport: "stdio"|"sse", command, args, env, url}
+    # Tools exposed by these servers are auto-bridged into the agent's tool
+    # set at session start. See openvox/mcp/.
+    mcp_servers: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    # Per-language TTS voice override — used by the multilingual IVR template.
+    # Keys are BCP-47 short codes (`en`, `zh`, `es`, …). Orchestrator's
+    # `_speak()` swaps voice to match the STT-detected language; empty
+    # map means "always use voice_id".
+    voice_map: Mapped[dict] = mapped_column(JSON, default=dict)
 
     status: Mapped[str] = mapped_column(String(20), default=AgentStatus.DRAFT.value)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
@@ -194,6 +204,63 @@ class DocumentChunk(Base):
     # fast enough for the scale we expect on a local-first install.
     embedding: Mapped[list[float]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ScheduledJob(Base):
+    """A recurring or one-off task that fires on cron/interval/once triggers.
+
+    Three job kinds today (see scheduler/runner.py):
+      - `agent_query`  — send a fixed text prompt to an agent and store the answer
+      - `skill_run`    — invoke a skill directly with JSON args
+      - `audio_batch`  — run audio_analyze on every file in a watched folder
+
+    Adding new kinds is purely additive — add a branch in runner.execute().
+    """
+
+    __tablename__ = "scheduled_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+
+    # Job kind + payload (kind-specific JSON blob).
+    kind: Mapped[str] = mapped_column(String(40), default="agent_query")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    # Optional agent the job is scoped to (FK kept loose — we store the
+    # string id so deleting the agent doesn't cascade-delete the schedule).
+    agent_id: Mapped[str] = mapped_column(String(36), default="")
+
+    # Trigger.
+    trigger_type: Mapped[str] = mapped_column(String(20), default="cron")  # cron|interval|once
+    trigger_expr: Mapped[str] = mapped_column(String(200), default="0 20 * * *")
+    timezone: Mapped[str] = mapped_column(String(50), default="UTC")
+
+    # State.
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[str] = mapped_column(String(20), default="")  # success|error|running
+    last_error: Mapped[str] = mapped_column(Text, default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class JobRun(Base):
+    """One execution of a ScheduledJob. Kept for history + debugging."""
+
+    __tablename__ = "job_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    job_id: Mapped[str] = mapped_column(ForeignKey("scheduled_jobs.id"), nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="running")  # running|success|error
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str] = mapped_column(Text, default="")
 
 
 class User(Base):

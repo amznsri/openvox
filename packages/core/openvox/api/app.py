@@ -12,6 +12,8 @@ from openvox.api.routes import (
     agents,
     documents as documents_routes,
     health,
+    jobs as jobs_routes,
+    mcp as mcp_routes,
     playground,
     providers as providers_routes,
     rtc,
@@ -25,6 +27,7 @@ from openvox.api.ws import voice as voice_ws
 from openvox.config import get_settings
 from openvox.db import init_db
 from openvox.providers.bootstrap import register_builtins
+from openvox.scheduler import start_scheduler, stop_scheduler
 from openvox.skills.registry import get_skill_registry
 
 logger = logging.getLogger(__name__)
@@ -37,8 +40,10 @@ async def _lifespan(app: FastAPI):
     register_builtins()
     get_skill_registry()  # discover
     await init_db()
+    await start_scheduler()
     logger.info("OpenVox core started — auth=%s storage=%s", settings.openvox_auth, settings.storage_backend)
     yield
+    await stop_scheduler()
     logger.info("OpenVox core shutting down")
 
 
@@ -68,6 +73,8 @@ def create_app() -> FastAPI:
     app.include_router(skills_routes.router, prefix="/api/v1/skills", tags=["skills"])
     app.include_router(templates_routes.router, prefix="/api/v1/templates", tags=["templates"])
     app.include_router(rtc.router, prefix="/api/v1/rtc", tags=["rtc"])
+    app.include_router(jobs_routes.router, prefix="/api/v1/jobs", tags=["jobs"])
+    app.include_router(mcp_routes.router, prefix="/api/v1/mcp", tags=["mcp"])
     app.include_router(telephony.router, prefix="/api/v1/telephony", tags=["telephony"])
     app.include_router(playground.router, prefix="/api/v1/playground", tags=["playground"])
     app.include_router(storage_routes.router, prefix="/storage", tags=["storage"])

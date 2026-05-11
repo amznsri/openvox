@@ -59,6 +59,10 @@ dependencies = [
   # Utility
   "tenacity>=9.0.0",
   "orjson>=3.10.0",
+  # Scheduling — cron/interval/once triggers, async runner.
+  "apscheduler>=3.10.4",
+  # Model Context Protocol — connect to external tool servers.
+  "mcp>=1.2.0",
 ]
 
 [project.optional-dependencies]

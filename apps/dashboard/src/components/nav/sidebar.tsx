@@ -12,6 +12,7 @@ import {
   Settings,
   Mic,
   Github,
+  Clock,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -34,6 +35,7 @@ const sections = [
   {
     title: "Operate",
     items: [
+      { href: "/dashboard/schedules", label: "Schedules", icon: Clock },
       { href: "/dashboard/providers", label: "Providers", icon: Plug },
       { href: "/dashboard/observability", label: "Observability", icon: BarChart3 },
       { href: "/dashboard/settings", label: "Settings", icon: Settings },

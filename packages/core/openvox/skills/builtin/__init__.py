@@ -10,4 +10,7 @@ __all__ = [
     "voice_analysis",
     "general",
     "documents",
+    "reception",
+    "sales",
+    "language",
 ]

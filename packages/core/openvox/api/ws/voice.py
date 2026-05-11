@@ -49,6 +49,7 @@ logger = logging.getLogger(__name__)
 async def voice_ws(ws: WebSocket) -> None:
     await ws.accept()
     session: VoiceSession | None = None
+    mcp_mgr = None
     forward_task: asyncio.Task | None = None
 
     try:
@@ -58,10 +59,11 @@ async def voice_ws(ws: WebSocket) -> None:
                 ctrl = json.loads(msg["text"])
                 kind = ctrl.get("type")
                 if kind == "start":
-                    session = await _build_session(ctrl)
-                    if session is None:
+                    built = await _build_session(ctrl)
+                    if built is None:
                         await ws.send_text(json.dumps({"type": "error", "message": "agent not found or providers unavailable"}))
                         return
+                    session, mcp_mgr = built
                     forward_task = asyncio.create_task(_forward_events(session, ws))
                 elif kind == "end":
                     if session:
@@ -86,11 +88,23 @@ async def voice_ws(ws: WebSocket) -> None:
                 await forward_task
             except asyncio.CancelledError:
                 pass
+        # Tear down any MCP stdio subprocesses we spawned for this session.
+        if mcp_mgr is not None:
+            try:
+                await mcp_mgr.__aexit__(None, None, None)
+            except Exception as e:
+                logger.warning("mcp teardown failed: %s", e)
 
 
-async def _build_session(ctrl: dict) -> VoiceSession | None:
+async def _build_session(ctrl: dict) -> tuple[VoiceSession, "MCPSessionManager | None"] | None:
+    """Build a VoiceSession + (optional) MCP manager.
+
+    Returns a tuple so the caller can close the MCP manager when the WS
+    ends. None on failure (agent missing or providers unavailable).
+    """
     agent_id = ctrl.get("agent_id")
     reg = get_registry()
+    mcp_servers: list[dict] = []
 
     # Load agent config (or fall back to defaults for ad-hoc sessions).
     if agent_id:
@@ -105,6 +119,8 @@ async def _build_session(ctrl: dict) -> VoiceSession | None:
             voice_lang = a.voice_language
             voice_speed = a.voice_speed
             skills = list(a.skills or [])
+            mcp_servers = list(a.mcp_servers or [])
+            voice_map = dict(a.voice_map or {})
             temperature = a.temperature
             max_tokens = a.max_tokens
     else:
@@ -118,6 +134,8 @@ async def _build_session(ctrl: dict) -> VoiceSession | None:
         voice_lang = ctrl.get("voice_language", "en-US")
         voice_speed = float(ctrl.get("voice_speed", 1.0))
         skills = list(ctrl.get("skills", []))
+        mcp_servers = list(ctrl.get("mcp_servers", []))
+        voice_map = dict(ctrl.get("voice_map", {}))
         temperature = float(ctrl.get("temperature", 0.7))
         max_tokens = int(ctrl.get("max_tokens", 2048))
 
@@ -129,6 +147,23 @@ async def _build_session(ctrl: dict) -> VoiceSession | None:
     if not (stt.is_available() and tts.is_available() and llm.is_available()):
         return None
 
+    # Spin up MCP sessions (if any). Bridged skills become extra tools the
+    # LLM can call alongside the built-in ones. The manager stays alive
+    # for the duration of this VoiceSession.
+    mcp_mgr = None
+    extra_skills: list = []
+    if mcp_servers:
+        from openvox.mcp import MCPSessionManager
+        mcp_mgr = MCPSessionManager(mcp_servers)
+        try:
+            await mcp_mgr.__aenter__()
+            extra_skills = list(mcp_mgr.skills)
+            logger.info("mcp: session built with %d bridged tools", len(extra_skills))
+        except Exception as e:
+            logger.warning("mcp: setup failed, continuing without external tools: %s", e)
+            mcp_mgr = None
+            extra_skills = []
+
     cfg = SessionConfig(
         system_prompt=sys_prompt,
         greeting=greeting,
@@ -138,8 +173,19 @@ async def _build_session(ctrl: dict) -> VoiceSession | None:
         stt=STTConfig(sample_rate=int(ctrl.get("sample_rate", 16000)), language=voice_lang),
         tts=TTSConfig(voice_id=voice_id, language=voice_lang, speed=voice_speed),
         skills=skills,
+        voice_map=voice_map,
     )
-    return VoiceSession(stt=stt, llm=llm, tts=tts, config=cfg)
+    # The orchestrator instantiates its own SkillRunner; we override to
+    # include the MCP-bridged skills.
+    from openvox.skills import SkillContext
+    from openvox.skills.runner import SkillRunner
+    runner = SkillRunner(
+        skill_ids=skills,
+        ctx=SkillContext(agent_id=agent_id or "", metadata={"source": "ws_voice"}),
+        extra_skills=extra_skills,
+    )
+    session = VoiceSession(stt=stt, llm=llm, tts=tts, config=cfg, skill_runner=runner)
+    return session, mcp_mgr
 
 
 async def _forward_events(session: VoiceSession, ws: WebSocket) -> None:

@@ -150,6 +150,26 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ agent_id, question, top_k }),
     }),
+
+  // Scheduled jobs
+  listJobs: () => http<JobRecord[]>("/api/v1/jobs"),
+  createJob: (body: Partial<JobRecord>) =>
+    http<JobRecord>("/api/v1/jobs", { method: "POST", body: JSON.stringify(body) }),
+  updateJob: (id: string, body: Partial<JobRecord>) =>
+    http<JobRecord>(`/api/v1/jobs/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteJob: (id: string) =>
+    http<void>(`/api/v1/jobs/${id}`, { method: "DELETE" }),
+  triggerJob: (id: string) =>
+    http<{ queued: boolean }>(`/api/v1/jobs/${id}/trigger`, { method: "POST" }),
+  jobRuns: (id: string) =>
+    http<JobRunRecord[]>(`/api/v1/jobs/${id}/runs`),
+
+  // MCP — probe a server config without saving it.
+  mcpProbe: (cfg: McpServerConfig) =>
+    http<{ tools: { id: string; display_name: string; description: string }[]; count: number }>(
+      "/api/v1/mcp/probe",
+      { method: "POST", body: JSON.stringify(cfg) },
+    ),
 };
 
 export const wsUrl = (path: string) => `${WS}${path}`;
@@ -173,9 +193,20 @@ export type Agent = {
   max_tokens: number;
   skills: string[];
   channels: Record<string, unknown>;
+  mcp_servers: McpServerConfig[];
+  voice_map: Record<string, string>;
   status: string;
   created_at: string;
   updated_at: string;
+};
+
+export type McpServerConfig = {
+  name: string;
+  transport: "stdio" | "sse";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
 };
 
 export type Template = {
@@ -288,4 +319,32 @@ export type DocumentQueryResult = {
   answer: string;
   passages: { source: string; page: number; kind: string; score: number; snippet: string }[];
   note?: string;
+};
+
+export type JobRecord = {
+  id: string;
+  name: string;
+  description: string;
+  kind: "agent_query" | "skill_run" | "audio_batch" | string;
+  payload: Record<string, unknown>;
+  agent_id: string;
+  trigger_type: "cron" | "interval" | "once" | string;
+  trigger_expr: string;
+  timezone: string;
+  enabled: boolean;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  last_status: string;
+  last_error: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type JobRunRecord = {
+  id: string;
+  started_at: string;
+  ended_at: string | null;
+  status: string;
+  result: Record<string, unknown>;
+  error: string;
 };

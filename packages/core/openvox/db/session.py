@@ -33,13 +33,40 @@ def get_engine():
 
 
 async def init_db() -> None:
-    """Create all tables. Idempotent."""
+    """Create all tables, then run lightweight additive migrations.
+
+    `create_all` only handles new tables — not new columns on existing
+    ones. For a local-first app that doesn't yet ship Alembic, the
+    pragmatic pattern is to ADD COLUMN IF NOT EXISTS for any column we've
+    added since the last release. List them in `_ADDITIVE_COLUMNS` below.
+    """
     # Import models so they register with the metadata.
     from openvox.db import models  # noqa: F401
+    from sqlalchemy import text
 
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Additive column migrations. (table, column, type-string-as-DDL)
+    # Postgres + SQLite both support `ADD COLUMN IF NOT EXISTS` in recent
+    # versions; for older SQLite we fall back to a try/except.
+    additive: list[tuple[str, str, str]] = [
+        ("agents", "mcp_servers", "JSON DEFAULT '[]'"),
+        ("agents", "voice_map", "JSON DEFAULT '{}'"),
+    ]
+    async with engine.begin() as conn:
+        for table, column, ddl in additive:
+            try:
+                await conn.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}")
+                )
+            except Exception:
+                # Older SQLite without IF NOT EXISTS support.
+                try:
+                    await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+                except Exception:
+                    pass  # Already exists or DB doesn't support — safe to skip.
 
 
 @asynccontextmanager

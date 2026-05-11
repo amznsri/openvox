@@ -298,6 +298,52 @@ Important file pointers:
 - **Deepgram** (WS), **AssemblyAI** (WS), **Whisper** (HTTP file or local).
 - **ElevenLabs** (HTTP MP3 stream), **Cartesia** (SSE PCM), **OpenAI TTS** (HTTP).
 
+### Task scheduler — `openvox/scheduler/`
+- `AsyncIOScheduler` (APScheduler) wraps three trigger types:
+  `cron` ("0 20 * * *"), `interval` ("30s|5m|1h|1d"), `once` (ISO datetime).
+- Source-of-truth is our `scheduled_jobs` table; APScheduler's in-memory state
+  is rebuilt at startup from the table. Every CRUD on a job also calls
+  `register_or_update()` / `unregister()` so the running scheduler stays in sync.
+- Three job kinds — `agent_query` (LLM call against an agent's prompt),
+  `skill_run` (direct skill invocation), `audio_batch` (walk a folder, run the
+  same pipeline as `/playground/audio_analyze` on each new file, persist a
+  `.openvox_processed` state file so subsequent runs only see new files).
+- API: `/api/v1/jobs/{,id,id/trigger,id/runs}`. Dashboard: `/dashboard/schedules`.
+
+### MCP (Model Context Protocol) — `openvox/mcp/`
+- Per-agent `mcp_servers` JSON column on `Agent`. Each entry:
+  `{name, transport: "stdio"|"sse", command, args, env, url}`.
+- `MCPSessionManager` spawns one `mcp.ClientSession` per server at session
+  start. Calls `session.list_tools()` and wraps each as a `BaseSkill` with id
+  `mcp__<server>__<tool>` — they appear in the LLM's tool-spec alongside
+  built-ins.
+- Sessions are torn down (subprocess closed) when the WS disconnects. **Always
+  call `mcp_mgr.__aexit__()` in the `finally` block.**
+- Dashboard validates a config with `POST /api/v1/mcp/probe` before saving.
+
+### Twilio outbound — `openvox/telephony/twilio.py`
+- `place_call(to, agent_id, callback_url, lead_id=None, from_number=None)`
+  POSTs to `https://api.twilio.com/2010-04-01/Accounts/{sid}/Calls.json`
+  with HTTP Basic auth (`sid:auth_token`). No `twilio` SDK needed.
+- `callback_url` must be **publicly reachable** — use ngrok for local dev.
+  We append `?agent_id=…&lead_id=…` so the inbound TwiML route can identify
+  the session.
+- REST endpoint: `POST /api/v1/telephony/twilio/place_call`.
+- Scheduler kind `outbound_call_batch` calls top-N leads from a skill
+  (default `fetch_next_lead`). **Defaults to preview=true** — set
+  `payload.preview=false` to actually dial.
+
+### Multilingual IVR — `openvox/skills/builtin/language.py`
+- `detect_language` is **dual-path**: returns the ASR-detected language
+  (cheaper) if available on `ctx.metadata.last_language`; otherwise calls
+  the LLM to classify the supplied text. Works in both streaming
+  (`bigmodel_async`, no auto-detect) and batch (`bigmodel_nostream`) modes.
+- `Agent.voice_map: dict[str, str]` maps BCP-47 short codes (`en`, `zh`,
+  `es`, …) to BytePlus voice ids. Orchestrator's `_speak()` consults it
+  every utterance — uses `voice_id` when no match.
+- The orchestrator tracks `_last_language` from each STT result and feeds
+  it into the SkillRunner's `ctx.metadata["last_language"]`.
+
 ---
 
 ## 7. Feature status
@@ -308,8 +354,10 @@ Important file pointers:
 - BytePlus RAG Cloud client with proper AK/SK signing.
 - BytePlus TOS storage backend.
 - 14 providers registered (5 LLM + 4 STT + 4 TTS + 1 RTC).
-- 14+ skills (general, e-commerce, education, stock, voice analysis, documents).
-- 5 templates: e-commerce-support, education-tutor, stock-analyst, document-qa, voice-analyzer.
+- 25+ skills (general, e-commerce, education, stock, voice analysis, documents,
+  reception, sales, language).
+- 8 templates: e-commerce-support, education-tutor, stock-analyst, document-qa,
+  voice-analyzer, receptionist, sales-sdr, multilingual-support.
 - Dashboard pages: Landing, Overview, Playground (Voice/Text/Audio file/Documents tabs),
   Agents (list/new/detail with Behaviour/Voice/Skills/**Documents**/Channels tabs),
   Templates, Providers, Skills, Observability, Settings.
@@ -319,18 +367,45 @@ Important file pointers:
 - Tool-calling end-to-end with proper streaming-fragment accumulation.
 - TLS escape hatch for corporate proxies (`OPENVOX_INSECURE_TLS`, `extra-ca.pem`).
 - TS + Python SDKs (basic), CLI (`openvox status / agents / templates / skills`).
+- **Task scheduler** (APScheduler in-process) — cron/interval/once triggers, three
+  job kinds (`agent_query`, `skill_run`, `audio_batch`), DB-backed source of truth,
+  dashboard Schedules page with run history. The "every night 8 PM" use case
+  works end-to-end.
+- **MCP (Model Context Protocol) client** — per-agent server configs (stdio or
+  SSE), `MCPSessionManager` connects on session start, tool→skill bridge
+  auto-namespaces remote tools (`mcp__<server>__<tool>`). Probe endpoint for
+  dashboard validation. New "MCP" tab on the agent edit page.
+- **Receptionist / appointment-scheduler template** with 5 calendar skills
+  (`business_info`, `check_availability`, `book_appointment`,
+  `cancel_appointment`, `list_appointments`) backed by an in-memory demo
+  calendar (Acme Salon & Spa, 9-6 Mon-Fri, pre-seeded with a few clashes so
+  the agent can demo conflict resolution).
+- **Outbound lead qualifier (SDR) template** + Twilio outbound dial-out path.
+  Skills: `fetch_next_lead`, `record_disposition` (BANT score), `qualified_leads`,
+  `book_demo` (reuses receptionist calendar). Endpoint
+  `POST /api/v1/telephony/twilio/place_call`. New scheduler kind
+  `outbound_call_batch` for "call top N leads every Monday 9 AM".
+- **Multilingual customer-support IVR template** + `detect_language` skill +
+  `Agent.voice_map: dict[str, str]` for per-language TTS voice selection.
+  Orchestrator's `_speak()` swaps voice based on the last STT result's
+  `language` field. Showcases BytePlus's 51-language ASR via
+  `enable_auto_lang=true`.
 
 ### 🚧 In progress
-- (none currently — last shipped feature was Documents-tab voice mode)
+- (none — Session 6 wrapped: SDR + Multilingual IVR templates shipped.)
 
 ### 📋 Designed, queued for next session
 See [`docs/PLANNING_NEXT.md`](docs/PLANNING_NEXT.md) for full design:
-1. **MCP (Model Context Protocol) client** — OpenClaw has it; lets users connect
-   any MCP-compatible external tool. ~1 day.
-2. **Task scheduler** — cron / interval / webhook triggers via APScheduler,
-   persisted in DB, dashboard schedule page. ~1 day.
-3. **Three new templates** — receptionist / appointment scheduler, outbound lead
-   qualifier (sales SDR), multilingual customer support IVR. ~6 hrs total.
+1. **Scheduler webhook trigger** — fire jobs via
+   `POST /api/v1/jobs/webhook/{token}` for event-driven (vs cron) workflows. ~2 hrs.
+2. **Skill hot-reload** — file watcher on `~/.openvox/skills/`. ~2 hrs.
+3. **Curated MCP server catalogue** — `GET /api/v1/mcp/catalogue` + "Browse"
+   view on the MCP tab with one-click "Use this server" pre-fill. ~3 hrs.
+4. **CRM-via-MCP for the SDR template** — ship a curated `mcp_servers` snippet
+   for HubSpot/Salesforce so users can wire real CRMs in minutes. ~2 hrs.
+5. **Backlog**: VAD, S2S, live interpretation, voice podcast, BytePlus RTC
+   client wiring, WhatsApp/Telegram inbound message routing, Alembic
+   migrations, test suite, GCS/OSS storage, CLI deploy/logs, OAuth.
 
 ### ⏳ Pending / roadmap
 - **VAD provider** — placeholder. Wire Silero VAD locally + BytePlus VAD when launched.
@@ -442,6 +517,20 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     `_speak`/`interrupt` as inner functions of the helper, breaking
     `VoiceSession._speak`. *Fix*: keep all class methods together, helpers strictly
     after the class definition.
+
+### Schema migrations
+28. **`Base.metadata.create_all()` only adds NEW tables, never new columns** on
+    existing tables. When we added `Agent.mcp_servers`, existing DBs threw on
+    SELECTs. *Fix*: `init_db()` now has a small `_ADDITIVE_COLUMNS` list and
+    issues `ALTER TABLE … ADD COLUMN IF NOT EXISTS` for each. Append new columns
+    here when you ship them — we'll switch to Alembic once schema churn slows.
+
+### Foreign-key delete cascades
+29. **`job_runs.job_id` FK blocked `ScheduledJob` deletion** with
+    `ForeignKeyViolationError`. *Fix*: route-level cascade — `DELETE FROM
+    job_runs WHERE job_id = $1` before deleting the parent. Could also have
+    used `ondelete="CASCADE"`, but that needs a schema migration. Same pattern
+    applies to any FK we add later — prefer in-route cascade for now.
 
 ---
 

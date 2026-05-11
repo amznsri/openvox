@@ -56,12 +56,18 @@ class SessionConfig:
     stt: STTConfig = None  # type: ignore[assignment]
     tts: TTSConfig = None  # type: ignore[assignment]
     skills: list[str] | None = None
+    # Multilingual: optional map of BCP-47 short codes → speaker voice id.
+    # When the STT-detected language matches a key, `_speak()` uses that
+    # voice instead of `tts.voice_id`. Empty map = always use `tts.voice_id`.
+    voice_map: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
         if self.stt is None:
             self.stt = STTConfig()
         if self.tts is None:
             self.tts = TTSConfig()
+        if self.voice_map is None:
+            self.voice_map = {}
 
 
 # Sentence break heuristic — flush TTS at sentence boundaries to keep
@@ -105,6 +111,16 @@ class VoiceSession:
         # text response complete.
         self._tts_disabled_for_turn: bool = False
         self._tts_error_emitted: bool = False
+        # Multilingual support: the last STT-detected language for this
+        # session. Used to (a) pick the matching TTS voice from `voice_map`
+        # at speak time, and (b) inform the `detect_language` skill via the
+        # SkillRunner's ctx.metadata.
+        self._last_language: str = config.tts.language or "en-US"
+        self._last_language_confidence: float = 1.0
+        # Inject the initial language into any skill context the runner has.
+        if hasattr(self._skills, "_ctx") and self._skills._ctx is not None:
+            self._skills._ctx.metadata.setdefault("last_language", self._last_language)
+            self._skills._ctx.metadata.setdefault("last_language_confidence", 1.0)
 
     # ── Public: feed audio in, get events out ────────────────────────
     async def push_audio(self, chunk: AudioChunk) -> None:
@@ -162,6 +178,15 @@ class VoiceSession:
     async def _listen_one_turn(self) -> AsyncIterator[TurnEvent]:
         try:
             async for r in self._stt.transcribe_stream(self._audio_iterator(), self._cfg.stt):
+                # Track the most recent detected language so _speak() can
+                # pick a matching voice and `detect_language` skill can
+                # report it back to the LLM.
+                if r.language:
+                    self._last_language = r.language
+                    self._last_language_confidence = r.confidence
+                    if hasattr(self._skills, "_ctx") and self._skills._ctx is not None:
+                        self._skills._ctx.metadata["last_language"] = r.language
+                        self._skills._ctx.metadata["last_language_confidence"] = r.confidence
                 yield TurnEvent(
                     kind="user_final" if r.is_final else "user_partial",
                     text=r.text,
@@ -258,8 +283,20 @@ class VoiceSession:
         # will still finish but we won't generate audio.
         if self._tts_disabled_for_turn:
             return
+        # Multilingual support: if the agent's voice_map has an entry for
+        # the currently-detected language, swap the speaker for this
+        # utterance. Falls through to the configured voice_id otherwise.
+        tts_cfg = self._cfg.tts
+        vm = self._cfg.voice_map or {}
+        if vm:
+            short = (self._last_language or "").split("-")[0].lower()
+            picked = vm.get(short) or vm.get(self._last_language)
+            if picked and picked != tts_cfg.voice_id:
+                # Use a copy so we don't mutate the shared config.
+                from dataclasses import replace
+                tts_cfg = replace(tts_cfg, voice_id=picked, language=self._last_language)
         try:
-            async for chunk in self._tts.synthesize_stream(sentence, self._cfg.tts):
+            async for chunk in self._tts.synthesize_stream(sentence, tts_cfg):
                 if self._cancel_tts.is_set():
                     self._cancel_tts.clear()
                     yield TurnEvent(kind="interrupt")

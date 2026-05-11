@@ -4,9 +4,22 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import useSWR, { mutate } from "swr";
 import { useEffect, useState } from "react";
-import { ArrowLeft, Bot, FileText, Loader2, Mic, Save, Sparkles, Trash2, Upload } from "lucide-react";
+import {
+  ArrowLeft,
+  Bot,
+  FileText,
+  Loader2,
+  Mic,
+  Plug,
+  Plus,
+  Save,
+  Sparkles,
+  Trash2,
+  Upload,
+  Wand2,
+} from "lucide-react";
 
-import { api, type Agent, type DocumentRecord, type Skill } from "@/lib/api";
+import { api, type Agent, type DocumentRecord, type McpServerConfig, type Skill } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Label, Select, Textarea } from "@/components/ui/input";
@@ -117,6 +130,7 @@ export default function AgentDetailPage() {
           <TabsTrigger value="voice">Voice & model</TabsTrigger>
           <TabsTrigger value="skills">Skills</TabsTrigger>
           <TabsTrigger value="docs">Documents</TabsTrigger>
+          <TabsTrigger value="mcp">MCP</TabsTrigger>
           <TabsTrigger value="channels">Channels</TabsTrigger>
         </TabsList>
 
@@ -272,6 +286,13 @@ export default function AgentDetailPage() {
 
         <TabsContent value="docs">
           <DocumentsPanel agentId={id} />
+        </TabsContent>
+
+        <TabsContent value="mcp">
+          <McpPanel
+            value={(form.mcp_servers as McpServerConfig[] | undefined) || []}
+            onChange={(v) => set("mcp_servers", v)}
+          />
         </TabsContent>
 
         <TabsContent value="channels">
@@ -453,6 +474,239 @@ function DocumentsPanel({ agentId }: { agentId: string }) {
             ))}
           </div>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// McpPanel — manage the agent's MCP server configs. Saved via the main
+// "Save" button at the top of the page (we just mutate the form blob).
+// ──────────────────────────────────────────────────────────────────────
+
+function McpPanel({
+  value,
+  onChange,
+}: {
+  value: McpServerConfig[];
+  onChange: (v: McpServerConfig[]) => void;
+}) {
+  const [draft, setDraft] = useState<McpServerConfig>({
+    name: "",
+    transport: "stdio",
+    command: "",
+    args: [],
+    env: {},
+    url: "",
+  });
+  const [argsText, setArgsText] = useState("");
+  const [envText, setEnvText] = useState("");
+  const [probing, setProbing] = useState(false);
+  const [probeResult, setProbeResult] = useState<string>("");
+
+  function reset() {
+    setDraft({ name: "", transport: "stdio", command: "", args: [], env: {}, url: "" });
+    setArgsText("");
+    setEnvText("");
+    setProbeResult("");
+  }
+
+  function parseDraft(): McpServerConfig {
+    const args = argsText.trim()
+      ? argsText.split(/\s+/).filter(Boolean)
+      : [];
+    const env: Record<string, string> = {};
+    for (const line of envText.split("\n")) {
+      const t = line.trim();
+      if (!t) continue;
+      const eq = t.indexOf("=");
+      if (eq <= 0) continue;
+      env[t.slice(0, eq).trim()] = t.slice(eq + 1).trim();
+    }
+    return { ...draft, args, env };
+  }
+
+  async function probe() {
+    setProbing(true);
+    setProbeResult("");
+    try {
+      const r = await api.mcpProbe(parseDraft());
+      setProbeResult(
+        `✓ ${r.count} tool${r.count === 1 ? "" : "s"} — ${r.tools
+          .slice(0, 5)
+          .map((t) => t.display_name)
+          .join(", ")}${r.tools.length > 5 ? "…" : ""}`,
+      );
+    } catch (e) {
+      setProbeResult(`✗ ${(e as Error).message}`);
+    } finally {
+      setProbing(false);
+    }
+  }
+
+  function add() {
+    const cfg = parseDraft();
+    if (!cfg.name.trim()) {
+      setProbeResult("Name is required");
+      return;
+    }
+    onChange([...(value || []), cfg]);
+    reset();
+  }
+
+  function remove(idx: number) {
+    const next = [...value];
+    next.splice(idx, 1);
+    onChange(next);
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Plug className="h-4 w-4 text-cyan-300" />
+          MCP servers
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground">
+          Connect to{" "}
+          <a
+            href="https://modelcontextprotocol.io/"
+            target="_blank"
+            rel="noreferrer"
+            className="text-violet-300 hover:underline"
+          >
+            Model Context Protocol
+          </a>{" "}
+          servers to give this agent external tools (GitHub, filesystem,
+          Slack, Postgres, etc.). Each server's tools are exposed to the LLM
+          alongside built-in skills.
+        </p>
+
+        {value.length > 0 && (
+          <div className="space-y-2">
+            {value.map((cfg, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-3 px-3 py-2 rounded-md border border-border/60"
+              >
+                <Wand2 className="h-4 w-4 text-violet-300 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium truncate">{cfg.name}</div>
+                  <div className="text-xs text-muted-foreground font-mono truncate">
+                    {cfg.transport === "stdio"
+                      ? `${cfg.command} ${(cfg.args || []).join(" ")}`
+                      : cfg.url}
+                  </div>
+                </div>
+                <Badge variant="default">{cfg.transport}</Badge>
+                <Button variant="ghost" size="icon" onClick={() => remove(i)}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="space-y-3 border-t border-border/60 pt-4">
+          <div className="text-sm font-medium text-foreground">Add a server</div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Name</Label>
+              <Input
+                placeholder="github"
+                value={draft.name}
+                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+              />
+            </div>
+            <div>
+              <Label>Transport</Label>
+              <Select
+                value={draft.transport}
+                onChange={(e) =>
+                  setDraft({ ...draft, transport: e.target.value as "stdio" | "sse" })
+                }
+              >
+                <option value="stdio">stdio (local command)</option>
+                <option value="sse">sse (remote URL)</option>
+              </Select>
+            </div>
+          </div>
+
+          {draft.transport === "stdio" ? (
+            <>
+              <div>
+                <Label>Command</Label>
+                <Input
+                  placeholder="npx"
+                  value={draft.command || ""}
+                  onChange={(e) => setDraft({ ...draft, command: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label>Args (space-separated)</Label>
+                <Input
+                  placeholder="-y @modelcontextprotocol/server-github"
+                  value={argsText}
+                  onChange={(e) => setArgsText(e.target.value)}
+                />
+              </div>
+              <div>
+                <Label>Env (KEY=VALUE per line)</Label>
+                <Textarea
+                  rows={3}
+                  placeholder="GITHUB_PERSONAL_ACCESS_TOKEN=ghp_..."
+                  value={envText}
+                  onChange={(e) => setEnvText(e.target.value)}
+                  className="font-mono text-xs"
+                />
+              </div>
+            </>
+          ) : (
+            <div>
+              <Label>URL</Label>
+              <Input
+                placeholder="https://my-mcp.example.com/sse"
+                value={draft.url || ""}
+                onChange={(e) => setDraft({ ...draft, url: e.target.value })}
+              />
+            </div>
+          )}
+
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={probe} disabled={probing}>
+              {probing && <Loader2 className="h-4 w-4 animate-spin" />}
+              Probe
+            </Button>
+            <Button variant="gradient" onClick={add} disabled={probing}>
+              <Plus className="h-4 w-4" />
+              Add
+            </Button>
+            {probeResult && (
+              <div
+                className={`text-xs ${
+                  probeResult.startsWith("✓") ? "text-emerald-300" : "text-rose-300"
+                }`}
+              >
+                {probeResult}
+              </div>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Tip: <code>npx -y @modelcontextprotocol/server-filesystem /path</code> for local
+            files, or browse Anthropic's{" "}
+            <a
+              href="https://github.com/modelcontextprotocol/servers"
+              target="_blank"
+              rel="noreferrer"
+              className="text-violet-300 hover:underline"
+            >
+              public registry
+            </a>
+            .
+          </p>
+        </div>
       </CardContent>
     </Card>
   );

@@ -11,6 +11,10 @@ import {
   Sparkles,
   Loader2,
   ArrowRight,
+  Calendar,
+  FileText,
+  PhoneOutgoing,
+  Languages,
 } from "lucide-react";
 
 import { api, type Template } from "@/lib/api";
@@ -23,6 +27,10 @@ const ICONS = {
   GraduationCap,
   TrendingUp,
   Mic,
+  Calendar,
+  FileText,
+  PhoneOutgoing,
+  Languages,
 } as const;
 
 export default function TemplatesPage() {

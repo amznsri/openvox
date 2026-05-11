@@ -33,6 +33,8 @@ class AgentIn(BaseModel):
     max_tokens: int = 2048
     skills: list[str] = Field(default_factory=list)
     channels: dict[str, Any] = Field(default_factory=dict)
+    mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
+    voice_map: dict[str, str] = Field(default_factory=dict)
 
 
 class AgentOut(AgentIn):
@@ -61,6 +63,8 @@ def _to_out(a: Agent) -> dict[str, Any]:
         "max_tokens": a.max_tokens,
         "skills": a.skills or [],
         "channels": a.channels or {},
+        "mcp_servers": a.mcp_servers or [],
+        "voice_map": a.voice_map or {},
         "status": a.status,
         "created_at": a.created_at.isoformat() if a.created_at else "",
         "updated_at": a.updated_at.isoformat() if a.updated_at else "",

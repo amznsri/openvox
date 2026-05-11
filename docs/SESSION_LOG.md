@@ -127,16 +127,144 @@ build a Document Q&A agent with PDF/image upload + voice in/out.
 
 ---
 
+## Session 5 — Scheduler + MCP + Receptionist template
+
+**Goal**: ship the three items from `PLANNING_NEXT.md` in priority order.
+
+**Built**:
+- **Task scheduler** (`openvox/scheduler/`):
+  - `engine.py` — `AsyncIOScheduler` wrapper. Persistent source-of-truth in
+    our DB; APScheduler in-memory state rebuilt at startup.
+  - `runner.py` — three job kinds: `agent_query`, `skill_run`, `audio_batch`.
+    The audio_batch runner reuses `_decode_to_pcm16k` + `_stream_pcm_to_stt`
+    from the playground route, walks a folder, tracks processed files in a
+    `.openvox_processed` state file.
+  - New tables: `ScheduledJob`, `JobRun`.
+  - `/api/v1/jobs` CRUD + `/{id}/trigger` for manual run + `/{id}/runs` history.
+  - Dashboard page `/dashboard/schedules` with create/edit modal, run-now,
+    pause/enable, history pull-down, 5s auto-refresh polling.
+- **MCP integration** (`openvox/mcp/`):
+  - `bridge.py` — `MCPSessionManager` (spawns stdio subprocs or opens SSE),
+    `_make_skill()` wraps each MCP tool as a `BaseSkill` with namespaced id
+    `mcp__<server>__<tool>`.
+  - `Agent.mcp_servers` JSON column (with additive-column migration in
+    `init_db`).
+  - WS voice route now connects to MCP servers on session start, passes
+    bridged skills to `SkillRunner(extra_skills=...)`, tears down on disconnect.
+  - `SkillRunner` extended to accept `extra_skills` (per-session, doesn't
+    pollute the global registry).
+  - `/api/v1/mcp/probe` for dashboard validation.
+  - New "MCP" tab on the agent edit page with add/probe/remove UI.
+- **Receptionist template + skills** (`openvox/skills/builtin/reception.py`):
+  - 5 skills (`business_info`, `check_availability`, `book_appointment`,
+    `cancel_appointment`, `list_appointments`).
+  - In-memory demo calendar: Acme Salon & Spa, 9-6 Mon-Fri, hourly slots,
+    a few pre-seeded clashes so the agent can demo "that slot's taken, how
+    about…".
+  - Template `receptionist` with a step-by-step booking workflow in the
+    system prompt (greet → check_availability → confirm slot → collect
+    name+phone → book_appointment → read back confirmation code).
+
+**Decisions**:
+- APScheduler + own DB tables (NOT APScheduler's SQLAlchemy jobstore — that
+  one needs a sync session and we're async-first).
+- MCP bridge uses the official `mcp` PyPI SDK (lazy-imported so the rest of
+  the codebase doesn't pay for it).
+- MCP tool ids are namespaced (`mcp__server__tool`) to prevent collisions
+  when two servers expose the same tool name.
+- Per-session MCP skills shadow global registry entries — useful if a remote
+  server intentionally replaces a built-in (e.g. real GitHub `get_repo`
+  vs. our stub).
+- DB schema bumps now go through a tiny `_ADDITIVE_COLUMNS` list in
+  `init_db()` rather than a full Alembic migration system. Will switch to
+  Alembic once schema changes slow down.
+
+**Bugs fixed**:
+- FK violation on `DELETE /api/v1/jobs/{id}` — `job_runs.job_id` FK blocked
+  the parent delete. Fix: in-route cascade (DELETE job_runs first).
+- `Agent.mcp_servers` column missing on existing DBs — `create_all` doesn't
+  add columns. Fix: `init_db()` now ALTER TABLE ADD COLUMN IF NOT EXISTS.
+
+**Verified end-to-end**:
+- Scheduler: created interval job, manual trigger, read run history (1 success),
+  delete returned 204.
+- MCP: probe endpoint returns clean response on misconfigured commands (count=0).
+- Receptionist: instantiated template, called `check_availability` → got 3 slots,
+  called `book_appointment` → got confirmation code `APT-BEA722E5`.
+
+**Open follow-ups** added back to `PLANNING_NEXT.md`:
+- Outbound lead qualifier (SDR) template + Twilio dial-out path.
+- Multilingual customer-support IVR template + `detect_language` skill.
+- Scheduler webhook trigger (event-driven jobs).
+- Skill hot-reload.
+
+---
+
+## Session 6 — SDR + Multilingual IVR templates
+
+**Goal**: ship the remaining two templates from PLANNING_NEXT.md.
+
+**Built**:
+- **Outbound SDR** — `openvox/telephony/twilio.py` (REST client + `place_call`),
+  `openvox/skills/builtin/sales.py` (4 skills: `fetch_next_lead`,
+  `record_disposition`, `qualified_leads`, `book_demo`), template `sales-sdr`
+  with BANT system prompt, new scheduler kind `outbound_call_batch`,
+  `/api/v1/telephony/twilio/place_call` REST endpoint.
+- **Multilingual IVR** — `openvox/skills/builtin/language.py` (`detect_language`
+  skill exposes the last STT result's language), `Agent.voice_map` JSON column
+  (additive migration), orchestrator's `_speak()` picks the voice for the
+  currently detected language. Template `multilingual-support` with FAQ
+  doc Q&A across 51 languages.
+
+**Decisions**:
+- Twilio outbound uses the REST API directly (POST /Calls.json) — small, no
+  extra dep beyond what `twilio>=9.3.0` already gives us.
+- BANT scoring is in-memory; real installs swap `sales.py` for a CRM-backed
+  module or wire a CRM MCP server (HubSpot, Salesforce).
+- Voice-map lookup falls back to agent's default `voice_id` if no entry for
+  the detected language — keeps the demo working even with one voice activated.
+- `detect_language` is **dual-path**: returns the ASR language if the
+  orchestrator stashed one on ctx.metadata; falls back to LLM
+  classification on the supplied text. Streaming ASR mode
+  (`bigmodel_async`) doesn't support `enable_auto_lang` server-side, so
+  the LLM fallback is the reliable path.
+
+**Bugs / friction encountered**:
+- Shell `curl … | python3 -c "..."` chokes when the response body contains
+  literal newlines (e.g. `system_prompt` of the SDR template). API works
+  fine; only the smoke-test pipeline fails. Use `python -m json.tool` on
+  output written to a file, or pipe through `jq -R -s 'fromjson'`.
+
+**Verified end-to-end**:
+- 8 templates total (`/api/v1/templates`), 26 skills registered.
+- SDR: `fetch_next_lead` → `LEAD-001` (Northwind Logistics);
+  `record_disposition(80/85/90/75)` → score=82, bucket=`qualified`,
+  next_step=`book_demo`, DISP-22724423 persisted.
+- Multilingual: `detect_language("Hola, necesito ayuda con mi factura")`
+  → `es-ES`, method=`llm`. `route_to_specialist(billing, es-MX)` →
+  `billing-es`, agent Carlos, 4 min wait.
+- Both agents instantiate correctly with template defaults: Mira SDR
+  (7 skills, voice_map=0), Polyglot Support (4 skills, voice_map=7 entries).
+
+---
+
 ## Open follow-ups (carried forward)
 
-These came up during sessions but weren't shipped — pick up in a future session:
+Updated end of Session 6. Items shipped this session removed; items still
+pending below.
 
-1. **VAD provider**: Silero VAD locally, BytePlus VAD when launched.
-2. **Speech-to-Speech**: OpenAI Realtime adapter (BytePlus S2S not yet GA).
-3. **Live interpretation**: simultaneous translation pipeline.
-4. **Voice podcast generation**.
-5. **BytePlus RTC client SDK** wiring (server-side token issuance done).
-6. **Twilio Media Streams** ↔ pipeline bridge (webhook scaffolded).
+1. **Scheduler webhook trigger** (event-driven jobs).
+2. **Skill hot-reload** (`watchfiles` on `~/.openvox/skills/`).
+3. **Curated MCP server catalogue** with one-click pre-fill.
+4. **CRM-via-MCP** for the SDR template (HubSpot / Salesforce snippets).
+5. **VAD provider**: Silero VAD locally, BytePlus VAD when launched.
+6. **Speech-to-Speech**: OpenAI Realtime adapter (BytePlus S2S not yet GA).
+7. **Live interpretation**: simultaneous translation pipeline.
+8. **Voice podcast generation**.
+9. **BytePlus RTC client SDK** wiring (server-side token issuance done).
+10. **Twilio Media Streams** ↔ pipeline bridge for the inbound path
+    (outbound dial-out path lands in Session 6; inbound Media Stream
+    handler in WS is still scaffolded).
 7. **WhatsApp Business inbound** message routing (verify done).
 8. **Telegram bot** message routing (webhook scaffolded).
 9. **Alembic migrations** (currently using `Base.metadata.create_all()`).
