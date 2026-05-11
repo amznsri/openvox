@@ -9,8 +9,7 @@
 
 ## 1. What we're building
 
-**OpenVox** is an open-source, local-first voice agent platform — the OpenClaw of voice
-agents. Users (developers and non-technical) build, test, and deploy production-grade
+**OpenVox** is an open-source, local-first voice agent platform. Users (developers and non-technical) build, test, and deploy production-grade
 voice agents with pluggable providers, a sleek dashboard, an SDK, a CLI, and a skills
 extension framework.
 
