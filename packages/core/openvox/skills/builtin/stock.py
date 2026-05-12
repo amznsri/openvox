@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-import httpx
-
 from openvox.skills.base import BaseSkill, SkillContext
+from openvox.utils.http import make_async_client
 
 
 class GetQuote(BaseSkill):
@@ -25,25 +24,40 @@ class GetQuote(BaseSkill):
         sym = (args.get("ticker") or "").strip().upper()
         if not sym:
             return {"error": "missing ticker"}
-        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={sym}"
-        async with httpx.AsyncClient(timeout=10.0, headers={"User-Agent": "OpenVox/0.1"}) as c:
+        # Yahoo's v7/quote endpoint started requiring a crumb cookie in 2024.
+        # The v8/chart endpoint still works unauthenticated and gives us the
+        # `meta` block with price + change data, which is all we need here.
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=5d"
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+            ),
+        }
+        async with make_async_client(timeout=10.0, headers=headers) as c:
             r = await c.get(url)
         if r.status_code != 200:
             return {"error": f"upstream {r.status_code}", "ticker": sym}
         data = r.json()
-        results = (data.get("quoteResponse") or {}).get("result") or []
+        results = (data.get("chart") or {}).get("result") or []
         if not results:
-            return {"error": "not found", "ticker": sym}
-        q = results[0]
+            err = ((data.get("chart") or {}).get("error") or {}).get("description")
+            return {"error": err or "not found", "ticker": sym}
+        meta = results[0].get("meta") or {}
+        price = meta.get("regularMarketPrice")
+        prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+        change = (price - prev) if (isinstance(price, (int, float)) and isinstance(prev, (int, float))) else None
+        change_pct = (change / prev * 100.0) if (change is not None and prev) else None
         return {
             "ticker": sym,
-            "name": q.get("longName") or q.get("shortName"),
-            "price": q.get("regularMarketPrice"),
-            "currency": q.get("currency"),
-            "change": q.get("regularMarketChange"),
-            "change_pct": q.get("regularMarketChangePercent"),
-            "market_cap": q.get("marketCap"),
-            "pe": q.get("trailingPE"),
+            "name": meta.get("longName") or meta.get("shortName") or sym,
+            "price": price,
+            "currency": meta.get("currency"),
+            "previous_close": prev,
+            "change": change,
+            "change_pct": change_pct,
+            "exchange": meta.get("exchangeName"),
+            "market_state": meta.get("marketState"),
         }
 
 

@@ -256,7 +256,7 @@ class VoiceSession:
                     if not isinstance(parsed_args, dict):
                         parsed_args = {"_value": parsed_args}
 
-                    yield TurnEvent(kind="skill_call", text=name, data=parsed_args)
+                    yield TurnEvent(kind="skill_call", text=name, data={"args": parsed_args})
                     result = await self._skills.invoke(name, parsed_args)
                     yield TurnEvent(kind="skill_result", text=name, data=result)
 

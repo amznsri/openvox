@@ -34,6 +34,8 @@ export default function AgentDetailPage() {
 
   const [form, setForm] = useState<Partial<Agent>>({});
   const [busy, setBusy] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [flash, setFlash] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
 
   useEffect(() => {
     if (agent) setForm(agent);
@@ -63,9 +65,23 @@ export default function AgentDetailPage() {
   }
 
   async function publish() {
-    await api.publishAgent(id);
-    mutate(`agent-${id}`);
-    mutate("agents");
+    setPublishing(true);
+    setFlash(null);
+    try {
+      const updated = await api.publishAgent(id);
+      // Optimistic refresh: seed the SWR caches with the new record so the
+      // badge swaps from "draft" → "published" instantly, then revalidate.
+      await Promise.all([
+        mutate(`agent-${id}`, updated, { revalidate: true }),
+        mutate("agents", undefined, { revalidate: true }),
+      ]);
+      setFlash({ kind: "ok", msg: "Published. Agent is now live." });
+    } catch (e: any) {
+      setFlash({ kind: "err", msg: e?.message || "Publish failed" });
+    } finally {
+      setPublishing(false);
+      setTimeout(() => setFlash(null), 3500);
+    }
   }
 
   async function destroy() {
@@ -113,8 +129,9 @@ export default function AgentDetailPage() {
             </Button>
           </Link>
           {agent.status !== "published" && (
-            <Button variant="secondary" onClick={publish}>
-              Publish
+            <Button variant="secondary" onClick={publish} disabled={publishing}>
+              {publishing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {publishing ? "Publishing…" : "Publish"}
             </Button>
           )}
           <Button variant="gradient" onClick={save} disabled={busy}>
@@ -123,6 +140,18 @@ export default function AgentDetailPage() {
           </Button>
         </div>
       </div>
+
+      {flash && (
+        <div
+          className={`rounded-md border px-4 py-2 text-sm ${
+            flash.kind === "ok"
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+              : "border-rose-500/40 bg-rose-500/10 text-rose-200"
+          }`}
+        >
+          {flash.msg}
+        </div>
+      )}
 
       <Tabs defaultValue="behavior">
         <TabsList>
