@@ -25,11 +25,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from openvox.db import db_session
 from openvox.db.models import Agent
+from openvox.db.models import Session as DBSession
 from openvox.pipeline.orchestrator import SessionConfig, VoiceSession
 from openvox.providers import ProviderType, get_registry
 from openvox.providers.base import (
@@ -51,6 +53,11 @@ async def voice_ws(ws: WebSocket) -> None:
     session: VoiceSession | None = None
     mcp_mgr = None
     forward_task: asyncio.Task | None = None
+    # Observability bookkeeping. We persist one DB row per voice call so
+    # the dashboard's Observability page has something to render.
+    db_session_id: str = ""
+    started_at: datetime | None = None
+    metrics = {"turn_count": 0, "first_token_ms": 0}
 
     try:
         while True:
@@ -64,7 +71,26 @@ async def voice_ws(ws: WebSocket) -> None:
                         await ws.send_text(json.dumps({"type": "error", "message": "agent not found or providers unavailable"}))
                         return
                     session, mcp_mgr = built
-                    forward_task = asyncio.create_task(_forward_events(session, ws))
+                    # Record the session row before forwarding starts so a
+                    # client disconnect partway still leaves a trace.
+                    agent_id = ctrl.get("agent_id") or ""
+                    if agent_id:
+                        started_at = datetime.now(timezone.utc)
+                        try:
+                            async with db_session() as s:
+                                row = DBSession(
+                                    agent_id=agent_id,
+                                    channel=ctrl.get("channel") or "web",
+                                    caller_id=ctrl.get("caller_id") or "voice-playground",
+                                    started_at=started_at,
+                                    status="active",
+                                )
+                                s.add(row)
+                                await s.flush()
+                                db_session_id = row.id
+                        except Exception:
+                            logger.exception("could not create voice session row")
+                    forward_task = asyncio.create_task(_forward_events(session, ws, metrics, started_at))
                 elif kind == "end":
                     if session:
                         await session.end_audio()
@@ -94,6 +120,23 @@ async def voice_ws(ws: WebSocket) -> None:
                 await mcp_mgr.__aexit__(None, None, None)
             except Exception as e:
                 logger.warning("mcp teardown failed: %s", e)
+        # Finalize the persisted session row. If the row creation failed
+        # above (e.g. ad-hoc session with no agent_id), there's nothing
+        # to update — just exit.
+        if db_session_id and started_at is not None:
+            try:
+                ended = datetime.now(timezone.utc)
+                duration_ms = int((ended - started_at).total_seconds() * 1000)
+                async with db_session() as s:
+                    row = await s.get(DBSession, db_session_id)
+                    if row is not None:
+                        row.ended_at = ended
+                        row.duration_ms = duration_ms
+                        row.turn_count = metrics["turn_count"]
+                        row.first_token_ms = metrics["first_token_ms"]
+                        row.status = "completed"
+            except Exception:
+                logger.exception("could not finalize voice session row")
 
 
 async def _build_session(ctrl: dict) -> tuple[VoiceSession, "MCPSessionManager | None"] | None:
@@ -188,9 +231,26 @@ async def _build_session(ctrl: dict) -> tuple[VoiceSession, "MCPSessionManager |
     return session, mcp_mgr
 
 
-async def _forward_events(session: VoiceSession, ws: WebSocket) -> None:
+async def _forward_events(
+    session: VoiceSession,
+    ws: WebSocket,
+    metrics: dict | None = None,
+    started_at: datetime | None = None,
+) -> None:
     try:
         async for ev in session.run():
+            # Update observability counters as events flow past us.
+            if metrics is not None:
+                if ev.kind == "assistant_done":
+                    metrics["turn_count"] = metrics.get("turn_count", 0) + 1
+                if (
+                    ev.kind == "assistant_token"
+                    and started_at is not None
+                    and not metrics.get("first_token_ms")
+                ):
+                    metrics["first_token_ms"] = int(
+                        (datetime.now(timezone.utc) - started_at).total_seconds() * 1000
+                    )
             if ev.kind == "assistant_audio":
                 await ws.send_bytes(ev.audio)
             else:

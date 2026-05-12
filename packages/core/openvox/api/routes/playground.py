@@ -43,6 +43,10 @@ class TextRequest(BaseModel):
     user: str
     temperature: float = 0.7
     max_tokens: int = 1024
+    # Optional — when present, we persist a Session row so the
+    # Observability page has something to show. Sent by the playground
+    # Text tab once an agent is selected.
+    agent_id: str = ""
 
 
 @router.post("/text")
@@ -54,10 +58,60 @@ async def text_chat(req: TextRequest) -> StreamingResponse:
     msgs = [LLMMessage(role="system", content=req.system), LLMMessage(role="user", content=req.user)]
     cfg = LLMConfig(model=req.model, temperature=req.temperature, max_tokens=req.max_tokens, stream=True)
 
+    # Persist a "text" session up-front so Observability has a row even
+    # mid-stream. We update duration + first_token at end-of-gen below.
+    from datetime import datetime, timezone
+
+    from openvox.db import db_session
+    from openvox.db.models import Session as DBSession
+    from openvox.db.models import Transcript
+
+    started = datetime.now(timezone.utc)
+    session_id: str = ""
+    if req.agent_id:
+        try:
+            async with db_session() as s:
+                row = DBSession(
+                    agent_id=req.agent_id,
+                    channel="web",
+                    caller_id="text-playground",
+                    started_at=started,
+                    status="active",
+                )
+                s.add(row)
+                await s.flush()
+                session_id = row.id
+                s.add(Transcript(session_id=session_id, role="user", text=req.user[:4000]))
+        except Exception:
+            logger.exception("could not persist text session row")
+
     async def gen():
+        first_token_ms = 0
+        full = ""
         async for chunk in llm.chat_stream(msgs, cfg):
             if chunk.delta:
+                if first_token_ms == 0:
+                    first_token_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+                full += chunk.delta
                 yield chunk.delta
+        # Finalize the session row once the LLM stream completes. We do
+        # this in a fresh db_session because the request-scoped one above
+        # closed at the yield boundary.
+        if session_id:
+            try:
+                ended = datetime.now(timezone.utc)
+                duration_ms = int((ended - started).total_seconds() * 1000)
+                async with db_session() as s:
+                    sess = await s.get(DBSession, session_id)
+                    if sess is not None:
+                        sess.ended_at = ended
+                        sess.duration_ms = duration_ms
+                        sess.first_token_ms = first_token_ms
+                        sess.turn_count = 1
+                        sess.status = "completed"
+                    s.add(Transcript(session_id=session_id, role="assistant", text=full[:8000]))
+            except Exception:
+                logger.exception("could not finalize text session row")
 
     return StreamingResponse(gen(), media_type="text/plain")
 

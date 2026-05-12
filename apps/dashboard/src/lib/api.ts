@@ -275,6 +275,9 @@ export type TextChatRequest = {
   user: string;
   temperature?: number;
   max_tokens?: number;
+  // When set, the core persists a Session row so the call shows up on
+  // the Observability page.
+  agent_id?: string;
 };
 
 export type RtcToken = {

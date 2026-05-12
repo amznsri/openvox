@@ -169,6 +169,8 @@ export default function PlaygroundPage() {
           model: llmModel,
           system: systemPrompt,
           user: userMsg,
+          // Surfaces this turn on Observability when an agent is picked.
+          agent_id: selectedAgent || undefined,
         },
         (tok) => {
           setLines((ls) => {
