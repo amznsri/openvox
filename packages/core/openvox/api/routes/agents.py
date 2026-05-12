@@ -6,11 +6,11 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from openvox.config import get_settings
 from openvox.db import db_session
-from openvox.db.models import Agent, AgentStatus
+from openvox.db.models import Agent, AgentStatus, Document, DocumentChunk
 
 router = APIRouter()
 
@@ -132,4 +132,10 @@ async def delete_agent(agent_id: str) -> None:
         a = await s.get(Agent, agent_id)
         if a is None:
             raise HTTPException(404, "agent not found")
+        # Same in-route cascade pattern as bug #29 (job_runs): clean up FK
+        # dependents first because the schema doesn't declare ON DELETE
+        # CASCADE. Document chunks reference the agent via a plain string
+        # column (no FK), but we drop them too to keep the RAG store tidy.
+        await s.execute(delete(DocumentChunk).where(DocumentChunk.agent_id == agent_id))
+        await s.execute(delete(Document).where(Document.agent_id == agent_id))
         await s.delete(a)

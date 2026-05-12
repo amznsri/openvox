@@ -17,7 +17,7 @@ import {
   Languages,
 } from "lucide-react";
 
-import { api, type Template } from "@/lib/api";
+import { api, type Agent, type Template } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -38,9 +38,25 @@ export default function TemplatesPage() {
   const { data: templates = [], isLoading } = useSWR<Template[]>("templates", () =>
     api.listTemplates(),
   );
+  // We need the current agent list to detect "you already have one from this
+  // template" — keeps users from accidentally creating Acme Support Voice #4.
+  const { data: agents = [] } = useSWR<Agent[]>("agents", () => api.listAgents());
   const [busy, setBusy] = useState<string | null>(null);
 
   async function instantiate(t: Template) {
+    const existing = agents.filter((a) => a.template_id === t.id);
+    if (existing.length > 0) {
+      const names = existing.map((a) => `• ${a.name}`).join("\n");
+      const msg =
+        `You already have ${existing.length} agent${existing.length === 1 ? "" : "s"} ` +
+        `from the “${t.name}” template:\n\n${names}\n\n` +
+        `OK = open the existing one. Cancel = create another copy.`;
+      if (confirm(msg)) {
+        router.push(`/dashboard/agents/${existing[0].id}`);
+        return;
+      }
+      // Falls through to create a fresh copy on Cancel.
+    }
     setBusy(t.id);
     try {
       const a = await api.instantiateTemplate(t.id);
@@ -67,6 +83,7 @@ export default function TemplatesPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {templates.map((t) => {
             const Icon = (ICONS as any)[t.icon] || Sparkles;
+            const existingCount = agents.filter((a) => a.template_id === t.id).length;
             return (
               <Card key={t.id} className="hover:border-primary/40 transition-colors group">
                 <CardContent className="pt-6">
@@ -77,9 +94,14 @@ export default function TemplatesPage() {
                       </div>
                       <div>
                         <h3 className="font-semibold">{t.name}</h3>
-                        <Badge variant="default" className="mt-1">
-                          {t.category}
-                        </Badge>
+                        <div className="mt-1 flex items-center gap-1.5">
+                          <Badge variant="default">{t.category}</Badge>
+                          {existingCount > 0 && (
+                            <Badge variant="success" title="You already have agents from this template">
+                              {existingCount} created
+                            </Badge>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
