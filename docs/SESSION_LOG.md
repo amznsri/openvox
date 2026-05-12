@@ -248,6 +248,155 @@ build a Document Q&A agent with PDF/image upload + voice in/out.
 
 ---
 
+## Session 7 — 2026-05-12 / 2026-05-13 (bug-fix + UX polish pass)
+
+**Goal**: shake-out testing of the platform once an end user actually
+sat down with it. Surfaced a clutch of TLS / UX / persistence bugs and
+swept them. No new feature surface — pure quality pass — but a
+material one for the "does this thing actually work?" question.
+
+### What we found and fixed
+
+#### 1. Stock + web-search skills crashed on Zscaler-intercepted TLS
+- **Symptom**: a user-created stock-analysis agent answered "unable to
+  retrieve live stock data / news" for every question. Core logs:
+  `httpx.ConnectError: [SSL: CERTIFICATE_VERIFY_FAILED]`.
+- **Root cause**: `skills/builtin/stock.py` (`get_quote`) and
+  `skills/builtin/general.py` (`web_search`) used a bare
+  `httpx.AsyncClient(...)` rather than our `make_async_client()`
+  wrapper. They predated the wrapper and were missed during the
+  TLS refactor.
+- **Fix**: both routed through `make_async_client` so the
+  `OPENVOX_INSECURE_TLS` / `extra-ca.pem` escape hatches apply.
+- **Bonus fix for `get_quote`**: Yahoo's `/v7/finance/quote` started
+  requiring a crumb cookie in 2024 (returns 401). Switched to
+  `/v8/finance/chart/{sym}` which still works unauthenticated; returns
+  the same fields plus market_state + exchange. Verified live: AAPL
+  $294.51, NVDA $219.92.
+- **Bonus fix for `web_search`**: DuckDuckGo returns **202 No-Instant-
+  Answer** for queries without an instant-answer panel — was being
+  surfaced as a failure. Now treated as an empty-result success.
+- **Future-proofing**: `grep -rn 'httpx.AsyncClient' packages/core/`
+  should return zero hits in `skills/`. Codified as Bug #30 in
+  CLAUDE.md §8.
+
+#### 2. Dashboard "Publish" button looked broken
+- **Symptom**: clicking Publish on the agent detail page appeared to
+  do nothing; users assumed it had failed and walked away.
+- **Reality**: the endpoint was fine — but the click handler had no
+  busy state, no toast, swallowed errors, and only triggered an SWR
+  revalidation (which takes a beat). Looked dead.
+- **Fix**: added a busy state ("Publishing…" + spinner, button
+  disabled), seeded the SWR caches with the returned record so the
+  badge flips draft→published instantly, and surfaced a green
+  success banner / red error banner that auto-dismisses after 3.5 s.
+
+#### 3. Skill-call display always showed empty args
+- **Symptom**: playground transcript showed `→ get_quote({})` even
+  when the LLM did pass arguments.
+- **Root cause**: orchestrator emitted `TurnEvent(kind="skill_call",
+  data=parsed_args)` and `_event_to_json` spread `data` into top-level
+  keys. The dashboard read `(ev as any).args` — undefined.
+- **Fix**: orchestrator now emits `data={"args": parsed_args}` so the
+  dashboard's lookup path matches.
+
+#### 4. `analyze_image` 400-ed on Wikipedia URLs
+- **Why**: Ark downloads the image *server-side*; Wikipedia (and a few
+  CDNs) return 403 to Ark's IP / UA. Not a code bug — operational
+  gotcha that bit during validation.
+- **Fix**: documented the constraint prominently in the skill class
+  docstring + `description` so the LLM and end-users both know to
+  prefer TOS / S3 / picsum / data-URIs.
+
+#### 5. Agent delete crashed on docs-bearing agents
+- **Symptom**: HTTP 500 when deleting an Audio Analyzer that had
+  earlier ingested PDFs.
+- **Root cause**: same pattern as Bug #29 (`job_runs.job_id`), but
+  for `documents.agent_id`. FK without `ON DELETE CASCADE`.
+- **Fix**: in-route cascade — `routes/agents.py:delete_agent` now
+  drops `DocumentChunk` + `Document` rows before deleting the parent
+  Agent. (DocumentChunk uses a plain string, not a FK, but we drop
+  it too to keep the RAG store consistent.) Logged as Bug #30/31 in
+  CLAUDE.md §8.
+
+#### 6. Template duplicates kept piling up
+- **Symptom**: 3 "Acme Support Voice" + 2 "Audio Analyzer" rows in
+  the agent list. Created by repeated "Use template" clicks across
+  earlier sessions (no idempotency).
+- **Fix in dashboard**:
+  - Each template card now shows a green **"N created"** badge if
+    matching agents already exist.
+  - Clicking "Use template" when matches exist pops a `confirm()`:
+    OK opens the existing one, Cancel creates a fresh copy. The
+    flow is *informed* but still allows intentional duplicates.
+- **Data cleanup**: deleted the two older Acme rows + the older
+  Audio Analyzer. Down to 7 unique agents.
+
+#### 7. Top-bar search was a no-op placeholder
+- The input had no handler — type anything, nothing happens.
+- **Fix**: wired it to a real fuzzy-search popover across the three
+  searchable corpora (agents, templates, skills) with score-based
+  ranking (word-start hits beat middle-of-word), keyboard nav
+  (↑/↓/Enter/Esc), click-outside-to-close, and per-hit icon + kind
+  label. Each result links straight to the relevant page.
+
+#### 8. Observability page was permanently empty
+- **Symptom**: dashboard showed 0 sessions, 0 ms talk time even after
+  the user ran multiple turns through the playground.
+- **Root cause**: *nothing wrote to the `sessions` table.* The voice
+  WS handler in `api/ws/voice.py` and the text endpoint in
+  `routes/playground.py` never instantiated a `Session` row. So the
+  GET /sessions endpoint that the dashboard polled was technically
+  correct — there was just nothing there to return.
+- **Fix**:
+  - **voice WS**: creates a `Session` row on the `start` frame,
+    accumulates `turn_count` (one per `assistant_done`) and
+    `first_token_ms` (timestamp of the first `assistant_token`) in
+    a metrics dict passed to `_forward_events`, finalises
+    `duration_ms` + `status="completed"` in the WS `finally` block
+    so even mid-call disconnects leave a row.
+  - **text playground**: accepts optional `agent_id` in the request
+    body; writes a `Session` row + user `Transcript` before
+    streaming starts, then updates duration + first-token-latency
+    and appends an assistant `Transcript` once the stream
+    completes. Both inserts are best-effort (try/except + log) so
+    a DB hiccup never kills the chat itself.
+  - **dashboard**: text tab now passes the selected agent through.
+- **Verified**: one text turn produced row
+  `2e64f3c8 · ch=web · dur=3261ms · ftt=3259ms · turns=1 ·
+  status=completed`.
+
+### Skills validation (26/26)
+
+Hand-rolled a `validate_skills.py` that POSTs against `/skills/invoke`
+for every skill with sensible default args. Result: **24 PASS · 2
+"correct refusal"**. The two refusals are skills that need richer
+context than `/skills/invoke` provides:
+- `query_documents` needs `ctx.agent_id` (per-agent RAG store).
+- `transcribe_recording` needs a URL BytePlus can fetch (TOS / S3
+  presigned). Local-file transcription goes through the
+  `/playground/audio_analyze` streaming path instead.
+Both verified working via their proper UI surfaces.
+
+### Files touched (commits 10df997 → 1cf12a5)
+
+```
+packages/core/openvox/skills/builtin/stock.py
+packages/core/openvox/skills/builtin/general.py
+packages/core/openvox/skills/builtin/documents.py    (AnalyzeImage docstring)
+packages/core/openvox/pipeline/orchestrator.py       (skill_call args shape)
+packages/core/openvox/api/routes/agents.py           (cascade delete)
+packages/core/openvox/api/routes/playground.py       (text-session persistence)
+packages/core/openvox/api/ws/voice.py                (voice-session persistence)
+apps/dashboard/src/app/dashboard/agents/[id]/page.tsx (publish UX)
+apps/dashboard/src/app/dashboard/templates/page.tsx   (duplicate guard)
+apps/dashboard/src/app/dashboard/playground/page.tsx  (agent_id passthrough)
+apps/dashboard/src/components/nav/topbar.tsx          (real search popover)
+apps/dashboard/src/lib/api.ts                         (agent_id in TextChatRequest)
+```
+
+---
+
 ## Open follow-ups (carried forward)
 
 Updated end of Session 6. Items shipped this session removed; items still

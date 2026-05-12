@@ -390,9 +390,28 @@ Important file pointers:
   Orchestrator's `_speak()` swaps voice based on the last STT result's
   `language` field. Showcases BytePlus's 51-language ASR via
   `enable_auto_lang=true`.
+- **Session 7 polish pass** (2026-05-12/13): every page on the dashboard
+  was sanity-checked by an end user; the bug list it surfaced shipped
+  in commits 10df997→1cf12a5. Highlights:
+  - **Observability now actually has data.** Voice WS + text
+    playground both write/update `Session` rows + `Transcript` rows
+    so the page is populated after the first turn. `turn_count`,
+    `first_token_ms`, `duration_ms`, `status` all tracked.
+  - **Top-bar search works.** Fuzzy match across agents / templates /
+    skills with keyboard nav and a popover dropdown.
+  - **Publish button looks alive.** Busy state + green/red toast +
+    optimistic SWR seed so the badge flips draft→published instantly.
+  - **Template duplicate guard.** "N created" badge on each card +
+    confirm dialog before instantiating another copy.
+  - **Agent delete handles attached documents** (in-route cascade).
+  - **Skills sanity-check**: 26/26 validated via a one-shot script;
+    `get_quote` + `web_search` + `analyze_image` all hit live
+    BytePlus / Yahoo / Ark vision endpoints and pass.
+  - **All TLS bugs in skills swept** — every outbound HTTP call from
+    a built-in skill now routes through `make_async_client`.
 
 ### 🚧 In progress
-- (none — Session 6 wrapped: SDR + Multilingual IVR templates shipped.)
+- (none — Session 7 was a stabilisation pass; no half-shipped surface.)
 
 ### 📋 Designed, queued for next session
 See [`docs/PLANNING_NEXT.md`](docs/PLANNING_NEXT.md) for full design:
@@ -531,6 +550,97 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     job_runs WHERE job_id = $1` before deleting the parent. Could also have
     used `ondelete="CASCADE"`, but that needs a schema migration. Same pattern
     applies to any FK we add later — prefer in-route cascade for now.
+30. **`documents.agent_id` FK blocked `Agent` deletion** the same way —
+    HTTP 500 the moment a user tried to delete an agent that had ever
+    ingested a PDF. *Fix*: `routes/agents.py:delete_agent` now does an
+    explicit `DELETE FROM document_chunks WHERE agent_id = $1; DELETE
+    FROM documents WHERE agent_id = $1;` before deleting the parent.
+    (DocumentChunk uses a plain string column, no FK, but we drop them
+    too so the RAG store doesn't accumulate orphans.) **Pattern**: any
+    new table you add with `ForeignKey("agents.id")` needs a sibling
+    cleanup line in this route, or finally bite the schema-migration
+    bullet for `ondelete="CASCADE"`.
+
+### Skill / provider gotchas
+31. **Skills bypassing the TLS-aware HTTP client** —
+    `skills/builtin/stock.py` (`get_quote`) and
+    `skills/builtin/general.py` (`web_search`) used a bare
+    `httpx.AsyncClient(...)` and silently crashed with
+    `CERTIFICATE_VERIFY_FAILED` on the user's Zscaler-intercepted
+    network. *Fix*: route through `openvox.utils.http.make_async_client`
+    so the `OPENVOX_INSECURE_TLS` + `extra-ca.pem` escape hatches
+    apply. **Future-proofing**: `grep -rn 'httpx.AsyncClient'
+    packages/core/openvox/skills/` should return zero hits. If you
+    add a new skill that makes an HTTP call, use `make_async_client`
+    from day one.
+32. **Yahoo Finance v7/quote needs a crumb cookie** (started 2024). The
+    `get_quote` skill now uses `/v8/finance/chart/{sym}` which works
+    unauthenticated and gives us price / previous_close / change /
+    exchange / market_state. Don't go back to v7 without implementing
+    the crumb dance.
+33. **DuckDuckGo `202 No-Instant-Answer`** isn't an error — it's DDG
+    saying "this query has no instant-answer panel". `web_search`
+    treats 200/202 as success (with potentially-empty fields).
+34. **Ark vision endpoint downloads images server-side** — so any
+    image URL passed to `analyze_image` must be reachable from Ark's
+    IPs and the host must not bot-block. Wikipedia, some CDNs, and a
+    handful of S3 buckets with restrictive bucket policies return 403
+    to Ark and you get a confusing
+    `{"code":"InvalidParameter","message":"Error while downloading: …
+    status code: 403"}`. Use BytePlus TOS, picsum.photos, your own
+    S3 with public read, or a base64 `data:` URI returned by
+    `query_documents`. Skill docstring + `description` both call this
+    out so the LLM knows to prefer reachable hosts.
+
+### Dashboard UX
+35. **Async action handlers with no busy state look broken** — the
+    "Publish" button on the agent detail page made the API call
+    correctly but had no spinner, no toast, swallowed errors, and
+    only triggered SWR revalidation. Users assumed it had failed.
+    *Pattern*: every action button should have `disabled` while in
+    flight, a spinner, and a transient banner showing success/error.
+    See `agents/[id]/page.tsx` for the canonical pattern.
+36. **TurnEvent.data shape mismatch in skill_call** — the
+    orchestrator emitted `data=parsed_args` and `_event_to_json`
+    spread it into top-level keys, but the dashboard read
+    `(ev as any).args`. Result: `→ get_quote({})` even when the
+    LLM passed real args. *Fix*: orchestrator now emits
+    `data={"args": parsed_args}` so the lookup path matches.
+    **Lesson**: when an event type carries structured payload,
+    namespace it under a single key — don't lean on spread.
+37. **Static `<input placeholder="search">` with no handler** — the
+    top-bar search bar had nothing behind it. Now wired to a real
+    fuzzy-search popover (agents / templates / skills) with keyboard
+    nav and click-outside-to-close. Same pattern applies to any
+    "looks like an interactive UI element but isn't" — pick one:
+    wire it up or remove it.
+
+### Observability / persistence
+38. **No code path was writing to the `sessions` table.** The voice
+    WS handler (`api/ws/voice.py`) and text playground endpoint
+    (`routes/playground.py`) never instantiated a `Session` row, so
+    the Observability page rendered "0 sessions" forever no matter
+    how many turns ran through the playground. *Fix*: both paths now
+    write a Session row up-front + finalise duration / turn_count /
+    first_token_ms on completion (best-effort, try/except so DB
+    hiccups never kill the chat itself). Text path also accepts
+    `agent_id` so users can target a specific agent. **Lesson**: if
+    a dashboard page reads from a table, *grep for writers to that
+    table* — empty UI is usually a missing producer, not a missing
+    consumer.
+
+### Template instantiation
+39. **No idempotency on "Use template" clicks** — repeatedly clicking
+    the same template card created duplicates (we ended up with 3
+    "Acme Support Voice" and 2 "Audio Analyzer"). *Fix in dashboard*:
+    each template card shows a green "N created" badge if matching
+    agents exist; clicking "Use template" when N > 0 pops a confirm
+    dialog with the existing agent names — OK opens the first one,
+    Cancel falls through to create a fresh copy. The flow is
+    *informed* but still allows intentional duplicates. We didn't
+    add a DB unique constraint because users legitimately want
+    multiple agents from the same template with different prompts
+    /voices.
 
 ---
 

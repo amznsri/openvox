@@ -1,8 +1,25 @@
 # Planning — next session
 
-Updated end of Session 6.
+Updated end of Session 7.
 
-**Shipped this session (Session 6):**
+**Shipped Session 7 (bug-fix + UX polish pass):**
+- ✅ TLS-bypassing skills swept (`get_quote`, `web_search` routed through
+  `make_async_client`).
+- ✅ `get_quote` migrated off Yahoo v7 (crumb-required) to v8/chart.
+- ✅ `web_search` treats DDG 202 as empty rather than error.
+- ✅ Orchestrator `skill_call` event now carries `data.args` so the
+  dashboard transcript renders LLM arguments.
+- ✅ `analyze_image` docstring documents Ark's server-side fetch + 403
+  pitfall on bot-blocking hosts (Wikipedia etc).
+- ✅ Publish button: busy state, optimistic SWR seed, success/error toast.
+- ✅ Agent delete cascades through `documents` + `document_chunks`.
+- ✅ Templates page: "N created" badge + confirm-on-duplicate flow.
+- ✅ Top-bar search: real fuzzy popover (agents/templates/skills, kbd nav).
+- ✅ Observability persistence: voice WS + text playground both write
+  `Session` rows with `duration_ms`, `turn_count`, `first_token_ms`.
+- ✅ Full 26/26 skill validation script (passes).
+
+**Shipped Session 6:**
 - ✅ Outbound lead qualifier (SDR) template + Twilio outbound dial-out + BANT skills.
 - ✅ Multilingual customer-support IVR template + `detect_language` skill +
   `voice_map` per-language TTS routing.
@@ -88,3 +105,32 @@ Recommend MCP — keeps openvox lean.
 2. **§3 MCP catalogue** — UX polish for the feature we already shipped.
 3. **§2 hot-reload** — quality-of-life for skill authors.
 4. (Defer §4 unless someone needs a real CRM today.)
+
+---
+
+## Small follow-ups noticed during Session 7
+
+These are sub-1-hour items that fell out of the polish pass. Knock
+out at the start of Session 8 before tackling the bigger §1–§5 items.
+
+- **`/skills/invoke` should accept an optional `agent_id`** so the
+  Skills page can test `query_documents` end-to-end. Two-line change
+  to `routes/skills.py` — wrap the `SkillContext` construction with
+  the supplied id when present.
+- **`transcribe_recording` local-file mode.** Currently URL-only
+  because BytePlus AUC needs a public URL. Add a `file_path` param
+  that, when set, reads from the container fs and routes through the
+  streaming ASR path (same code `playground/audio_analyze` uses) so
+  agents can transcribe a local recording without a TOS round-trip.
+- **Observability "first-token" for voice is overstated.** The
+  current implementation timestamps the first `assistant_token` from
+  the LLM, which on streaming Ark fires before TTS audio is back to
+  the client. Rename the metric or capture first-audio separately —
+  the latter is what users actually care about for perceived
+  latency.
+- **`Topbar` is rendered per-page** (it's not in a shared layout);
+  consider hoisting it into `app/dashboard/layout.tsx` so there's
+  one mount and search state survives navigation.
+- **Bulk-delete sessions** on Observability page (e.g. for clearing
+  out smoke-test rows). Today there's no UI to prune the table —
+  only `DELETE` via psql.
