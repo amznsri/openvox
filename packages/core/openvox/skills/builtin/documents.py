@@ -96,11 +96,25 @@ class QueryDocuments(BaseSkill):
 
 
 class AnalyzeImage(BaseSkill):
+    """Vision-on-Ark: BytePlus Seed-2.0 supports multimodal `image_url` blocks
+    via the standard chat-completions endpoint, so we just hand it the URL.
+
+    GOTCHA — Ark downloads the image *server-side*, so the URL must be
+    reachable from the Ark service IPs and the host must not bot-block.
+    Wikipedia / a few CDNs return 403 to Ark and you get back
+    `{"code":"InvalidParameter","message":"Error while downloading: …, status code: 403"}`.
+    Use BytePlus TOS, your own S3, picsum.photos, or a base64 data-URI
+    (returned by `query_documents` for PDF-embedded images) instead.
+    """
+
     id = "analyze_image"
     display_name = "Analyze an image"
     description = (
         "Inspect an image and answer a question about it. The image_url can be "
-        "an http(s) URL or a base64 data URI returned by query_documents."
+        "an http(s) URL or a base64 data URI returned by query_documents. "
+        "Note: the URL is fetched server-side by Ark, so hosts that block "
+        "non-browser User-Agents (Wikipedia, some CDNs) will 403 — prefer "
+        "BytePlus TOS, your own S3, or a data: URI."
     )
     parameters = {
         "type": "object",
