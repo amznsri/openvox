@@ -1,5 +1,11 @@
 # OpenVox architecture
 
+> **Looking for the diagrams?** See [`diagrams.md`](diagrams.md) — eight
+> Mermaid diagrams covering system tiers, the voice pipeline sequence,
+> module layout, extensibility surface (skills/templates/scheduler/MCP),
+> data model, provider plug-ins, request paths, and deployment topology.
+> This file is the prose explanation of *why* the design works.
+
 ## The pipeline
 
 A voice agent has to do four things in a tight loop:
