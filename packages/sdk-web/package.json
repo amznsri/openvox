@@ -1,0 +1,38 @@
+{
+  "name": "@openvox/web",
+  "version": "0.1.0",
+  "description": "Embed an OpenVox voice agent in any React app with one component.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist", "README.md"],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean --external react",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --watch --external react",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "react": "^18.3.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.5.0"
+  },
+  "keywords": ["openvox", "voice", "agent", "websocket", "react", "audio"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/amznsri/openvox",
+    "directory": "packages/sdk-web"
+  }
+}

@@ -18,6 +18,7 @@ from openvox.providers.openai_compat import (
     WhisperSTT,
 )
 from openvox.providers.registry import get_registry
+from openvox.providers.vad.silero import SileroVAD
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,8 @@ def register_builtins() -> None:
         OpenAITTS,
         # RTC
         BytePlusRTC,
+        # VAD
+        SileroVAD,
     ):
         reg.register(cls)
     reg.discover_entrypoints()

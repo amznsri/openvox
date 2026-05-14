@@ -54,6 +54,16 @@ async def init_db() -> None:
     additive: list[tuple[str, str, str]] = [
         ("agents", "mcp_servers", "JSON DEFAULT '[]'"),
         ("agents", "voice_map", "JSON DEFAULT '{}'"),
+        # Session 8: Silero VAD per agent. `silero` enables server-side
+        # voice activity detection for sub-100ms interrupt latency;
+        # `none` falls back to client-driven interrupt.
+        ("agents", "vad_provider", "VARCHAR(50) DEFAULT 'silero'"),
+        # Session 8: pricing telemetry on per-call rows so the cost
+        # calculator can show $/min breakdown. Best-effort — never
+        # crash a session because we couldn't bump a counter.
+        ("sessions", "llm_tokens_in", "INTEGER DEFAULT 0"),
+        ("sessions", "llm_tokens_out", "INTEGER DEFAULT 0"),
+        ("sessions", "tts_chars", "INTEGER DEFAULT 0"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in additive:

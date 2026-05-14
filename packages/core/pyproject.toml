@@ -35,6 +35,13 @@ dependencies = [
   # Audio / numerics
   "numpy>=1.26.0",
   "scipy>=1.13.0",
+  # Silero VAD — sub-100 ms server-side voice activity detection. Brings
+  # in torch (CPU-only wheel is ~200 MB but no GPU runtime needed); the
+  # silero-vad package vendors the ONNX model so no network fetch at
+  # runtime. If you really want a lighter image, set
+  # OPENVOX_DISABLE_SILERO=1 and the provider will report unavailable
+  # without trying to import torch.
+  "silero-vad>=5.1.0",
   # Audio decoding for the Audio Analyzer file-upload path. Requires the
   # ffmpeg binary, which is installed in the core Dockerfile.
   "pydub>=0.25.1",

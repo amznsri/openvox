@@ -1,0 +1,80 @@
+[
+  {
+    "id": "slack",
+    "name": "Slack",
+    "tagline": "Read channels, send messages, search users.",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-slack"],
+    "env_required": ["SLACK_BOT_TOKEN", "SLACK_TEAM_ID"],
+    "env_optional": [],
+    "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/slack",
+    "icon": "💬",
+    "category": "communication"
+  },
+  {
+    "id": "github",
+    "name": "GitHub",
+    "tagline": "Search repos, read issues + PRs, create issues, file comments.",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-github"],
+    "env_required": ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+    "env_optional": [],
+    "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/github",
+    "icon": "🐙",
+    "category": "devtools"
+  },
+  {
+    "id": "notion",
+    "name": "Notion",
+    "tagline": "Read and create pages, search workspace, manage databases.",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@notionhq/notion-mcp-server"],
+    "env_required": ["NOTION_API_KEY"],
+    "env_optional": [],
+    "docs_url": "https://github.com/makenotion/notion-mcp-server",
+    "icon": "📝",
+    "category": "knowledge"
+  },
+  {
+    "id": "hubspot",
+    "name": "HubSpot",
+    "tagline": "Look up contacts/companies/deals, update CRM records.",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@hubspot/mcp-server"],
+    "env_required": ["HUBSPOT_ACCESS_TOKEN"],
+    "env_optional": [],
+    "docs_url": "https://developers.hubspot.com/docs/api/private-apps",
+    "icon": "🧲",
+    "category": "crm"
+  },
+  {
+    "id": "salesforce",
+    "name": "Salesforce",
+    "tagline": "Query and mutate Salesforce records via SOQL/SOSL.",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@salesforce/mcp-server"],
+    "env_required": ["SALESFORCE_USERNAME", "SALESFORCE_PASSWORD", "SALESFORCE_TOKEN"],
+    "env_optional": ["SALESFORCE_INSTANCE_URL"],
+    "docs_url": "https://github.com/salesforcecli/mcp",
+    "icon": "☁️",
+    "category": "crm"
+  },
+  {
+    "id": "stripe",
+    "name": "Stripe",
+    "tagline": "Create payments, search customers, run refunds, look up invoices.",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@stripe/mcp"],
+    "env_required": ["STRIPE_API_KEY"],
+    "env_optional": [],
+    "docs_url": "https://docs.stripe.com/agents",
+    "icon": "💳",
+    "category": "payments"
+  }
+]

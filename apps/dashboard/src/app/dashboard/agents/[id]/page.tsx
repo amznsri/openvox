@@ -19,7 +19,7 @@ import {
   Wand2,
 } from "lucide-react";
 
-import { api, type Agent, type DocumentRecord, type McpServerConfig, type Skill } from "@/lib/api";
+import { api, type Agent, type DocumentRecord, type McpCatalogueEntry, type McpServerConfig, type Skill } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Label, Select, Textarea } from "@/components/ui/input";
@@ -532,6 +532,39 @@ function McpPanel({
   const [envText, setEnvText] = useState("");
   const [probing, setProbing] = useState(false);
   const [probeResult, setProbeResult] = useState<string>("");
+  // Catalogue modal state. We fetch the curated list lazily on first
+  // open so cold loads of the agent edit page aren't slowed down.
+  const [catalogueOpen, setCatalogueOpen] = useState(false);
+  const [catalogue, setCatalogue] = useState<McpCatalogueEntry[] | null>(null);
+
+  async function openCatalogue() {
+    setCatalogueOpen(true);
+    if (catalogue === null) {
+      try {
+        setCatalogue(await api.mcpCatalogue());
+      } catch {
+        setCatalogue([]);
+      }
+    }
+  }
+
+  function pickFromCatalogue(entry: McpCatalogueEntry) {
+    // Pre-fill the form with the catalogue entry's shape. Required env
+    // vars become empty `KEY=` lines so the user just fills the values.
+    const envLines = entry.env_required.map((k) => `${k}=`).join("\n");
+    setDraft({
+      name: entry.id,
+      transport: entry.transport,
+      command: entry.command || "",
+      args: entry.args || [],
+      env: {},
+      url: "",
+    });
+    setArgsText((entry.args || []).join(" "));
+    setEnvText(envLines);
+    setProbeResult(`Loaded "${entry.name}" — fill in the env values, then Probe + Add.`);
+    setCatalogueOpen(false);
+  }
 
   function reset() {
     setDraft({ name: "", transport: "stdio", command: "", args: [], env: {}, url: "" });
@@ -639,7 +672,13 @@ function McpPanel({
         )}
 
         <div className="space-y-3 border-t border-border/60 pt-4">
-          <div className="text-sm font-medium text-foreground">Add a server</div>
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-medium text-foreground">Add a server</div>
+            <Button variant="outline" size="sm" onClick={openCatalogue}>
+              <Sparkles className="h-3.5 w-3.5" />
+              Browse catalogue
+            </Button>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Name</Label>
@@ -737,6 +776,80 @@ function McpPanel({
           </p>
         </div>
       </CardContent>
+
+      {/* MCP catalogue modal — opens via "Browse catalogue" button above.
+          Inline overlay rather than a dedicated component so the whole
+          panel stays self-contained. */}
+      {catalogueOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-6"
+          onClick={() => setCatalogueOpen(false)}
+        >
+          <div
+            className="bg-background border border-border/60 rounded-lg max-w-3xl w-full max-h-[80vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-5 border-b border-border/60 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold">MCP server catalogue</h3>
+                <p className="text-sm text-muted-foreground">
+                  One-click pre-fill. You'll still need to paste your own API keys / tokens.
+                </p>
+              </div>
+              <Button variant="ghost" size="icon" onClick={() => setCatalogueOpen(false)}>
+                ✕
+              </Button>
+            </div>
+            <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-3">
+              {catalogue === null ? (
+                <div className="col-span-2 flex items-center justify-center py-12">
+                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                </div>
+              ) : catalogue.length === 0 ? (
+                <div className="col-span-2 text-center text-sm text-muted-foreground py-12">
+                  Catalogue is empty. Edit{" "}
+                  <code>packages/core/openvox/mcp/catalogue.json</code> to add entries.
+                </div>
+              ) : (
+                catalogue.map((entry) => (
+                  <button
+                    key={entry.id}
+                    onClick={() => pickFromCatalogue(entry)}
+                    className="text-left p-4 rounded-md border border-border/60 hover:border-violet-500/60 hover:bg-muted/30 transition-colors"
+                  >
+                    <div className="flex items-start gap-3">
+                      <span className="text-2xl shrink-0">{entry.icon || "🔌"}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <div className="font-medium">{entry.name}</div>
+                          {entry.category && (
+                            <Badge variant="default">{entry.category}</Badge>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {entry.tagline}
+                        </p>
+                        {entry.env_required.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {entry.env_required.map((k) => (
+                              <span
+                                key={k}
+                                className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30"
+                              >
+                                {k}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }

@@ -54,10 +54,17 @@ async def voice_ws(ws: WebSocket) -> None:
     mcp_mgr = None
     forward_task: asyncio.Task | None = None
     # Observability bookkeeping. We persist one DB row per voice call so
-    # the dashboard's Observability page has something to render.
+    # the dashboard's Observability page has something to render, plus
+    # the pricing-calculator telemetry counters.
     db_session_id: str = ""
     started_at: datetime | None = None
-    metrics = {"turn_count": 0, "first_token_ms": 0}
+    metrics = {
+        "turn_count": 0,
+        "first_token_ms": 0,
+        "llm_tokens_in": 0,
+        "llm_tokens_out": 0,
+        "tts_chars": 0,
+    }
 
     try:
         while True:
@@ -134,6 +141,9 @@ async def voice_ws(ws: WebSocket) -> None:
                         row.duration_ms = duration_ms
                         row.turn_count = metrics["turn_count"]
                         row.first_token_ms = metrics["first_token_ms"]
+                        row.llm_tokens_in = metrics.get("llm_tokens_in", 0)
+                        row.llm_tokens_out = metrics.get("llm_tokens_out", 0)
+                        row.tts_chars = metrics.get("tts_chars", 0)
                         row.status = "completed"
             except Exception:
                 logger.exception("could not finalize voice session row")
@@ -166,6 +176,7 @@ async def _build_session(ctrl: dict) -> tuple[VoiceSession, "MCPSessionManager |
             voice_map = dict(a.voice_map or {})
             temperature = a.temperature
             max_tokens = a.max_tokens
+            vad_id = (getattr(a, "vad_provider", None) or "silero")
     else:
         stt_id = ctrl.get("stt_provider", "byteplus")
         tts_id = ctrl.get("tts_provider", "byteplus")
@@ -181,10 +192,20 @@ async def _build_session(ctrl: dict) -> tuple[VoiceSession, "MCPSessionManager |
         voice_map = dict(ctrl.get("voice_map", {}))
         temperature = float(ctrl.get("temperature", 0.7))
         max_tokens = int(ctrl.get("max_tokens", 2048))
+        vad_id = (ctrl.get("vad_provider") or "silero")
 
     stt = reg.get(ProviderType.STT, stt_id)
     tts = reg.get(ProviderType.TTS, tts_id)
     llm = reg.get(ProviderType.LLM, llm_id)
+    # VAD is optional — looking up an "none"/missing id returns None and
+    # the orchestrator falls back to the client-driven interrupt path.
+    vad = None
+    if vad_id and vad_id.lower() != "none":
+        candidate = reg.get(ProviderType.VAD, vad_id)
+        # Late-binding type check to avoid a circular import at module load.
+        from openvox.providers.vad.base import VADProvider as _VADProvider
+        if isinstance(candidate, _VADProvider):
+            vad = candidate
     if not isinstance(stt, STTProvider) or not isinstance(tts, TTSProvider) or not isinstance(llm, LLMProvider):
         return None
     if not (stt.is_available() and tts.is_available() and llm.is_available()):
@@ -227,7 +248,7 @@ async def _build_session(ctrl: dict) -> tuple[VoiceSession, "MCPSessionManager |
         ctx=SkillContext(agent_id=agent_id or "", metadata={"source": "ws_voice"}),
         extra_skills=extra_skills,
     )
-    session = VoiceSession(stt=stt, llm=llm, tts=tts, config=cfg, skill_runner=runner)
+    session = VoiceSession(stt=stt, llm=llm, tts=tts, config=cfg, skill_runner=runner, vad=vad)
     return session, mcp_mgr
 
 
@@ -243,6 +264,10 @@ async def _forward_events(
             if metrics is not None:
                 if ev.kind == "assistant_done":
                     metrics["turn_count"] = metrics.get("turn_count", 0) + 1
+                    # On turn end, "speak" was the assistant's full text;
+                    # count chars as a TTS-billing approximation. (Each
+                    # turn pushes one full transcript through TTS.)
+                    metrics["tts_chars"] = metrics.get("tts_chars", 0) + len(ev.text or "")
                 if (
                     ev.kind == "assistant_token"
                     and started_at is not None
@@ -250,6 +275,17 @@ async def _forward_events(
                 ):
                     metrics["first_token_ms"] = int(
                         (datetime.now(timezone.utc) - started_at).total_seconds() * 1000
+                    )
+                # Crude tokens estimate from token deltas. For real billing
+                # accuracy the LLM provider should return usage; we'll wire
+                # that in a follow-up Session 8.x.
+                if ev.kind == "assistant_token":
+                    metrics["llm_tokens_out"] = metrics.get("llm_tokens_out", 0) + max(
+                        1, len((ev.text or "").split())
+                    )
+                if ev.kind == "user_final":
+                    metrics["llm_tokens_in"] = metrics.get("llm_tokens_in", 0) + max(
+                        1, len((ev.text or "").split())
                     )
             if ev.kind == "assistant_audio":
                 await ws.send_bytes(ev.audio)

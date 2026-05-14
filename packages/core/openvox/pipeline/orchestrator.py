@@ -41,6 +41,7 @@ from openvox.providers.base import (
     TTSConfig,
     TTSProvider,
 )
+from openvox.providers.vad.base import VADConfig, VADProvider
 from openvox.skills import SkillRunner
 
 logger = logging.getLogger(__name__)
@@ -97,15 +98,34 @@ class VoiceSession:
         tts: TTSProvider,
         config: SessionConfig,
         skill_runner: SkillRunner | None = None,
+        vad: VADProvider | None = None,
     ) -> None:
         self._stt = stt
         self._llm = llm
         self._tts = tts
+        self._vad = vad
         self._cfg = config
         self._skills = skill_runner or SkillRunner(skill_ids=config.skills or [])
         self._history: list[LLMMessage] = [LLMMessage(role="system", content=config.system_prompt)]
+        # We tee inbound audio into two queues: STT reads one (slow but
+        # transcribes), VAD reads the other (fast but only detects voice).
+        # If no VAD provider is configured, the VAD queue stays unused and
+        # the second `put` is a near-zero cost.
         self._inbound: asyncio.Queue[AudioChunk | None] = asyncio.Queue(maxsize=128)
+        self._vad_inbound: asyncio.Queue[AudioChunk | None] = asyncio.Queue(maxsize=128)
         self._cancel_tts: asyncio.Event = asyncio.Event()
+        # Track whether we're currently mid-speak so the VAD task can
+        # decide whether a speech_start should actually trigger interrupt.
+        # We only want to barge in if we're actively producing TTS audio —
+        # interrupting the user while they're talking to us is nonsense.
+        self._speaking: bool = False
+        # Background task that drains the VAD stream. Lives for the whole
+        # session lifetime and is cancelled in run()'s `finally`.
+        self._vad_task: asyncio.Task | None = None
+        # Most recent server-side VAD timestamp of speech_start, in
+        # monotonic ms. Useful for measuring interrupt latency in tests
+        # (see scripts/measure_interrupt.py).
+        self._last_vad_speech_start_ms: int = 0
         # Once TTS errors out for a turn, stop hammering the API for every
         # remaining sentence — surface a single friendly error and let the
         # text response complete.
@@ -125,12 +145,42 @@ class VoiceSession:
     # ── Public: feed audio in, get events out ────────────────────────
     async def push_audio(self, chunk: AudioChunk) -> None:
         await self._inbound.put(chunk)
+        # Tee to VAD if active. Use put_nowait + drop on overflow rather
+        # than block — VAD lagging shouldn't backpressure the STT path.
+        if self._vad_task is not None:
+            try:
+                self._vad_inbound.put_nowait(chunk)
+            except asyncio.QueueFull:
+                logger.debug("vad queue full — dropping frame for detection")
 
     async def end_audio(self) -> None:
         await self._inbound.put(None)
+        if self._vad_task is not None:
+            try:
+                self._vad_inbound.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
 
     async def run(self) -> AsyncIterator[TurnEvent]:
         """Drive the pipeline. Yields TurnEvents until the session ends."""
+        # Spin up the VAD background task if a provider was supplied and
+        # is actually available (silero-vad may be missing in some envs).
+        if self._vad is not None and self._vad.is_available():
+            await self._vad.warmup()
+            self._vad_task = asyncio.create_task(self._vad_loop())
+
+        try:
+            async for ev in self._run_inner():
+                yield ev
+        finally:
+            if self._vad_task is not None:
+                self._vad_task.cancel()
+                try:
+                    await self._vad_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+    async def _run_inner(self) -> AsyncIterator[TurnEvent]:
         # Optional greeting before the user speaks.
         if self._cfg.greeting:
             async for ev in self._speak(self._cfg.greeting):
@@ -174,6 +224,42 @@ class VoiceSession:
             if chunk is None:
                 return
             yield chunk
+
+    async def _vad_audio_iterator(self) -> AsyncIterator[AudioChunk]:
+        while True:
+            chunk = await self._vad_inbound.get()
+            if chunk is None:
+                return
+            yield chunk
+
+    async def _vad_loop(self) -> None:
+        """Drain the VAD provider's event stream for the whole session.
+
+        On `speech_start`, if we're currently producing TTS audio
+        (`_speaking == True`), set the cancel flag so the in-flight TTS
+        stream aborts on its next iteration. We do NOT interrupt when
+        the user is the one talking (the natural case during _listen_one_turn)
+        because the user-side speech is what STT is *supposed* to be
+        eating right now.
+        """
+        if self._vad is None:
+            return
+        try:
+            async for ev in self._vad.detect_stream(self._vad_audio_iterator(), VADConfig()):
+                if ev.kind == "speech_start":
+                    self._last_vad_speech_start_ms = ev.timestamp_ms
+                    if self._speaking:
+                        logger.debug(
+                            "vad: speech_start at %d ms (prob=%.2f) — interrupting",
+                            ev.timestamp_ms, ev.prob,
+                        )
+                        self._cancel_tts.set()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # VAD lives in the background — if it goes sideways, log and
+            # exit quietly. The main pipeline still works without it.
+            logger.exception("vad loop crashed; falling back to client-driven interrupt")
 
     async def _listen_one_turn(self) -> AsyncIterator[TurnEvent]:
         try:
@@ -295,6 +381,11 @@ class VoiceSession:
                 # Use a copy so we don't mutate the shared config.
                 from dataclasses import replace
                 tts_cfg = replace(tts_cfg, voice_id=picked, language=self._last_language)
+        # `_speaking` toggles the VAD background task's decision: a
+        # speech_start while `_speaking == True` means user is barging in,
+        # so we cancel TTS. Outside this block, user audio is the expected
+        # input (during _listen_one_turn) and shouldn't trigger interrupt.
+        self._speaking = True
         try:
             async for chunk in self._tts.synthesize_stream(sentence, tts_cfg):
                 if self._cancel_tts.is_set():
@@ -319,10 +410,25 @@ class VoiceSession:
                     text=str(e),
                     data={"hint": "Set BYTEPLUS_TTS_DEFAULT_VOICE in .env to a voice your BytePlus key is licensed for, or change the agent's Voice ID."},
                 )
+        finally:
+            # Important: clear the speaking flag before returning so a
+            # follow-up user utterance during _listen_one_turn doesn't
+            # get treated as an interrupt-mid-TTS.
+            self._speaking = False
 
     def interrupt(self) -> None:
         """User started speaking again — cut current playback."""
         self._cancel_tts.set()
+
+    # ── Observability ────────────────────────────────────────────────
+    @property
+    def last_vad_speech_start_ms(self) -> int:
+        """Monotonic timestamp (ms) of the most recent VAD speech_start.
+
+        Read by `scripts/measure_interrupt.py` to compute interrupt
+        latency: (time TTS cancel event is observed) - (this value).
+        """
+        return self._last_vad_speech_start_ms
 
 
 # ──────────────────────────────────────────────────────────────────────

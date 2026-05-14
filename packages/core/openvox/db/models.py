@@ -70,6 +70,11 @@ class Agent(Base):
     # `_speak()` swaps voice to match the STT-detected language; empty
     # map means "always use voice_id".
     voice_map: Mapped[dict] = mapped_column(JSON, default=dict)
+    # VAD provider id (see openvox/providers/vad/). Default "silero" runs
+    # the local ONNX detector for sub-100 ms interrupt latency. Set "none"
+    # to fall back to the older client-driven path (the dashboard mic
+    # component sends `{type:"interrupt"}` itself).
+    vad_provider: Mapped[str] = mapped_column(String(50), default="silero")
 
     status: Mapped[str] = mapped_column(String(20), default=AgentStatus.DRAFT.value)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
@@ -100,6 +105,13 @@ class Session(Base):
     # Latency stats
     first_token_ms: Mapped[int] = mapped_column(Integer, default=0)
     avg_response_ms: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Telemetry for the pricing calculator. We track total LLM tokens
+    # in/out and total TTS characters for the whole session — the cost
+    # calculator turns these into $/component via the rate card.
+    llm_tokens_in: Mapped[int] = mapped_column(Integer, default=0)
+    llm_tokens_out: Mapped[int] = mapped_column(Integer, default=0)
+    tts_chars: Mapped[int] = mapped_column(Integer, default=0)
 
     # Storage references
     audio_url: Mapped[str] = mapped_column(String(500), default="")

@@ -15,6 +15,7 @@ from openvox.api.routes import (
     jobs as jobs_routes,
     mcp as mcp_routes,
     playground,
+    pricing as pricing_routes,
     providers as providers_routes,
     rtc,
     sessions,
@@ -23,6 +24,7 @@ from openvox.api.routes import (
     telephony,
     templates as templates_routes,
 )
+from openvox.api.ws import twilio_stream as twilio_ws
 from openvox.api.ws import voice as voice_ws
 from openvox.config import get_settings
 from openvox.db import init_db
@@ -76,8 +78,10 @@ def create_app() -> FastAPI:
     app.include_router(jobs_routes.router, prefix="/api/v1/jobs", tags=["jobs"])
     app.include_router(mcp_routes.router, prefix="/api/v1/mcp", tags=["mcp"])
     app.include_router(telephony.router, prefix="/api/v1/telephony", tags=["telephony"])
+    app.include_router(pricing_routes.router, prefix="/api/v1/pricing", tags=["pricing"])
     app.include_router(playground.router, prefix="/api/v1/playground", tags=["playground"])
     app.include_router(storage_routes.router, prefix="/storage", tags=["storage"])
     app.include_router(voice_ws.router)
+    app.include_router(twilio_ws.router)
 
     return app

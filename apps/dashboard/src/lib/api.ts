@@ -170,6 +170,8 @@ export const api = {
       "/api/v1/mcp/probe",
       { method: "POST", body: JSON.stringify(cfg) },
     ),
+  mcpCatalogue: () =>
+    http<McpCatalogueEntry[]>("/api/v1/mcp/catalogue"),
 };
 
 export const wsUrl = (path: string) => `${WS}${path}`;
@@ -207,6 +209,20 @@ export type McpServerConfig = {
   args?: string[];
   env?: Record<string, string>;
   url?: string;
+};
+
+export type McpCatalogueEntry = {
+  id: string;
+  name: string;
+  tagline: string;
+  transport: "stdio" | "sse";
+  command?: string;
+  args?: string[];
+  env_required: string[];
+  env_optional: string[];
+  docs_url?: string;
+  icon?: string;
+  category?: string;
 };
 
 export type Template = {
