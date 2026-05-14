@@ -409,25 +409,79 @@ Important file pointers:
     BytePlus / Yahoo / Ark vision endpoints and pass.
   - **All TLS bugs in skills swept** — every outbound HTTP call from
     a built-in skill now routes through `make_async_client`.
+- **Session 8 differentiation push** (2026-05-14): nine major items
+  shipped end-to-end after competitive research surfaced Dograh as a
+  direct OSS rival. Commits: `8d02382` (plan) → `a8c5d79` (checkpoint)
+  → `1d4e770` (final).
+  - **D.1 Silero VAD + sub-100 ms interrupt**: new `VADProvider`
+    interface; orchestrator tees audio to a parallel VAD task; on
+    `speech_start` while `_speaking=True` it sets `_cancel_tts`.
+    `scripts/measure_interrupt.py` measured **P50=58.5 ms, P95=121.7 ms**.
+    Per-agent `vad_provider` column (`silero` | `none`).
+  - **D.2 Twilio Media Streams inbound bridge**: full `/ws/twilio` WS
+    speaking the connected/start/media/mark/stop/clear protocol with
+    μ-law⇄PCM round-tripping via `audioop`. On interrupt we send
+    Twilio a `clear` event so already-transmitted audio is dropped.
+    Phone-number→agent lookup from `Agent.channels.twilio.phone_numbers`.
+  - **D.3 Browser SDK `@openvox/web`**: TS package shipping a React
+    `<VoiceAgent />` component + `useVoiceSession` hook. ScriptProcessor
+    mic capture (universal, no worklet bundle), PcmPlayer with 60ms
+    lookahead. 3 lines to embed in any React app.
+  - **A.1 Cross-provider pricing calculator**: `openvox/pricing/` rate
+    card for 10 providers + `/api/v1/pricing/{rates,estimate,sessions/{id}}`.
+    `sessions/{id}` computes a what-if matrix across STT×LLM×TTS combos.
+    Session row gains `llm_tokens_in/out` + `tts_chars` columns
+    (additive migration), instrumented in the voice WS forwarder.
+  - **A.2 WeChat Work + Lark inbound channels**: `telephony/wechat_work.py`
+    with full SHA-1 signature verification + URL-verify handler;
+    `telephony/lark.py` with event_v2 challenge + envelope parser.
+    Voice-message bridge marked TODO until verified test credentials.
+  - **A.3 21 multi-language templates**: 3 use-cases (hotline /
+    reactivation / telesales) × 7 languages (EN/ZH/YUE/ES/ID/FR/HI),
+    each with **in-language `system_prompt`** (not translated).
+    Total catalogue now 29 templates. Language filter chips on the
+    Templates page.
+  - **C.1 MCP catalogue** (scoped): `openvox/mcp/catalogue.json` with
+    6 curated entries (Slack/GitHub/Notion/HubSpot/Salesforce/Stripe).
+    `GET /api/v1/mcp/catalogue` + dashboard "Browse catalogue" modal
+    that one-click pre-fills the per-agent MCP config form.
+  - **B.1/B.2/B.3/B.4 Voice-agent eval framework** *(the wedge)*:
+    new `Recording`, `Persona`, `EvalRun` tables. 5 built-in personas
+    seeded on startup (angry/confused/ESL/hurry/paranoid). Replay
+    runner (recording → LLM-only re-execution) + persona runner
+    (two-LLM dialogue, turn cap, natural-end keywords). LLM-as-judge
+    with per-criterion strict-JSON output and deterministic Python
+    score aggregation. CRUD routes under `/api/v1/evals/*`. Example
+    GitHub Action in `.github/workflows/evals.example.yml`; full
+    framework guide in `docs/EVALS.md`.
 
 ### 🚧 In progress
-- (none — Session 7 was a stabilisation pass; no half-shipped surface.)
+- (none — Session 8 wrapped fully. Carried-forward UI surfaces listed
+  in §8 below + `docs/PLANNING_NEXT.md`.)
 
 ### 📋 Designed, queued for next session
-See [`docs/PLANNING_NEXT.md`](docs/PLANNING_NEXT.md) for full design:
-1. **Scheduler webhook trigger** — fire jobs via
-   `POST /api/v1/jobs/webhook/{token}` for event-driven (vs cron) workflows. ~2 hrs.
-2. **Skill hot-reload** — file watcher on `~/.openvox/skills/`. ~2 hrs.
-3. **Curated MCP server catalogue** — `GET /api/v1/mcp/catalogue` + "Browse"
-   view on the MCP tab with one-click "Use this server" pre-fill. ~3 hrs.
-4. **CRM-via-MCP for the SDR template** — ship a curated `mcp_servers` snippet
-   for HubSpot/Salesforce so users can wire real CRMs in minutes. ~2 hrs.
-5. **Backlog**: VAD, S2S, live interpretation, voice podcast, BytePlus RTC
-   client wiring, WhatsApp/Telegram inbound message routing, Alembic
-   migrations, test suite, GCS/OSS storage, CLI deploy/logs, OAuth.
+See [`docs/PLANNING_NEXT.md`](docs/PLANNING_NEXT.md) for full design.
+Top of stack going into Session 9:
+
+1. **Dashboard `/dashboard/evals` page** — wire the eval framework UI
+   (backend is live: recordings + personas + run + runs routes work,
+   `docs/EVALS.md` covers the API). ~1 day.
+2. **Dashboard pricing-breakdown card** on the Observability page —
+   render the what-if matrix from `/api/v1/pricing/sessions/{id}`.
+   ~0.5 day.
+3. **Image-size diet**: torch CUDA wheels balloon the core image to
+   ~9.7 GB; need a PyTorch-CPU-index install (blocked here by
+   Zscaler — works in unrestricted CI). ~0.5 day.
+4. **Real provider-reported LLM token usage** — current `llm_tokens_in/out`
+   is a word-count proxy; wire BytePlus / OpenAI usage fields through
+   `LLMResponseChunk`. ~0.5 day.
+5. **Real audio bridge for WeChat Work / Lark** — needs verified test
+   credentials. ~1 day once those are in hand.
+6. **Scheduler webhook trigger** — `POST /api/v1/jobs/webhook/{token}`
+   for event-driven jobs. ~2 hrs.
+7. **Skill hot-reload** — file watcher on `~/.openvox/skills/`. ~2 hrs.
 
 ### ⏳ Pending / roadmap
-- **VAD provider** — placeholder. Wire Silero VAD locally + BytePlus VAD when launched.
 - **Speech-to-Speech (S2S)** — placeholder. OpenAI Realtime works today as alternative.
 - **Live interpretation / translation** — placeholder.
 - **Voice podcast generation** (two-speaker) — placeholder.
@@ -641,6 +695,47 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     add a DB unique constraint because users legitimately want
     multiple agents from the same template with different prompts
     /voices.
+
+### Build / deploy discipline (Session 8 lessons)
+40. **Dashboard rebuild is its own step.** When you edit
+    `apps/dashboard/src/**`, the running dashboard container keeps
+    serving the previous bundle. Today's "MCP catalogue button is
+    missing" was exactly this — code shipped, source on disk, but
+    the Next.js production build in the container was stale.
+    Pattern: **any TSX/TS change requires
+    `docker compose build dashboard && docker compose up -d --no-deps dashboard`**,
+    same as core needs a rebuild for Python changes. Hot-reload
+    isn't wired in production builds.
+41. **`docker cp <local-dir> <container>:<existing-dir>` nests.**
+    If the destination already exists, `docker cp packages/core/openvox
+    openvox-core:/app/openvox` creates `/app/openvox/openvox/` rather
+    than overwriting `/app/openvox/`. Use `<local-dir>/.` trailing-dot
+    syntax instead: `docker cp packages/core/openvox/. openvox-core:/app/openvox`.
+    Bit us on the Silero registration probe before we noticed —
+    container kept loading the *old* bootstrap.py while the new one
+    sat at `/app/openvox/openvox/providers/bootstrap.py` unused.
+42. **`silero-vad` hardcoded `onnx=True` requires onnxruntime.**
+    Our first cut of `providers/vad/silero.py` passed `onnx=True`
+    unconditionally; on an image with only torch (silero-vad's
+    transitive dep) this fails with `No module named 'onnxruntime'`.
+    *Fix*: default to torch backend, flip to ONNX only when
+    `OPENVOX_VAD_BACKEND=onnx` is set AND onnxruntime is installed
+    separately. The 5 ms speed-up isn't worth the dep CVE surface.
+43. **Docker Hub registry mirror flakes break builds.** Mid-session
+    Docker Desktop's BuildKit returned
+    `Get "registry-1.docker.io/v2/.../manifests/..." ... dial tcp
+    127.0.0.1:9000: connect: connection refused`. This is a Docker
+    Desktop registry-mirror config issue, not anything in our code.
+    Workarounds: retry, switch to `DOCKER_BUILDKIT=0`, or `docker cp`
+    the new source into a still-running container (see #41 caveat).
+44. **CPU-only torch wheel saves ~3 GB image space but the mirror is
+    Zscaler-blocked.** Tried `pip install --index-url
+    https://download.pytorch.org/whl/cpu --no-deps torch torchaudio`
+    to slim the core image. Works on unrestricted egress; fails here
+    with `Failed to fetch: https://download.pytorch.org/whl/cpu/...`.
+    Dockerfile leaves the optimization wrapped in `|| true` so the
+    main install still pulls the standard CUDA wheel as a fallback.
+    Future-you: re-attempt when network policy allows.
 
 ---
 

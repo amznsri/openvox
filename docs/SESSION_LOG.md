@@ -556,10 +556,38 @@ MODIFIED:
 
 ---
 
+### Session 8 post-merge fix-ups
+
+After the main commit, smoke-testing the playground UI surfaced two
+deploy-discipline issues worth capturing here so future sessions don't
+re-step on the rake:
+
+- **Dashboard MCP catalogue button was invisible** — the source had it,
+  but we only rebuilt the `core` container during Session 8. The
+  Next.js production bundle in `dashboard` was stale and didn't include
+  the new "Browse catalogue" button on the Agent → MCP tab. Fix:
+  rebuild + restart the dashboard container too. Logged as CLAUDE.md §8
+  bug #40 with the canonical "TSX change → rebuild dashboard" rule.
+- **`docker cp` nesting trap** — when iterating quickly we used
+  `docker cp packages/core/openvox openvox-core:/app/openvox` to push
+  new Python source into the running container without a rebuild. With
+  `/app/openvox` already present, that copies *into* it rather than
+  overwriting, so the container loaded the old `bootstrap.py` from
+  `/app/openvox/` while the new one sat unused at
+  `/app/openvox/openvox/`. Took us ~5 minutes to diagnose. Use the
+  trailing-dot form (`packages/core/openvox/.`) when overwriting an
+  existing directory. CLAUDE.md §8 #41.
+
+Other Session 8 lessons captured in §8: silero-vad's hardcoded
+`onnx=True` flag (#42), Docker Hub registry-mirror flakes (#43),
+PyTorch CPU-index blocked by Zscaler (#44).
+
+---
+
 ## Open follow-ups (carried forward)
 
-Updated end of Session 8. Items shipped this session removed; items still
-pending below.
+Updated end of Session 8 (post-deploy-fixups). Items shipped this
+session removed; items still pending below.
 
 1. **Scheduler webhook trigger** (event-driven jobs).
 2. **Skill hot-reload** (`watchfiles` on `~/.openvox/skills/`).
