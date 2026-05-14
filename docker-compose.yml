@@ -191,6 +191,34 @@ services:
       timeout: 3s
       retries: 5
 
+  # ── ngrok tunnel (optional, opt-in via --profile tunnel) ─────────────────
+  # Exposes the gateway (server:3001) on a public HTTPS URL so external
+  # telephony providers (Twilio, Telegram, WeCom, Lark) can reach our
+  # webhooks. The core/app calls ngrok's local API (http://ngrok:4040) to
+  # discover the current public URL — see /api/v1/telephony/public_url.
+  #
+  # Setup:
+  #   1. Free signup at https://ngrok.com → Dashboard → Your Authtoken
+  #   2. Add NGROK_AUTHTOKEN=2abc... to your .env
+  #   3. `docker compose --profile tunnel up`
+  #
+  # Without --profile tunnel this service is inert, so non-telephony users
+  # don't pay any startup cost for the dependency.
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: openvox-ngrok
+    command: http server:3001 --log=stdout
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    ports:
+      - "4040:4040"   # local inspector UI + JSON API at /api/tunnels
+    depends_on:
+      server:
+        condition: service_started
+    restart: unless-stopped
+    profiles:
+      - tunnel
+
 volumes:
   postgres-data:
   redis-data:

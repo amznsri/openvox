@@ -172,6 +172,24 @@ export const api = {
     ),
   mcpCatalogue: () =>
     http<McpCatalogueEntry[]>("/api/v1/mcp/catalogue"),
+
+  // ── Telephony ─────────────────────────────────────────────────────
+  publicUrl: () =>
+    http<{ url: string | null; source: string | null; available: boolean; hint?: string; name?: string }>(
+      "/api/v1/telephony/public_url",
+    ),
+  telegramVerify: (botToken: string) =>
+    http<{ id: number; username: string; first_name: string; can_join_groups: boolean; can_read_all_group_messages: boolean }>(
+      "/api/v1/telephony/telegram/verify",
+      { method: "POST", body: JSON.stringify({ bot_token: botToken }) },
+    ),
+  telegramConnect: (agentId: string, botToken: string, replyMode: "text" | "voice" | "both") =>
+    http<{ connected: boolean; bot_username: string; webhook_url: string; reply_mode: string }>(
+      "/api/v1/telephony/telegram/connect",
+      { method: "POST", body: JSON.stringify({ agent_id: agentId, bot_token: botToken, reply_mode: replyMode }) },
+    ),
+  telegramDisconnect: (agentId: string) =>
+    http<{ disconnected: boolean }>(`/api/v1/telephony/telegram/connect/${agentId}`, { method: "DELETE" }),
 };
 
 export const wsUrl = (path: string) => `${WS}${path}`;

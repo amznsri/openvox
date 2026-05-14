@@ -5,6 +5,12 @@ Inbound:  Twilio voice webhook returns TwiML opening a Media Stream to
 Outbound: `POST /api/v1/telephony/twilio/place_call` initiates a call
           that — once answered — hits the inbound TwiML route above and
           flows into the same WS pipeline as a browser session.
+
+Public-URL discovery:
+    `GET /api/v1/telephony/public_url` asks the ngrok sidecar (if
+    running) for its current public HTTPS URL. The dashboard wizard
+    uses this to auto-fill webhook URLs across Twilio/Telegram/WeCom/
+    Lark — no copy-paste from a terminal needed.
 """
 
 from __future__ import annotations
@@ -12,11 +18,65 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# ── Public URL discovery (ngrok sidecar) ────────────────────────────
+
+
+@router.get("/public_url")
+async def public_url() -> dict[str, Any]:
+    """Return the current public webhook base URL, plus its source.
+
+    Resolution order:
+      1. `OPENVOX_PUBLIC_URL` env override (for static / custom tunnels).
+      2. ngrok sidecar at http://ngrok:4040 (the docker-compose tunnel
+         profile starts this; queries `api/tunnels` for the active
+         HTTPS forward).
+      3. `null` if nothing's reachable — dashboard shows a "set up
+         a tunnel first" hint instead of a broken URL.
+    """
+    import os
+
+    override = (os.environ.get("OPENVOX_PUBLIC_URL") or "").strip()
+    if override:
+        return {"url": override.rstrip("/"), "source": "env", "available": True}
+
+    # ngrok sidecar lives at the docker-compose service name `ngrok`.
+    # Connection refused / DNS failure both just mean "tunnel isn't up",
+    # which is the normal case for non-telephony users — log nothing
+    # noisier than DEBUG so we don't spam.
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as c:
+            r = await c.get("http://ngrok:4040/api/tunnels")
+        if r.status_code == 200:
+            data = r.json()
+            for t in data.get("tunnels") or []:
+                if t.get("proto") == "https" and t.get("public_url"):
+                    return {
+                        "url": t["public_url"].rstrip("/"),
+                        "source": "ngrok",
+                        "available": True,
+                        "name": t.get("name"),
+                    }
+    except Exception as e:
+        logger.debug("ngrok lookup failed: %s", e)
+
+    return {
+        "url": None,
+        "source": None,
+        "available": False,
+        "hint": (
+            "No public tunnel detected. Set OPENVOX_PUBLIC_URL in .env "
+            "for a static URL, or run `docker compose --profile tunnel up` "
+            "after putting your free NGROK_AUTHTOKEN in .env."
+        ),
+    }
 
 
 @router.post("/twilio/voice")
@@ -98,10 +158,381 @@ async def whatsapp_event(request: Request) -> dict:
     return {"received": True, "object": body.get("object")}
 
 
+# ── Telegram ────────────────────────────────────────────────────────
+# Full pipeline: verify token / set webhook on connect, then handle
+# inbound text + voice Updates by feeding them through a VoiceSession
+# and replying with text + optional TTS audio.
+
+
+class TelegramVerifyRequest(BaseModel):
+    bot_token: str
+
+
+@router.post("/telegram/verify")
+async def telegram_verify(req: TelegramVerifyRequest) -> dict[str, Any]:
+    """Check a bot token is valid before the user commits to it.
+
+    Mirror of Telegram's `getMe` — returns the bot's identity fields
+    so the dashboard can show "Connecting to @acme_voice_bot" in the
+    wizard before the user clicks Connect.
+    """
+    from openvox.telephony import telegram as tg
+    try:
+        me = await tg.verify_bot(req.bot_token.strip())
+    except Exception as e:
+        raise HTTPException(400, str(e)) from e
+    return {
+        "id": me.get("id"),
+        "username": me.get("username"),
+        "first_name": me.get("first_name"),
+        "can_join_groups": me.get("can_join_groups"),
+        "can_read_all_group_messages": me.get("can_read_all_group_messages"),
+    }
+
+
+class TelegramConnectRequest(BaseModel):
+    agent_id: str
+    bot_token: str
+    reply_mode: str = "voice"  # "text" | "voice" | "both"
+
+
+@router.post("/telegram/connect")
+async def telegram_connect(req: TelegramConnectRequest, request: Request) -> dict[str, Any]:
+    """Wire a bot to an agent.
+
+    Steps:
+      1. Verify the token (getMe) — bail with the bot username so the
+         dashboard can show the green check.
+      2. Discover our public URL (env override → ngrok → 502 if neither).
+      3. Mint a webhook secret, call setWebhook with it.
+      4. Persist `Agent.channels.telegram = {...}` so the webhook
+         handler can resolve the agent from the bot username later.
+    """
+    from openvox.db import db_session
+    from openvox.db.models import Agent
+    from openvox.telephony import telegram as tg
+
+    bot_token = req.bot_token.strip()
+    me = await tg.verify_bot(bot_token)
+
+    # Public URL — call our own /public_url handler logic inline so we
+    # don't HTTP-loopback to ourselves.
+    pu = await public_url()
+    if not pu.get("available"):
+        raise HTTPException(
+            502,
+            "No public webhook URL — start the ngrok sidecar "
+            "(`docker compose --profile tunnel up`) or set OPENVOX_PUBLIC_URL.",
+        )
+    webhook_url = f"{pu['url']}/api/v1/telephony/telegram/webhook"
+    secret = tg.generate_webhook_secret()
+    try:
+        await tg.set_webhook(bot_token, url=webhook_url, secret_token=secret)
+    except Exception as e:
+        raise HTTPException(400, f"setWebhook failed: {e}") from e
+
+    async with db_session() as s:
+        a = await s.get(Agent, req.agent_id)
+        if a is None:
+            raise HTTPException(404, "agent not found")
+        channels = dict(a.channels or {})
+        channels["telegram"] = {
+            "bot_token": bot_token,
+            "bot_username": me.get("username"),
+            "bot_id": me.get("id"),
+            "webhook_secret": secret,
+            "webhook_url": webhook_url,
+            "reply_mode": req.reply_mode if req.reply_mode in {"text", "voice", "both"} else "voice",
+        }
+        a.channels = channels
+
+    return {
+        "connected": True,
+        "bot_username": me.get("username"),
+        "webhook_url": webhook_url,
+        "reply_mode": req.reply_mode,
+    }
+
+
+@router.delete("/telegram/connect/{agent_id}")
+async def telegram_disconnect(agent_id: str) -> dict[str, Any]:
+    """Tear down: call deleteWebhook + clear the per-agent config."""
+    from openvox.db import db_session
+    from openvox.db.models import Agent
+    from openvox.telephony import telegram as tg
+
+    async with db_session() as s:
+        a = await s.get(Agent, agent_id)
+        if a is None:
+            raise HTTPException(404, "agent not found")
+        channels = dict(a.channels or {})
+        tg_cfg = channels.pop("telegram", None)
+        a.channels = channels
+        if tg_cfg and tg_cfg.get("bot_token"):
+            try:
+                await tg.delete_webhook(tg_cfg["bot_token"])
+            except Exception as e:
+                # Don't fail the disconnect if Telegram is unreachable —
+                # we still want the local record cleared.
+                logger.warning("deleteWebhook failed: %s", e)
+    return {"disconnected": True}
+
+
 @router.post("/telegram/webhook")
-async def telegram_event(request: Request) -> dict:
+async def telegram_event(request: Request) -> dict[str, Any]:
+    """Receive an Update from Telegram and route it through an agent.
+
+    Authentication: Telegram sends our chosen `secret_token` value in
+    the `X-Telegram-Bot-Api-Secret-Token` header on every legitimate
+    delivery. We look up the agent by header (constant-time prefix +
+    DB scan) — supports having multiple bots per OpenVox install.
+
+    Update kinds we handle:
+      - `message.text`  → text-only LLM round-trip (skip STT entirely)
+      - `message.voice` → download OGG-Opus, transcribe, LLM, reply
+      - everything else → ack and ignore so Telegram doesn't retry
+    """
+    sent_secret = request.headers.get("x-telegram-bot-api-secret-token", "")
     body = await request.json()
-    return {"received": True, "update_id": body.get("update_id")}
+
+    # Find the agent whose stored secret matches.
+    from openvox.db import db_session
+    from openvox.db.models import Agent
+    from sqlalchemy import select
+
+    matched_agent: Agent | None = None
+    matched_cfg: dict[str, Any] | None = None
+    async with db_session() as s:
+        rows = (await s.execute(select(Agent))).scalars().all()
+        for a in rows:
+            cfg = ((a.channels or {}).get("telegram") or {})
+            if cfg.get("webhook_secret") and cfg["webhook_secret"] == sent_secret:
+                # Detach from the session so we can use it outside the with-block.
+                matched_agent = a
+                matched_cfg = cfg
+                # Snapshot the fields we need now (lazy-load won't work after exit).
+                _ = (a.id, a.system_prompt, a.greeting, a.llm_model, a.llm_provider,
+                     a.stt_provider, a.tts_provider, a.voice_id, a.voice_language,
+                     a.voice_speed, a.temperature, a.max_tokens, list(a.skills or []),
+                     dict(a.voice_map or {}))
+                break
+
+    if matched_agent is None or matched_cfg is None:
+        # Wrong secret or no agent has Telegram wired up. Don't 401 —
+        # Telegram retries 401s aggressively. Just ack quietly.
+        logger.info("telegram: unmatched webhook (secret prefix=%r)", sent_secret[:6])
+        return {"ok": True, "ignored": True}
+
+    # Run the actual handler in the background so we can ack to Telegram
+    # immediately. Telegram cuts the connection after ~60s; long LLM
+    # turns would otherwise time out and cause retries.
+    import asyncio
+    asyncio.create_task(_handle_telegram_update(matched_agent.id, matched_cfg, body))
+    return {"ok": True}
+
+
+async def _handle_telegram_update(
+    agent_id: str,
+    tg_cfg: dict[str, Any],
+    update: dict[str, Any],
+) -> None:
+    """Process one Telegram Update — runs in a background task.
+
+    Three phases:
+      1. Parse the Update → either user_text (text path) or audio_bytes
+         (voice path); ignore anything else.
+      2. Build a one-shot VoiceSession-equivalent: load the agent's
+         providers, run the LLM (and STT first if voice).
+      3. Send reply: text always, audio if reply_mode in {"voice","both"}.
+    """
+    from openvox.db import db_session
+    from openvox.db.models import Agent
+    from openvox.providers import ProviderType, get_registry
+    from openvox.providers.base import (
+        AudioChunk, LLMConfig, LLMMessage, LLMProvider,
+        STTConfig, STTProvider, TTSConfig, TTSProvider,
+    )
+    from openvox.telephony import telegram as tg
+
+    message = update.get("message") or {}
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
+    if not chat_id:
+        return
+
+    bot_token = tg_cfg.get("bot_token", "")
+    reply_mode = tg_cfg.get("reply_mode", "voice")
+    user_text = ""
+
+    # ── Resolve user content ────────────────────────────────────────
+    if "voice" in message:
+        # Voice note path — show "typing" indicator immediately so the
+        # user doesn't think the bot died while we download + STT.
+        await tg.send_chat_action(bot_token, chat_id, "record_voice")
+        voice = message["voice"]
+        file_id = voice.get("file_id")
+        if not file_id:
+            return
+        try:
+            audio_bytes, ext = await tg.download_file(bot_token, file_id)
+        except Exception as e:
+            logger.exception("telegram voice download failed")
+            await tg.send_text(bot_token, chat_id, f"(couldn't download your voice: {e})")
+            return
+        # Decode OGG-Opus → 16 kHz PCM s16le, feed through STT.
+        user_text = await _telegram_transcribe(audio_bytes, ext)
+        if not user_text:
+            await tg.send_text(bot_token, chat_id, "(I couldn't make out what you said — try again?)")
+            return
+    elif "text" in message:
+        user_text = (message["text"] or "").strip()
+        if not user_text:
+            return
+        # Ignore bot commands like /start /help unless we want to add a
+        # custom handler. For now: greet on /start.
+        if user_text in {"/start", "/help"}:
+            greet = "👋 Send me a text or voice message to start a conversation."
+            await tg.send_text(bot_token, chat_id, greet)
+            return
+        await tg.send_chat_action(bot_token, chat_id, "typing")
+    else:
+        # photo / sticker / document / etc. — politely defer.
+        return
+
+    # ── Run agent ───────────────────────────────────────────────────
+    reg = get_registry()
+    async with db_session() as s:
+        a = await s.get(Agent, agent_id)
+        if a is None:
+            return
+        llm = reg.get(ProviderType.LLM, a.llm_provider)
+        tts = reg.get(ProviderType.TTS, a.tts_provider)
+        if not isinstance(llm, LLMProvider) or not llm.is_available():
+            await tg.send_text(bot_token, chat_id, "(LLM is offline — admin needs to configure provider keys.)")
+            return
+        system_prompt = a.system_prompt
+        llm_model = a.llm_model
+        temperature = a.temperature
+        max_tokens = a.max_tokens
+        voice_id = a.voice_id
+        voice_lang = a.voice_language
+
+    messages = [
+        LLMMessage(role="system", content=system_prompt),
+        LLMMessage(role="user", content=user_text),
+    ]
+    try:
+        answer = await llm.chat(
+            messages,
+            LLMConfig(model=llm_model, temperature=temperature, max_tokens=max_tokens, stream=False),
+        )
+    except Exception as e:
+        logger.exception("telegram llm call failed")
+        await tg.send_text(bot_token, chat_id, f"(model error: {e})")
+        return
+    answer = (answer or "").strip()
+    if not answer:
+        await tg.send_text(bot_token, chat_id, "(no response from the model)")
+        return
+
+    # ── Reply ───────────────────────────────────────────────────────
+    if reply_mode in {"text", "both"}:
+        await tg.send_text(bot_token, chat_id, answer)
+
+    if reply_mode in {"voice", "both"} and isinstance(tts, TTSProvider) and tts.is_available():
+        try:
+            ogg_bytes = await _telegram_synthesize_ogg(
+                tts, answer, voice_id=voice_id, language=voice_lang
+            )
+            if ogg_bytes:
+                await tg.send_voice(bot_token, chat_id, ogg_bytes)
+        except Exception as e:
+            logger.exception("telegram tts encode failed")
+            # If we already sent text via "both" mode, we're done. If
+            # we were "voice" only, fall back to text.
+            if reply_mode == "voice":
+                await tg.send_text(bot_token, chat_id, answer)
+                await tg.send_text(bot_token, chat_id, f"(voice reply failed: {e})")
+
+
+async def _telegram_transcribe(audio_bytes: bytes, ext: str) -> str:
+    """OGG-Opus / mp3 / m4a → text via the streaming STT path.
+
+    Reuses the playground's PCM-via-pydub + push-frames-to-WS pattern,
+    which already handles every format the BytePlus streaming endpoint
+    can't consume directly. Returns "" on any failure.
+    """
+    from openvox.api.routes.playground import _decode_to_pcm16k, _stream_pcm_to_stt
+    from openvox.providers import ProviderType, get_registry
+    from openvox.providers.base import STTProvider
+    import asyncio
+
+    stt = get_registry().get(ProviderType.STT, "byteplus")
+    if not isinstance(stt, STTProvider) or not stt.is_available():
+        return ""
+    try:
+        pcm, duration_ms = await asyncio.to_thread(
+            _decode_to_pcm16k, audio_bytes, None, f"voice.{ext}"
+        )
+    except Exception:
+        logger.exception("telegram: pcm decode failed")
+        return ""
+    try:
+        transcript, _ = await _stream_pcm_to_stt(pcm, duration_ms, stt, language="en-US")
+    except Exception:
+        logger.exception("telegram: stt stream failed")
+        return ""
+    return (transcript or "").strip()
+
+
+async def _telegram_synthesize_ogg(
+    tts, text: str, *, voice_id: str, language: str
+) -> bytes:
+    """TTS → OGG-Opus voice-note bytes for `sendVoice`.
+
+    Telegram requires OGG-Opus for voice notes (renders the waveform
+    bubble). Our TTS providers emit raw PCM s16le, so we shell out to
+    ffmpeg (already in the core image) for the codec swap. Doing it
+    here in-process keeps the round-trip serialised and easy to debug.
+    """
+    from openvox.providers.base import TTSConfig
+    import asyncio
+    import subprocess
+    import tempfile
+
+    # 1. Synthesize full PCM stream.
+    cfg = TTSConfig(voice_id=voice_id, language=language, sample_rate=24000, encoding="pcm16")
+    pcm = await tts.synthesize(text, cfg)
+    if not pcm:
+        return b""
+
+    # 2. Pipe PCM → ffmpeg → OGG-Opus.
+    def _encode() -> bytes:
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as out:
+            out_path = out.name
+        try:
+            proc = subprocess.run(
+                [
+                    "ffmpeg", "-loglevel", "error",
+                    "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", "pipe:0",
+                    "-c:a", "libopus", "-b:a", "32k", "-application", "voip",
+                    "-y", out_path,
+                ],
+                input=pcm,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+            with open(out_path, "rb") as f:
+                return f.read()
+        finally:
+            import os
+            try:
+                os.unlink(out_path)
+            except Exception:
+                pass
+
+    return await asyncio.to_thread(_encode)
 
 
 # ── WeChat Work / Lark webhook delegators ───────────────────────────

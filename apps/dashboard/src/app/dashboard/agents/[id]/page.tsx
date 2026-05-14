@@ -7,16 +7,20 @@ import { useEffect, useState } from "react";
 import {
   ArrowLeft,
   Bot,
+  CheckCircle2,
+  ExternalLink,
   FileText,
   Loader2,
   Mic,
   Plug,
   Plus,
   Save,
+  Send,
   Sparkles,
   Trash2,
   Upload,
   Wand2,
+  X,
 } from "lucide-react";
 
 import { api, type Agent, type DocumentRecord, type McpCatalogueEntry, type McpServerConfig, type Skill } from "@/lib/api";
@@ -325,27 +329,7 @@ export default function AgentDetailPage() {
         </TabsContent>
 
         <TabsContent value="channels">
-          <Card>
-            <CardContent className="pt-6 space-y-3">
-              <p className="text-sm text-muted-foreground">
-                Add channels (web RTC, phone, WhatsApp, Telegram) — credentials are read from
-                your <code className="text-foreground">.env</code> file.
-              </p>
-              <div className="grid grid-cols-2 gap-3">
-                {[
-                  { id: "web", name: "Web (browser RTC)" },
-                  { id: "phone", name: "Phone (Twilio)" },
-                  { id: "whatsapp", name: "WhatsApp Business" },
-                  { id: "telegram", name: "Telegram" },
-                ].map((c) => (
-                  <div key={c.id} className="px-4 py-3 rounded-md border border-border/60 flex items-center justify-between">
-                    <div className="text-sm">{c.name}</div>
-                    <Badge variant="default">configure</Badge>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+          <ChannelsPanel agent={agent} onChange={() => mutate(`agent-${id}`)} />
         </TabsContent>
       </Tabs>
     </div>
@@ -851,5 +835,321 @@ function McpPanel({
         </div>
       )}
     </Card>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// ChannelsPanel — manages all messaging channels for an agent. Today
+// only Telegram has a real wizard; the others render as "coming soon"
+// placeholders until their respective handlers are wired.
+// ──────────────────────────────────────────────────────────────────────
+
+function ChannelsPanel({ agent, onChange }: { agent: Agent; onChange: () => void }) {
+  const [tgOpen, setTgOpen] = useState(false);
+  const tg = ((agent.channels as any) || {}).telegram as
+    | { bot_username?: string; reply_mode?: string; webhook_url?: string }
+    | undefined;
+
+  async function disconnect(channel: "telegram") {
+    if (!confirm(`Disconnect ${channel} from this agent?`)) return;
+    try {
+      if (channel === "telegram") await api.telegramDisconnect(agent.id);
+      onChange();
+    } catch (e: any) {
+      alert(`Disconnect failed: ${e?.message || e}`);
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent className="pt-6 space-y-3">
+        <p className="text-sm text-muted-foreground">
+          Connect this agent to messaging platforms so users can talk to it from
+          Telegram, WhatsApp, WeChat Work, or Lark.
+        </p>
+
+        {/* Telegram — real wizard */}
+        <div className="px-4 py-3 rounded-md border border-border/60 flex items-center justify-between">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="text-2xl shrink-0">✈️</span>
+            <div className="min-w-0">
+              <div className="text-sm font-medium">Telegram</div>
+              {tg?.bot_username ? (
+                <div className="text-xs text-muted-foreground truncate">
+                  Connected to <span className="font-mono text-emerald-300">@{tg.bot_username}</span>{" "}
+                  · reply mode: <span className="font-mono">{tg.reply_mode || "voice"}</span>
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground">
+                  90-second setup via @BotFather — voice + text in/out.
+                </div>
+              )}
+            </div>
+          </div>
+          {tg?.bot_username ? (
+            <div className="flex items-center gap-2">
+              <Badge variant="success">connected</Badge>
+              <Button variant="ghost" size="sm" onClick={() => disconnect("telegram")}>
+                Disconnect
+              </Button>
+            </div>
+          ) : (
+            <Button variant="gradient" size="sm" onClick={() => setTgOpen(true)}>
+              <Send className="h-3.5 w-3.5" />
+              Connect
+            </Button>
+          )}
+        </div>
+
+        {/* Placeholders for channels not yet wired up. */}
+        {[
+          { id: "phone", icon: "📞", name: "Phone (Twilio inbound)", note: "Add a phone number under Agent.channels.twilio.phone_numbers via the API." },
+          { id: "whatsapp", icon: "🟢", name: "WhatsApp Business", note: "Inbound handler is stubbed — Meta credentials read from .env." },
+          { id: "wechat_work", icon: "🟢", name: "WeChat Work", note: "Webhook URL verification works; audio bridge pending." },
+          { id: "lark", icon: "🚀", name: "Lark", note: "Webhook URL verification works; audio bridge pending." },
+        ].map((c) => (
+          <div
+            key={c.id}
+            className="px-4 py-3 rounded-md border border-border/60 flex items-center justify-between opacity-70"
+          >
+            <div className="flex items-center gap-3">
+              <span className="text-2xl shrink-0">{c.icon}</span>
+              <div>
+                <div className="text-sm font-medium">{c.name}</div>
+                <div className="text-xs text-muted-foreground">{c.note}</div>
+              </div>
+            </div>
+            <Badge variant="default">coming soon</Badge>
+          </div>
+        ))}
+      </CardContent>
+
+      {tgOpen && (
+        <TelegramWizard
+          agent={agent}
+          onClose={() => setTgOpen(false)}
+          onConnected={() => {
+            setTgOpen(false);
+            onChange();
+          }}
+        />
+      )}
+    </Card>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// TelegramWizard — 4-step modal: open @BotFather → paste token →
+// verify (getMe) → connect (setWebhook + persist).
+// ──────────────────────────────────────────────────────────────────────
+
+function TelegramWizard({
+  agent,
+  onClose,
+  onConnected,
+}: {
+  agent: Agent;
+  onClose: () => void;
+  onConnected: () => void;
+}) {
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [token, setToken] = useState("");
+  const [verifyResult, setVerifyResult] = useState<
+    { username: string; first_name: string } | null
+  >(null);
+  const [replyMode, setReplyMode] = useState<"text" | "voice" | "both">("voice");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  // Pre-fetch the public URL once so we can warn the user up-front if
+  // ngrok / the static override isn't reachable — saves them pasting
+  // the token only to hit a 502 at the end.
+  const { data: pu } = useSWR("public_url", () => api.publicUrl(), { revalidateOnFocus: false });
+
+  async function verify() {
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api.telegramVerify(token.trim());
+      setVerifyResult({ username: r.username, first_name: r.first_name });
+      setStep(3);
+    } catch (e: any) {
+      setError(e?.message || "verification failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function connect() {
+    setBusy(true);
+    setError("");
+    try {
+      await api.telegramConnect(agent.id, token.trim(), replyMode);
+      onConnected();
+    } catch (e: any) {
+      setError(e?.message || "connect failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-6"
+      onClick={onClose}
+    >
+      <div
+        className="bg-background border border-border/60 rounded-lg max-w-xl w-full"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-5 border-b border-border/60 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-2xl">✈️</span>
+            <h3 className="text-lg font-semibold">Connect Telegram</h3>
+          </div>
+          <Button variant="ghost" size="icon" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {/* Public-URL status banner */}
+          {pu && !pu.available && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-200 text-sm px-3 py-2">
+              ⚠️ {pu.hint || "No public URL detected — Telegram won't be able to reach your webhook."}
+            </div>
+          )}
+          {pu && pu.available && (
+            <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-200 text-xs px-3 py-2 font-mono">
+              ✓ tunnel via <span className="uppercase">{pu.source}</span>:{" "}
+              <span className="text-emerald-100">{pu.url}</span>
+            </div>
+          )}
+
+          {/* Step 1 — open BotFather */}
+          <div className={`space-y-2 ${step !== 1 ? "opacity-50" : ""}`}>
+            <div className="text-sm font-medium">
+              <span className="inline-block w-6 h-6 rounded-full bg-violet-500/20 text-violet-300 text-xs font-bold text-center leading-6 mr-2">
+                1
+              </span>
+              Open <code>@BotFather</code> in Telegram
+            </div>
+            <p className="text-xs text-muted-foreground pl-8">
+              Send it <code className="text-foreground">/newbot</code>, give your bot a name + username,
+              then copy the token it sends back (looks like{" "}
+              <code className="text-foreground">123456:ABC-DEF...</code>).
+            </p>
+            <div className="pl-8">
+              <a href="tg://resolve?domain=BotFather" target="_blank" rel="noreferrer">
+                <Button variant="outline" size="sm">
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  Open @BotFather
+                </Button>
+              </a>
+              <span className="text-xs text-muted-foreground ml-3">
+                or visit{" "}
+                <a
+                  href="https://t.me/BotFather"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-violet-300 hover:underline"
+                >
+                  t.me/BotFather
+                </a>
+              </span>
+            </div>
+            {step === 1 && (
+              <div className="pl-8 pt-2">
+                <Button variant="gradient" size="sm" onClick={() => setStep(2)}>
+                  I have my token
+                </Button>
+              </div>
+            )}
+          </div>
+
+          {/* Step 2 — paste token */}
+          {step >= 2 && (
+            <div className={`space-y-2 ${step !== 2 ? "opacity-50" : ""}`}>
+              <div className="text-sm font-medium">
+                <span className="inline-block w-6 h-6 rounded-full bg-violet-500/20 text-violet-300 text-xs font-bold text-center leading-6 mr-2">
+                  2
+                </span>
+                Paste the bot token
+              </div>
+              <div className="pl-8 space-y-2">
+                <Input
+                  type="password"
+                  placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  className="font-mono text-xs"
+                />
+                {step === 2 && (
+                  <Button
+                    variant="gradient"
+                    size="sm"
+                    onClick={verify}
+                    disabled={busy || !token.trim() || !token.includes(":")}
+                  >
+                    {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                    Verify
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Step 3 — confirm + connect */}
+          {step >= 3 && verifyResult && (
+            <div className="space-y-2">
+              <div className="text-sm font-medium">
+                <span className="inline-block w-6 h-6 rounded-full bg-violet-500/20 text-violet-300 text-xs font-bold text-center leading-6 mr-2">
+                  3
+                </span>
+                Confirm + connect
+              </div>
+              <div className="pl-8 space-y-3">
+                <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-200 text-sm px-3 py-2 flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  Verified{" "}
+                  <span className="font-mono text-emerald-100">@{verifyResult.username}</span>{" "}
+                  ({verifyResult.first_name})
+                </div>
+                <div>
+                  <Label>Reply mode</Label>
+                  <Select
+                    value={replyMode}
+                    onChange={(e) => setReplyMode(e.target.value as any)}
+                  >
+                    <option value="voice">Voice note (TTS-synthesized)</option>
+                    <option value="text">Text only (cheapest, fastest)</option>
+                    <option value="both">Both — text + voice</option>
+                  </Select>
+                </div>
+                <Button
+                  variant="gradient"
+                  onClick={connect}
+                  disabled={busy || !pu?.available}
+                >
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />}
+                  Connect
+                </Button>
+                {!pu?.available && (
+                  <p className="text-xs text-amber-200">
+                    Public URL not available — bring up the tunnel first (see banner above).
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="rounded-md border border-rose-500/40 bg-rose-500/10 text-rose-200 text-sm px-3 py-2">
+              {error}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
