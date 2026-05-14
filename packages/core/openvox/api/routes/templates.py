@@ -279,6 +279,229 @@ TEMPLATES: list[dict[str, Any]] = [
 ]
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Session 8: multi-language template family.
+#
+# Three use-cases (service hotline, reactivation outbound, telesales) ×
+# seven languages (EN, ZH-CN, YUE, ES, ID, FR, HI). The system_prompt is
+# in-language for each so the LLM speaks idiomatically rather than
+# producing translated-from-English responses.
+#
+# Voice picks are pragmatic defaults — the user's BytePlus key has only
+# some of these activated, so the dashboard's "Voice" tab is the place to
+# refine after instantiation. Where a BytePlus voice isn't activated,
+# fall back to ElevenLabs multilingual v2 (the user has it on another
+# tier — see CLAUDE.md §6 BytePlus TTS gotcha).
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _hotline_prompt(lang: str) -> str:
+    return {
+        "en": (
+            "You are a polite multilingual customer-service voice agent for Acme. "
+            "Look up orders, check stock, start returns, and escalate to a human when "
+            "the caller asks. Always confirm the order ID by reading it back. Keep "
+            "responses to one or two short sentences."
+        ),
+        "zh": (
+            "你是 Acme 客服电话语音助手。请使用 lookup_order、check_stock、start_return 等工具。"
+            "客户来电时请先礼貌问候,然后帮助解决订单查询、库存确认、退换货等问题。"
+            "回答简洁,每次回复控制在两句话以内。客户要求转人工时请使用 route_to_specialist。"
+        ),
+        "yue": (
+            "你係 Acme 嘅客戶服務電話語音助手。請用 lookup_order、check_stock、start_return 工具。"
+            "幫客人查訂單、確認存貨、辦理退貨。每次回答最多兩句,保持簡潔。"
+            "客人要求搵真人就用 route_to_specialist。"
+        ),
+        "es": (
+            "Eres un asistente de voz amable para el servicio al cliente de Acme. "
+            "Utiliza las herramientas lookup_order, check_stock y start_return para "
+            "ayudar al cliente. Confirma siempre el número de pedido repitiéndolo. "
+            "Mantén las respuestas en una o dos frases breves."
+        ),
+        "id": (
+            "Anda adalah asisten suara layanan pelanggan untuk Acme. "
+            "Gunakan tools lookup_order, check_stock, dan start_return untuk membantu "
+            "pelanggan. Selalu konfirmasi ID pesanan dengan mengulanginya. "
+            "Jawab dengan singkat, satu sampai dua kalimat saja."
+        ),
+        "fr": (
+            "Tu es un agent vocal de service client pour Acme. Utilise les outils "
+            "lookup_order, check_stock et start_return pour aider l'appelant. "
+            "Confirme toujours le numéro de commande en le répétant. Réponds en une "
+            "ou deux phrases courtes."
+        ),
+        "hi": (
+            "आप एसएमई के लिए एक विनम्र ग्राहक सेवा वॉइस एजेंट हैं। ऑर्डर देखने, स्टॉक "
+            "चेक करने, और रिटर्न शुरू करने के लिए lookup_order, check_stock, और "
+            "start_return टूल्स का उपयोग करें। ऑर्डर आईडी हमेशा दोहराकर पुष्टि करें। "
+            "उत्तर एक या दो वाक्यों में दें।"
+        ),
+    }[lang]
+
+
+def _reactivation_prompt(lang: str) -> str:
+    return {
+        "en": (
+            "You're calling a lapsed Acme customer who hasn't ordered in 90+ days. "
+            "Open warmly, ask if their needs have changed, mention this month's 15% "
+            "discount code REACTIVATE15, then offer to schedule a follow-up via "
+            "book_appointment. Respect a 'no' on the first try — do not push twice."
+        ),
+        "zh": (
+            "你正在致电一位 90 天未下单的 Acme 老客户。开场要温暖友好,询问他们的需求是否有变化,"
+            "提及本月 15% 折扣码 REACTIVATE15,然后用 book_appointment 提议安排回访。"
+            "客户第一次拒绝时请尊重对方,不要再次催促。"
+        ),
+        "yue": (
+            "你打緊俾一位 90 日無落單嘅 Acme 老客戶。開頭要熱情友善,問下佢需求有冇變,"
+            "順便提下今個月嘅 9 折優惠碼 REACTIVATE15,再用 book_appointment 約下次跟進。"
+            "客人第一次拒絕就尊重,唔好再追問。"
+        ),
+        "es": (
+            "Estás llamando a un cliente de Acme que no compra desde hace 90 días o más. "
+            "Abre con calidez, pregunta si sus necesidades han cambiado, menciona el "
+            "código de descuento del 15% REACTIVATE15, y ofrécete a programar un "
+            "seguimiento con book_appointment. Respeta el 'no' la primera vez."
+        ),
+        "id": (
+            "Anda menelepon pelanggan Acme yang sudah 90+ hari tidak memesan. "
+            "Buka dengan hangat, tanyakan apakah kebutuhan mereka berubah, sebutkan "
+            "kode diskon 15% bulan ini REACTIVATE15, lalu tawarkan untuk menjadwalkan "
+            "tindak lanjut via book_appointment. Hormati 'tidak' pada percobaan pertama."
+        ),
+        "fr": (
+            "Tu appelles un client d'Acme qui n'a pas commandé depuis 90 jours ou plus. "
+            "Ouvre chaleureusement, demande si ses besoins ont changé, mentionne le "
+            "code de remise de 15% REACTIVATE15, puis propose un rendez-vous de suivi "
+            "via book_appointment. Respecte un « non » dès la première fois."
+        ),
+        "hi": (
+            "आप एक Acme ग्राहक को कॉल कर रहे हैं जिसने 90+ दिनों से ऑर्डर नहीं किया। "
+            "गर्मजोशी से शुरू करें, पूछें कि क्या उनकी ज़रूरतें बदली हैं, इस महीने के "
+            "15% डिस्काउंट कोड REACTIVATE15 का ज़िक्र करें, और book_appointment से "
+            "फ़ॉलो-अप शेड्यूल करने का प्रस्ताव दें। पहली बार 'नहीं' सुनकर रुक जाएँ।"
+        ),
+    }[lang]
+
+
+def _telesales_prompt(lang: str) -> str:
+    return {
+        "en": (
+            "You're an outbound SDR for Acme calling a fresh B2B lead. Run a short "
+            "BANT-style qualification: budget, authority, need, timeline. If qualified, "
+            "use book_demo to schedule a follow-up; otherwise record disposition via "
+            "record_disposition and end politely. Keep the call under 3 minutes."
+        ),
+        "zh": (
+            "你是 Acme 的电销代表,正在致电一位新的 B2B 潜在客户。请进行简短的 BANT 资质评估:"
+            "预算 (Budget)、决策权 (Authority)、需求 (Need)、时间线 (Timeline)。若符合条件,"
+            "使用 book_demo 预约演示;否则用 record_disposition 记录后礼貌结束。"
+            "整通电话控制在 3 分钟以内。"
+        ),
+        "yue": (
+            "你係 Acme 嘅電銷代表,而家打俾一個新嘅 B2B 潛在客戶。做個簡短嘅 BANT 資格評估:"
+            "預算、決策權、需求、時間線。如果合資格,用 book_demo 約 demo;否則用 "
+            "record_disposition 記錄之後禮貌咁掛線。成通電話最多 3 分鐘。"
+        ),
+        "es": (
+            "Eres un SDR de Acme llamando a un nuevo prospecto B2B. Realiza una "
+            "calificación BANT breve: presupuesto, autoridad, necesidad, plazo. Si "
+            "califica, usa book_demo para agendar una demo; si no, registra la "
+            "disposición con record_disposition y cierra cortésmente. Menos de 3 minutos."
+        ),
+        "id": (
+            "Anda adalah SDR outbound Acme yang menelepon prospek B2B baru. Lakukan "
+            "kualifikasi BANT singkat: budget, authority, need, timeline. Jika "
+            "memenuhi syarat, gunakan book_demo untuk menjadwalkan demo; jika tidak, "
+            "catat dengan record_disposition lalu tutup sopan. Total panggilan di "
+            "bawah 3 menit."
+        ),
+        "fr": (
+            "Tu es un SDR sortant pour Acme, en appel avec un prospect B2B frais. "
+            "Mène une qualification BANT courte : budget, autorité, besoin, échéance. "
+            "Si qualifié, utilise book_demo pour planifier une démo ; sinon, enregistre "
+            "la disposition avec record_disposition et raccroche poliment. Moins de "
+            "3 minutes au total."
+        ),
+        "hi": (
+            "आप Acme के एक आउटबाउंड SDR हैं जो एक नए B2B लीड को कॉल कर रहे हैं। "
+            "एक छोटा BANT क्वालिफिकेशन करें: बजट, अधिकार, ज़रूरत, समयसीमा। "
+            "अगर योग्य हो, तो book_demo से डेमो शेड्यूल करें; नहीं तो "
+            "record_disposition से नोट करके विनम्रता से कॉल समाप्त करें। "
+            "कुल कॉल 3 मिनट से कम रखें।"
+        ),
+    }[lang]
+
+
+_LANG_META: dict[str, dict[str, str]] = {
+    "en":  {"name": "English",            "bcp47": "en-US",  "voice": "en_male_tim_uranus_bigtts",            "flag": "🇺🇸"},
+    "zh":  {"name": "Mandarin (中文)",     "bcp47": "zh-CN",  "voice": "zh_female_qiniao_bigtts",              "flag": "🇨🇳"},
+    "yue": {"name": "Cantonese (粤语)",    "bcp47": "yue-HK", "voice": "zh_female_cantonese_bigtts",           "flag": "🇭🇰"},
+    "es":  {"name": "Spanish (Español)",  "bcp47": "es-ES",  "voice": "multilingual_v2_rachel",               "flag": "🇪🇸"},
+    "id":  {"name": "Bahasa Indonesia",   "bcp47": "id-ID",  "voice": "multilingual_v2_alice",                "flag": "🇮🇩"},
+    "fr":  {"name": "French (Français)",  "bcp47": "fr-FR",  "voice": "multilingual_v2_henri",                "flag": "🇫🇷"},
+    "hi":  {"name": "Hindi (हिन्दी)",     "bcp47": "hi-IN",  "voice": "multilingual_v2_aria",                 "flag": "🇮🇳"},
+}
+
+
+def _make_lang_templates() -> list[dict[str, Any]]:
+    """Generate 3 use-cases × 7 languages = 21 templates.
+
+    Returns one entry per (use_case, language) pair so the system_prompt
+    is in-language (translated prompts feel wrong; native phrasing
+    matters for tone of voice).
+    """
+    out: list[dict[str, Any]] = []
+    use_cases = [
+        ("hotline", "Service hotline", "Support", "PhoneOutgoing",
+         _hotline_prompt,
+         ["lookup_order", "check_stock", "start_return", "route_to_specialist", "detect_language"],
+         "Greet customers, look up orders, handle returns, escalate."),
+        ("reactivate", "Customer reactivation", "Sales", "Sparkles",
+         _reactivation_prompt,
+         ["book_appointment", "record_disposition", "get_lead", "detect_language"],
+         "Outbound win-back: discount, soft pitch, book follow-up."),
+        ("telesales", "B2B telesales", "Sales", "TrendingUp",
+         _telesales_prompt,
+         ["fetch_next_lead", "record_disposition", "book_demo", "qualified_leads", "detect_language"],
+         "BANT qualification + demo booking on a 3-minute call."),
+    ]
+    for slug, label, category, icon, prompt_fn, skills, tagline in use_cases:
+        for lang_code, meta in _LANG_META.items():
+            out.append({
+                "id": f"{slug}-{lang_code}",
+                "name": f"{meta['flag']} {label} — {meta['name']}",
+                "tagline": tagline,
+                "category": category,
+                "language": lang_code,
+                "icon": icon,
+                "use_cases": [tagline],
+                "default": {
+                    "name": f"{label} ({meta['name']})",
+                    "system_prompt": prompt_fn(lang_code),
+                    "greeting": {
+                        "en":  "Hi! How can I help you today?",
+                        "zh":  "你好,请问有什么可以帮您?",
+                        "yue": "你好,有咩可以幫到你?",
+                        "es":  "Hola, ¿en qué puedo ayudarle?",
+                        "id":  "Halo, ada yang bisa saya bantu?",
+                        "fr":  "Bonjour, en quoi puis-je vous aider ?",
+                        "hi":  "नमस्ते, मैं आपकी क्या मदद कर सकता हूँ?",
+                    }[lang_code],
+                    "skills": skills,
+                    "voice_id": meta["voice"],
+                    "voice_language": meta["bcp47"],
+                },
+            })
+    return out
+
+
+# Splice the language family onto the catalogue. Keeping it separate
+# makes it easy to delete or regenerate without touching the originals.
+TEMPLATES.extend(_make_lang_templates())
+
+
 @router.get("")
 async def list_templates() -> list[dict[str, Any]]:
     return TEMPLATES
@@ -314,6 +537,7 @@ async def instantiate_template(template_id: str, body: InstantiateRequest) -> di
             # Pull voice + model from settings so env-driven defaults
             # actually reach the agent record.
             voice_id=defaults.get("voice_id") or settings.byteplus_tts_default_voice,
+            voice_language=defaults.get("voice_language") or "en-US",
             llm_model=settings.byteplus_llm_model,
             # Optional per-language TTS voice map (multilingual template).
             voice_map=defaults.get("voice_map") or {},

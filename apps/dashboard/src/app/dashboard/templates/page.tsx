@@ -42,6 +42,10 @@ export default function TemplatesPage() {
   // template" — keeps users from accidentally creating Acme Support Voice #4.
   const { data: agents = [] } = useSWR<Agent[]>("agents", () => api.listAgents());
   const [busy, setBusy] = useState<string | null>(null);
+  // `null` = "All". Otherwise a BCP-47 short code from the template's
+  // `language` field (only set on Session 8 multi-language templates).
+  // Setting to "_core" shows just the original 8 (language-agnostic).
+  const [langFilter, setLangFilter] = useState<string | null>(null);
 
   async function instantiate(t: Template) {
     const existing = agents.filter((a) => a.template_id === t.id);
@@ -80,8 +84,52 @@ export default function TemplatesPage() {
           <Loader2 className="h-6 w-6 animate-spin" />
         </div>
       ) : (
+        <>
+          {/* Language filter chips. We collapse the chip row when only
+              the original 8 (no `language` field) are present. */}
+          {(() => {
+            const langs = Array.from(
+              new Set(templates.map((t) => t.language).filter(Boolean) as string[]),
+            ).sort();
+            if (langs.length === 0) return null;
+            const flag: Record<string, string> = {
+              en: "🇺🇸", zh: "🇨🇳", yue: "🇭🇰", es: "🇪🇸",
+              id: "🇮🇩", fr: "🇫🇷", hi: "🇮🇳",
+            };
+            const label: Record<string, string> = {
+              en: "English", zh: "中文", yue: "粵語", es: "Español",
+              id: "Bahasa", fr: "Français", hi: "हिन्दी",
+            };
+            const chip = (key: string | null, txt: string) => (
+              <button
+                key={key ?? "__all"}
+                onClick={() => setLangFilter(key)}
+                className={`px-3 py-1 rounded-full text-xs border transition-colors ${
+                  langFilter === key
+                    ? "border-violet-400 bg-violet-500/15 text-violet-200"
+                    : "border-border/60 bg-muted/30 text-muted-foreground hover:bg-muted/50"
+                }`}
+              >
+                {txt}
+              </button>
+            );
+            return (
+              <div className="flex flex-wrap gap-2 pb-2">
+                {chip(null, "All")}
+                {chip("_core", "Core (no language)")}
+                {langs.map((l) => chip(l, `${flag[l] || ""} ${label[l] || l}`))}
+              </div>
+            );
+          })()}
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {templates.map((t) => {
+          {templates
+            .filter((t) => {
+              if (langFilter === null) return true;
+              if (langFilter === "_core") return !t.language;
+              return t.language === langFilter;
+            })
+            .map((t) => {
             const Icon = (ICONS as any)[t.icon] || Sparkles;
             const existingCount = agents.filter((a) => a.template_id === t.id).length;
             return (
@@ -148,6 +196,7 @@ export default function TemplatesPage() {
             );
           })}
         </div>
+        </>
       )}
     </div>
   );

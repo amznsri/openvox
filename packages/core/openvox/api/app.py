@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from openvox.api.routes import (
     agents,
     documents as documents_routes,
+    evals as evals_routes,
     health,
     jobs as jobs_routes,
     mcp as mcp_routes,
@@ -35,6 +36,39 @@ from openvox.skills.registry import get_skill_registry
 logger = logging.getLogger(__name__)
 
 
+async def _seed_builtin_personas() -> None:
+    """Upsert the built-in synthetic personas on startup.
+
+    We upsert by id so edits to the prompt in eval/personas.py take
+    effect without manual intervention, but user-edited personas
+    (different id) are left alone.
+    """
+    from openvox.db import db_session
+    from openvox.db.models import Persona
+    from openvox.eval.personas import BUILTIN_PERSONAS
+
+    async with db_session() as s:
+        for entry in BUILTIN_PERSONAS:
+            existing = await s.get(Persona, entry["id"])
+            if existing is None:
+                p = Persona(
+                    id=entry["id"],
+                    name=entry["name"],
+                    description=entry.get("description", ""),
+                    system_prompt=entry["system_prompt"],
+                    tags=entry.get("tags", []),
+                    builtin=True,
+                )
+                s.add(p)
+            else:
+                # Refresh prompt + tags on every boot so prompt iterations stick.
+                existing.name = entry["name"]
+                existing.description = entry.get("description", "")
+                existing.system_prompt = entry["system_prompt"]
+                existing.tags = entry.get("tags", [])
+                existing.builtin = True
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     settings = get_settings()
@@ -42,6 +76,7 @@ async def _lifespan(app: FastAPI):
     register_builtins()
     get_skill_registry()  # discover
     await init_db()
+    await _seed_builtin_personas()
     await start_scheduler()
     logger.info("OpenVox core started — auth=%s storage=%s", settings.openvox_auth, settings.storage_backend)
     yield
@@ -79,6 +114,7 @@ def create_app() -> FastAPI:
     app.include_router(mcp_routes.router, prefix="/api/v1/mcp", tags=["mcp"])
     app.include_router(telephony.router, prefix="/api/v1/telephony", tags=["telephony"])
     app.include_router(pricing_routes.router, prefix="/api/v1/pricing", tags=["pricing"])
+    app.include_router(evals_routes.router, prefix="/api/v1/evals", tags=["evals"])
     app.include_router(playground.router, prefix="/api/v1/playground", tags=["playground"])
     app.include_router(storage_routes.router, prefix="/storage", tags=["storage"])
     app.include_router(voice_ws.router)

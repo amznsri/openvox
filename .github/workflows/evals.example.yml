@@ -1,0 +1,99 @@
+# Example: run OpenVox eval suite on every PR.
+#
+# Drop this file into your real repo (rename if you want, but keep the
+# `pull_request` trigger and the matrix of (agent_id, persona_id) below).
+# Failing verdicts fail the PR; manual review can override via re-run.
+#
+# Required secrets:
+#   OPENVOX_BASE_URL  → public URL of your gateway (ngrok / staging / prod).
+#                       Local dev: tunnel `http://localhost:3001` via
+#                       `ngrok http 3001` and paste the https URL here.
+# Optional:
+#   AGENT_ID, PERSONA_ID, RECORDING_ID — override the matrix below.
+
+name: voice-agent evals
+
+on:
+  pull_request:
+    paths:
+      - "packages/core/**"
+      - "apps/dashboard/**"
+      - ".github/workflows/evals.example.yml"
+  workflow_dispatch:
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # (agent_id, persona_id_or_recording_id, kind, criteria)
+        include:
+          - agent_id: REPLACE_WITH_YOUR_AGENT_UUID
+            persona_id: angry-customer-en
+            kind: persona
+            criteria: |
+              [
+                "Did the agent stay polite throughout?",
+                "Did the agent offer a path to resolution within 3 turns?",
+                "Did the agent NOT make commitments outside its authority?"
+              ]
+          - agent_id: REPLACE_WITH_YOUR_AGENT_UUID
+            persona_id: confused-elder-en
+            kind: persona
+            criteria: |
+              [
+                "Did the agent avoid jargon?",
+                "Did the agent re-explain when the user expressed confusion?"
+              ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run eval
+        id: eval
+        run: |
+          set -euo pipefail
+          BASE="${{ secrets.OPENVOX_BASE_URL }}"
+          if [ -z "$BASE" ]; then
+            echo "::error::OPENVOX_BASE_URL secret is not set."
+            exit 1
+          fi
+
+          BODY=$(jq -nc \
+            --arg agent_id "${{ matrix.agent_id }}" \
+            --arg persona_id "${{ matrix.persona_id }}" \
+            --argjson criteria '${{ matrix.criteria }}' \
+            '{agent_id: $agent_id, persona_id: $persona_id, criteria: $criteria, max_turns: 6}')
+
+          echo "POST $BASE/api/v1/evals/run"
+          RESPONSE=$(curl -sS -X POST "$BASE/api/v1/evals/run" \
+            -H 'Content-Type: application/json' \
+            -d "$BODY")
+
+          echo "$RESPONSE" | jq .
+
+          VERDICT=$(echo "$RESPONSE" | jq -r '.verdict')
+          SCORE=$(echo "$RESPONSE" | jq -r '.score')
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          echo "score=$SCORE" >> "$GITHUB_OUTPUT"
+
+          # Fail the job on `fail` (and `error`). `partial` is a warning.
+          case "$VERDICT" in
+            pass) echo "✅ PASS (score=$SCORE)" ;;
+            partial) echo "⚠️  PARTIAL (score=$SCORE) — review judge breakdown" ;;
+            fail|error) echo "❌ FAIL (verdict=$VERDICT score=$SCORE)"; exit 1 ;;
+            *) echo "::error::unknown verdict '$VERDICT'"; exit 1 ;;
+          esac
+
+      - name: Post PR comment on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `❌ Eval failed: agent=${{ matrix.agent_id }} persona=${{ matrix.persona_id }} verdict=${{ steps.eval.outputs.verdict }} score=${{ steps.eval.outputs.score }}\\n\\nSee the job log + the persisted EvalRun row for the judge's per-criterion breakdown.`
+            });

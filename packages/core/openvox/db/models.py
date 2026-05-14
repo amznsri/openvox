@@ -287,3 +287,106 @@ class User(Base):
     provider: Mapped[str] = mapped_column(String(20), default="local")  # local | github | google
     provider_id: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Session 8: evaluation framework.
+#
+# Three new tables, one wedge:
+#   - Recording — a snapshot of a real Session promoted into a reusable
+#     test fixture. Stores transcript_json so we can replay user turns
+#     against a *different* agent config without needing the original
+#     audio file.
+#   - Persona — a synthetic "user" agent (a prompt that makes the LLM
+#     behave like an angry customer / confused elder / non-native
+#     speaker etc.). Used to spar against your candidate agents.
+#   - EvalRun — one execution of (recording | persona) × agent, with the
+#     resulting transcript, a verdict (pass/fail), and the criteria
+#     used. CI integration polls this table.
+#
+# No FK back to Session — Recordings live independently of the source
+# session so deleting a session doesn't nuke your test fixtures.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class Recording(Base):
+    """A saved conversation snapshot promoted from a live Session."""
+
+    __tablename__ = "recordings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(200), default="")
+    source_session_id: Mapped[str] = mapped_column(String(36), default="")
+    source_agent_id: Mapped[str] = mapped_column(String(36), default="")
+    # Full transcript as a list of turns: [{role, text, skill_id?, ...}, ...]
+    # This is what we replay against a new agent config — no audio
+    # required since we feed each user turn as STT-final text.
+    transcript: Mapped[list] = mapped_column(JSON, default=list)
+    # Optional original audio URL (TOS / S3 / local). Empty when the
+    # recording was synthetic.
+    audio_url: Mapped[str] = mapped_column(String(500), default="")
+    # Free-form labels for filtering: ["billing", "angry", "smoke-test"].
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class Persona(Base):
+    """A synthetic-user agent for sparring against real agents.
+
+    Behaviour is entirely driven by `system_prompt` — the persona acts
+    as an LLM-powered fake user, asking questions of the candidate
+    agent until either the criteria are met or the turn cap is hit.
+    """
+
+    __tablename__ = "personas"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    system_prompt: Mapped[str] = mapped_column(Text, default="")
+    # Loose categorisation for browsing: ["customer", "angry", "english"].
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # LLM provider + model to drive the persona. Empty → use the
+    # workspace default.
+    llm_provider: Mapped[str] = mapped_column(String(50), default="byteplus")
+    llm_model: Mapped[str] = mapped_column(String(100), default="")
+    # Optional: voice to use when this persona drives a *voice* eval.
+    # For text-only evals (default) this is ignored.
+    voice_id: Mapped[str] = mapped_column(String(100), default="")
+    # Was this seeded by the system? Built-ins are read-only in the UI.
+    builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class EvalRun(Base):
+    """One execution of an eval — recording-replay or persona-vs-agent."""
+
+    __tablename__ = "eval_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    # Exactly one of these is set, depending on the eval mode.
+    recording_id: Mapped[str] = mapped_column(String(36), default="")
+    persona_id: Mapped[str] = mapped_column(String(36), default="")
+    # User-supplied criteria — plain-English questions the judge LLM
+    # will answer pass/fail on (e.g. ["Did the agent collect the order
+    # number?", "Did sentiment stay positive?"]).
+    criteria: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # Full conversation that resulted from the run.
+    transcript: Mapped[list] = mapped_column(JSON, default=list)
+    # Aggregate outcome — pass | partial | fail | error.
+    verdict: Mapped[str] = mapped_column(String(20), default="")
+    # Numeric score 0..1 (fraction of criteria that judged "pass").
+    score: Mapped[float] = mapped_column(default=0.0)
+    # Per-criterion breakdown: [{criterion, verdict, reasoning}, ...]
+    judge_breakdown: Mapped[list] = mapped_column(JSON, default=list)
+    # If the run errored before judging completed, the message lives here.
+    error: Mapped[str] = mapped_column(Text, default="")
+    # How many turns the run produced (cap is enforced in the runner).
+    turn_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Timing — useful for the CI dashboard.
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

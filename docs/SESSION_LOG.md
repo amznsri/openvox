@@ -397,9 +397,168 @@ apps/dashboard/src/lib/api.ts                         (agent_id in TextChatReque
 
 ---
 
+---
+
+## Session 8 — 2026-05-14 (the differentiation push)
+
+**Goal**: ship the nine items locked in `docs/PLANNING_SESSION8.md`
+after competitive research surfaced Dograh as a direct OSS rival.
+Three defensive (VAD / Twilio inbound / Browser SDK), four offensive
+under Bet A (BUT scoped Asia-Pacific not BytePlus-only), one Bet C
+scope-down (MCP catalogue), and the full Bet B eval framework.
+
+All nine landed in one continuous session.
+
+### What we shipped
+
+**D.1 — Silero VAD + sub-100 ms interrupt.**
+- New `VADProvider` interface (`providers/vad/base.py`) and
+  `SileroVAD` impl using the `silero-vad` PyPI package with torch
+  backend. ONNX backend toggle via `OPENVOX_VAD_BACKEND=onnx`.
+- Orchestrator now tees inbound audio: STT consumes one queue,
+  a parallel `_vad_loop` task consumes the other. On `speech_start`
+  while `_speaking=True`, sets `_cancel_tts` so TTS aborts inside
+  the next chunk boundary.
+- Additive migration: `agents.vad_provider`.
+- Acceptance harness: `scripts/measure_interrupt.py` synthesises a
+  speech-like signal (harmonic + envelope modulation) and times
+  detection. **Measured P50=58.5 ms, P95=121.7 ms** — under the
+  100 ms / 150 ms targets.
+
+**D.2 — Twilio Media Streams inbound bridge.**
+- New WS endpoint `/ws/twilio` (`api/ws/twilio_stream.py`) speaking
+  Twilio's full protocol: connected/start/media/mark/stop/clear.
+- μ-law ⇄ PCM s16le via `audioop` (stdlib); 8↔16/24 kHz resample
+  also via `audioop.ratecv` with persistent filter state.
+- On interrupt we send Twilio a `clear` event so buffered playback
+  audio is dropped — no stale tail after barge-in.
+- TwiML route passes `agent_id` via `<Parameter>`; inbound webhook
+  resolves agent by phone number from `Agent.channels.twilio.phone_numbers`.
+
+**D.3 — Browser SDK `@openvox/web`.**
+- New TS package `packages/sdk-web/` with React `<VoiceAgent />`
+  component and `useVoiceSession` hook.
+- ScriptProcessor mic capture (deprecated but universal — needs no
+  worklet shim file, so npm install + 3 lines works on any React
+  app). Downsamples to 16 kHz PCM s16le.
+- PcmPlayer with 60 ms lookahead scheduling matches the existing
+  dashboard audio path; survives Safari's `AudioContext.resume()`
+  user-gesture requirement.
+
+**C.1 — MCP server catalogue.**
+- `openvox/mcp/catalogue.json` with 6 curated entries: Slack, GitHub,
+  Notion, HubSpot, Salesforce, Stripe — each with command + required
+  env vars + tagline + icon.
+- `GET /api/v1/mcp/catalogue` route.
+- Dashboard "Browse catalogue" modal on the agent edit MCP tab —
+  click an entry, form pre-fills with command/args plus empty
+  `KEY=` lines for required env vars.
+
+**A.1 — Cross-provider pricing calculator.**
+- `openvox/pricing/rates.py` with rate cards for all 10 priced
+  providers as of 2026-05-14. Override via `OPENVOX_RATES_FILE`.
+- `/api/v1/pricing/{rates,estimate,sessions/{id}}` routes.
+- `sessions/{id}` computes a what-if matrix across STT × LLM × TTS
+  combos (max 5×5×5 = 125, sorted by total cost) so the dashboard
+  can show "switching X saves $Y".
+- Additive migration: `sessions.{llm_tokens_in,llm_tokens_out,tts_chars}`.
+- Voice WS forwarder now accumulates token deltas (rough proxy
+  pending real provider-reported usage in a follow-up) and TTS
+  character count per turn.
+
+**A.3 — 21 multi-language templates.**
+- `_make_lang_templates()` generates 3 use-cases × 7 languages:
+  - **Use cases**: service hotline, customer reactivation outbound,
+    B2B telesales.
+  - **Languages**: English, Mandarin (中文), Cantonese (粤语),
+    Spanish (Español), Bahasa Indonesia, French (Français), Hindi.
+- Each template has an **in-language `system_prompt`** (not translated
+  from English) so the LLM speaks idiomatically. Greeting and voice
+  swap per locale. Total catalogue now 29 templates.
+- Dashboard `/dashboard/templates` adds language-filter chips
+  (All / Core / per-locale flags).
+
+**A.2 — WeChat Work + Lark inbound channels.**
+- `openvox/telephony/wechat_work.py` — full `_verify_signature` SHA-1
+  HMAC + URL-verification GET handler; inbound POST acknowledges
+  events. AES decryption + voice-message bridge marked TODO until
+  there's a verified WeCom corp to test against.
+- `openvox/telephony/lark.py` — `url_verification` challenge handler
+  + event_v2 envelope parser. Single-tenant config lookup from
+  `Agent.channels.lark`.
+- Routers mounted under `/api/v1/telephony/{wechat_work,lark}/`.
+
+**B.1 + B.2 + B.3 — Eval framework (the wedge).**
+- Three new tables: `Recording`, `Persona`, `EvalRun`. Created via
+  `Base.metadata.create_all()` on next startup (no migration needed
+  for new tables, only new columns).
+- **5 built-in personas** seeded on every startup
+  (`angry_customer_en`, `confused_elder_en`, `non_native_speaker_en`,
+  `in_a_hurry_en`, `security_paranoid_en`).
+- **Replay runner**: feeds user turns from a recording's stored
+  transcript through a new agent config — LLM-only, no TTS/STT
+  round-trips — so re-runs are fast and deterministic.
+- **Persona runner**: two LLMs in alternating dialogue (persona drives
+  user turns, candidate drives assistant turns) until natural call-end
+  keywords appear or `max_turns` (default 8) is hit.
+- **LLM-as-judge**: separate prompt evaluates each criterion
+  independently, returns strict-JSON per-criterion breakdown. Python
+  aggregator computes `score` (partials worth 0.5) and `verdict`
+  (`pass|partial|fail`).
+- API: `/api/v1/evals/{recordings,personas,run,runs}`.
+
+**B.4 — CI hook + EVALS.md.**
+- `.github/workflows/evals.example.yml` shows the canonical GitHub
+  Actions matrix: agent × persona × criteria → fail PR on bad verdict.
+- `docs/EVALS.md` documents the three pieces, the judge design,
+  what it doesn't do yet.
+
+### What's NOT in this session
+
+- **Image size optimisation** (~9.7 GB because torch pulls CUDA wheels).
+  Tried switching to `download.pytorch.org/whl/cpu` index but Zscaler
+  blocks the host; documented inline.
+- **Dashboard `/dashboard/evals` page**. The backend + API + 5 personas
+  are live; the UI panel that drives them lands in Session 8.5 or 9.
+- **Dashboard pricing-breakdown card** on the Observability page. The
+  backend telemetry + `/api/v1/pricing/sessions/{id}` works today; the
+  rendering UI is a Session 8.5 follow-up.
+- **First-party WeChat Work / Lark voice-message decoding**. Webhooks
+  acknowledge events but the full audio bridge needs real test
+  credentials to land.
+
+### Files touched (30 files, ~2,250 LOC added)
+
+```
+NEW:
+  packages/core/openvox/providers/vad/{__init__,base,silero}.py
+  packages/core/openvox/api/ws/twilio_stream.py
+  packages/core/openvox/api/routes/{pricing,evals}.py
+  packages/core/openvox/pricing/{__init__,rates}.py
+  packages/core/openvox/eval/{__init__,personas,judge,runner}.py
+  packages/core/openvox/mcp/catalogue.json
+  packages/core/openvox/telephony/{wechat_work,lark}.py
+  packages/sdk-web/{package.json,tsconfig.json,README.md,src/*}
+  scripts/measure_interrupt.py
+  docs/{EVALS.md,PLANNING_SESSION8.md}
+  .github/workflows/evals.example.yml
+
+MODIFIED:
+  packages/core/openvox/pipeline/orchestrator.py
+  packages/core/openvox/providers/bootstrap.py
+  packages/core/openvox/api/{app,ws/voice}.py
+  packages/core/openvox/api/routes/{agents,telephony,templates,mcp}.py
+  packages/core/openvox/db/{models,session}.py
+  packages/core/{Dockerfile,pyproject.toml}
+  apps/dashboard/src/lib/api.ts
+  apps/dashboard/src/app/dashboard/{templates,agents/[id]}/page.tsx
+```
+
+---
+
 ## Open follow-ups (carried forward)
 
-Updated end of Session 6. Items shipped this session removed; items still
+Updated end of Session 8. Items shipped this session removed; items still
 pending below.
 
 1. **Scheduler webhook trigger** (event-driven jobs).

@@ -233,6 +233,9 @@ export type Template = {
   icon: string;
   use_cases: string[];
   default: Partial<Agent>;
+  /** BCP-47 short code ("en", "zh", "yue", "es", "id", "fr", "hi") on
+   *  language-family templates. Absent on the original 8 templates. */
+  language?: string;
 };
 
 export type Provider = {

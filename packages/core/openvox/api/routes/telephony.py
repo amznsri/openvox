@@ -104,6 +104,19 @@ async def telegram_event(request: Request) -> dict:
     return {"received": True, "update_id": body.get("update_id")}
 
 
+# ── WeChat Work / Lark webhook delegators ───────────────────────────
+# The actual handlers live in openvox/telephony/{wechat_work,lark}.py
+# so the channel-specific signature-verification and event-parsing
+# logic stays out of this router file. We register them under the same
+# /api/v1/telephony prefix for consistency.
+
+from openvox.telephony.wechat_work import router as _wechat_router
+from openvox.telephony.lark import router as _lark_router
+
+router.include_router(_wechat_router)
+router.include_router(_lark_router)
+
+
 # ── Outbound dial-out ────────────────────────────────────────────
 
 
