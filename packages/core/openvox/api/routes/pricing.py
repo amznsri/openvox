@@ -39,6 +39,7 @@ async def get_rates() -> dict[str, Any]:
         "providers": {
             pid: {
                 "stt_usd_per_minute": r.stt_usd_per_minute,
+                "stt_usd_per_1m_chars": r.stt_usd_per_1m_chars,
                 "llm_usd_per_1m_input": r.llm_usd_per_1m_input,
                 "llm_usd_per_1m_output": r.llm_usd_per_1m_output,
                 "tts_usd_per_1k_chars": r.tts_usd_per_1k_chars,

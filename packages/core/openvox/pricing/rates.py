@@ -44,6 +44,16 @@ logger = logging.getLogger(__name__)
 class ProviderRates:
     """Pricing for one provider id. Missing fields → treated as $0.
 
+    Two STT pricing models supported because providers differ:
+        stt_usd_per_minute     — duration-based (Deepgram, AssemblyAI,
+                                  Whisper, most western providers).
+        stt_usd_per_1m_chars   — character-based (BytePlus Seed ASR,
+                                  most Chinese providers — they bill
+                                  on transcribed-text length, not on
+                                  audio duration).
+    The calculator picks whichever is non-zero. If both are set,
+    per-char wins (it's the more granular signal).
+
     Auditability fields:
         model_name   — the specific SKU these rates apply to (so it's
                        obvious when a provider has multiple tiers).
@@ -54,6 +64,7 @@ class ProviderRates:
     """
 
     stt_usd_per_minute: float = 0.0
+    stt_usd_per_1m_chars: float = 0.0
     llm_usd_per_1m_input: float = 0.0
     llm_usd_per_1m_output: float = 0.0
     tts_usd_per_1k_chars: float = 0.0
@@ -71,20 +82,29 @@ class ProviderRates:
 DEFAULT_RATES: dict[str, ProviderRates] = {
     # ── LLM providers ──────────────────────────────────────────────
     "byteplus": ProviderRates(
+        # seed-2-0-pro at the [0, 128] prompt-length tier — this is
+        # the cheap tier most voice agents hit on a per-turn basis.
+        # Once prompts grow past 128 tokens (longer system prompts,
+        # multi-turn history, RAG context) BytePlus doubles to
+        # $1.00 / $6.00. See `notes` for the tier ladder.
         llm_usd_per_1m_input=0.50,
         llm_usd_per_1m_output=3.00,
-        # STT/TTS rates here are best-effort estimates — the BytePlus
-        # console / docs pages we can fetch don't expose voice-product
-        # pricing in machine-readable form. Treat with caution.
-        stt_usd_per_minute=0.006,
-        tts_usd_per_1k_chars=0.012,
-        model_name="seed-2-0-pro-260328",
+        # BytePlus Seed ASR 2.0 — billed per-character of transcribed
+        # output, NOT per minute. $50/1M chars, pay-as-you-go.
+        stt_usd_per_1m_chars=50.0,
+        # BytePlus Seed-Speech 2.0 — $45/1M chars = $0.045/1k chars.
+        tts_usd_per_1k_chars=0.045,
+        model_name="seed-2-0-pro-260328 + Seed ASR/Speech 2.0",
         source_url="https://docs.byteplus.com/en/docs/ModelArk/1544106",
         verified_at="2026-05-19",
         notes=(
-            "LLM rates verified against BytePlus ModelArk docs. STT "
-            "(Seed ASR 2.0) and TTS (Seed-Speech 2.0) rates are "
-            "unverified estimates — pricing pages are gated."
+            "LLM: tiered by prompt length. [0,128]→$0.50/$3.00 (used here); "
+            "(128,256]→$1.00/$6.00. Cache-write $0.0083/1M; cache-hit $0.10/1M "
+            "(short prompts) or $0.20/1M (long). "
+            "ASR (Seed ASR 2.0): $50/1M chars, pay-as-you-go "
+            "(see docs/byteplusvoice/asrbilling). "
+            "TTS (Seed-Speech 2.0): $45/1M chars, pay-as-you-go "
+            "(see docs/byteplusvoice/TTS_Billing)."
         ),
     ),
     "openai": ProviderRates(
@@ -245,9 +265,18 @@ def estimate_session_cost(
     stt_provider: str,
     llm_provider: str,
     tts_provider: str,
+    stt_chars: int | None = None,
     rates: dict[str, ProviderRates] | None = None,
 ) -> dict:
     """Return a per-component cost breakdown.
+
+    `stt_chars` is optional. When the chosen STT provider bills per
+    character (BytePlus Seed ASR, most Chinese providers) we need a
+    character count to compute cost. If the caller doesn't supply one,
+    we proxy with `tts_chars` on the symmetric-conversation assumption
+    (user speaks roughly as much as the agent over a voice call). This
+    is rough but better than $0 — a follow-up should track ASR char
+    counts properly in the Session row.
 
     Returns:
         {
@@ -277,7 +306,16 @@ def estimate_session_cost(
     tts = _r(tts_provider)
 
     minutes = max(0.0, duration_ms / 60_000.0)
-    cost_stt = stt.stt_usd_per_minute * minutes
+
+    # STT — per-char wins when set (more granular signal). If neither
+    # is set we end up at $0, which is fine: not all providers expose
+    # an STT rate (LLM-only providers).
+    if stt.stt_usd_per_1m_chars > 0:
+        char_count = stt_chars if stt_chars is not None else tts_chars
+        cost_stt = stt.stt_usd_per_1m_chars * (char_count / 1_000_000.0)
+    else:
+        cost_stt = stt.stt_usd_per_minute * minutes
+
     cost_in = llm.llm_usd_per_1m_input * (tokens_in / 1_000_000.0)
     cost_out = llm.llm_usd_per_1m_output * (tokens_out / 1_000_000.0)
     cost_tts = tts.tts_usd_per_1k_chars * (tts_chars / 1000.0)
