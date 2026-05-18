@@ -112,6 +112,11 @@ class Session(Base):
     llm_tokens_in: Mapped[int] = mapped_column(Integer, default=0)
     llm_tokens_out: Mapped[int] = mapped_column(Integer, default=0)
     tts_chars: Mapped[int] = mapped_column(Integer, default=0)
+    # ASR/STT input character count. Per-character STT providers
+    # (BytePlus Seed ASR, Aliyun, Tencent) bill on this — without it
+    # the pricing calculator has to proxy from tts_chars, which is
+    # only accurate when the user and agent speak roughly equal amounts.
+    stt_chars: Mapped[int] = mapped_column(Integer, default=0)
 
     # Storage references
     audio_url: Mapped[str] = mapped_column(String(500), default="")

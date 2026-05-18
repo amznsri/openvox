@@ -30,6 +30,7 @@ def _session_to_dict(s: Session) -> dict[str, Any]:
         "llm_tokens_in": getattr(s, "llm_tokens_in", 0) or 0,
         "llm_tokens_out": getattr(s, "llm_tokens_out", 0) or 0,
         "tts_chars": getattr(s, "tts_chars", 0) or 0,
+        "stt_chars": getattr(s, "stt_chars", 0) or 0,
         "status": s.status,
         "audio_url": s.audio_url,
         "transcript_url": s.transcript_url,

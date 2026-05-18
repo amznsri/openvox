@@ -112,6 +112,13 @@ async def session_pricing(session_id: str) -> dict[str, Any]:
         tokens_in = sess.llm_tokens_in or max(0, duration_ms // 60_000 * 60)
         tokens_out = sess.llm_tokens_out or max(0, duration_ms // 60_000 * 120)
         tts_chars = sess.tts_chars or max(0, duration_ms // 60_000 * 600)
+        # `stt_chars` was added in Session 12 — old voice sessions have
+        # 0 here. Pass None to let estimate_session_cost fall back to
+        # the tts_chars symmetric-conversation proxy for those rows.
+        # New sessions get a real number persisted by the voice WS
+        # forwarder / Telegram handler.
+        stt_chars: int | None = sess.stt_chars or None
+        stt_chars_estimated = (sess.stt_chars or 0) == 0
 
     actual = estimate_session_cost(
         duration_ms=duration_ms,
@@ -121,10 +128,19 @@ async def session_pricing(session_id: str) -> dict[str, Any]:
         stt_provider=stt_now,
         llm_provider=llm_now,
         tts_provider=tts_now,
+        stt_chars=stt_chars,
     )
 
     rates = load_rates()
-    stt_options = [pid for pid, r in rates.items() if r.stt_usd_per_minute > 0]
+    # A provider is a viable STT option if EITHER pricing model is set
+    # — per-minute (Deepgram, Whisper, AssemblyAI) or per-1M-chars
+    # (BytePlus Seed ASR). Restricting to per_minute > 0 would have
+    # silently dropped BytePlus from the matrix once we modelled it
+    # per-char correctly.
+    stt_options = [
+        pid for pid, r in rates.items()
+        if r.stt_usd_per_minute > 0 or r.stt_usd_per_1m_chars > 0
+    ]
     llm_options = [pid for pid, r in rates.items() if r.llm_usd_per_1m_input > 0]
     tts_options = [pid for pid, r in rates.items() if r.tts_usd_per_1k_chars > 0]
 
@@ -141,6 +157,7 @@ async def session_pricing(session_id: str) -> dict[str, Any]:
             stt_provider=s_pid,
             llm_provider=l_pid,
             tts_provider=t_pid,
+            stt_chars=stt_chars,
         )
         alternatives.append({
             "combo": {"stt": s_pid, "llm": l_pid, "tts": t_pid},
@@ -161,9 +178,15 @@ async def session_pricing(session_id: str) -> dict[str, Any]:
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
             "tts_chars": tts_chars,
+            "stt_chars": stt_chars or 0,
+            # Two separate flags so the dashboard can be specific about
+            # what's estimated vs measured. Older sessions show "tokens
+            # estimated from duration"; voice sessions from before
+            # Session 12 show "ASR chars estimated from TTS chars".
             "estimated_from_duration": (
                 (sess.llm_tokens_in or 0) == 0  # noqa: F821
             ),
+            "stt_chars_estimated": stt_chars_estimated,
         },
         "actual": actual,
         "alternatives": alternatives[:20],  # top 20 cheapest

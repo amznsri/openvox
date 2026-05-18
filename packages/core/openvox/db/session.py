@@ -64,6 +64,10 @@ async def init_db() -> None:
         ("sessions", "llm_tokens_in", "INTEGER DEFAULT 0"),
         ("sessions", "llm_tokens_out", "INTEGER DEFAULT 0"),
         ("sessions", "tts_chars", "INTEGER DEFAULT 0"),
+        # Per-character STT providers (BytePlus Seed ASR, Aliyun) bill
+        # on transcribed-text length. Tracked separately from tts_chars
+        # so pricing is correct for asymmetric conversations.
+        ("sessions", "stt_chars", "INTEGER DEFAULT 0"),
         # Session 9: webhook-trigger token for event-driven jobs.
         # Empty for cron/interval/once jobs; populated for webhook jobs.
         ("scheduled_jobs", "webhook_token", "VARCHAR(64) DEFAULT ''"),

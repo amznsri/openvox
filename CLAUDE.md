@@ -1050,6 +1050,61 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     Fastify is opinionated about spec compliance. Better to learn
     that with intentional checks than to ship a 400 to a user.
 
+### Pricing model misfits (Session 12)
+56. **Hard-coded rate card had no cited sources.** Original
+    `pricing/rates.py` was written from training-data recollection;
+    a user reading the recommendation tip ("switch to deepseek to
+    save 16%") had no way to verify the underlying numbers. DeepSeek
+    in particular was suspiciously low ($0.14/$0.28 — that's the
+    pre-Azure-markup official rate). Worse, **BytePlus voice was
+    being modelled as per-minute STT and per-1k-chars TTS** when the
+    actual BytePlus billing is **per-character on both** ($50/1M
+    chars ASR, $45/1M chars TTS — verified against
+    `docs.byteplus.com/en/docs/byteplusvoice/{asrbilling,TTS_Billing}`).
+    Effect: cost shown for any session on BytePlus voice was
+    understated by ~3.5×, and the "Switch to X to save $Y" tip was
+    pointing at fabricated savings (Deepgram hardcoded at $0.0043/min
+    when the real rate is $0.0077/min — Deepgram is actually MORE
+    expensive than BytePlus voice on a per-minute view).
+    *Fix*: ProviderRates dataclass gains `model_name`, `source_url`,
+    `verified_at`, and `stt_usd_per_1m_chars`. Every rate refreshed
+    against the live provider page on 2026-05-19 with citations
+    embedded. The dashboard PricingBreakdown card surfaces unit
+    hints ("$50/1M chars · Seed ASR 2.0") under each component pill
+    and a "Rate sources" expander with click-through `source_url`
+    links + `verified_at` dates. Sessions older than this fix get a
+    `stt_chars_estimated: true` flag in their telemetry so users know
+    the ASR cost was proxied from `tts_chars` (symmetric-conversation
+    assumption) rather than measured.
+    **Lesson**: any number that drives a recommendation MUST have a
+    cited source on the read path. The user spotted this exactly
+    because they noticed the tip was implausibly cheap. If we'd
+    surfaced "source: training-data estimate, unverified" from day
+    one, neither of us would have wasted time on the bad
+    recommendation.
+57. **`stt_chars` wasn't tracked anywhere.** Bug #56's fix to model
+    BytePlus ASR as per-character revealed that we had no measured
+    character count on the read path — only `tts_chars`. The
+    pricing route proxied STT chars from TTS chars on the
+    symmetric-conversation assumption, which is wrong for any
+    asymmetric dialogue (user grunts "yes" while agent monologues,
+    or vice versa).
+    *Fix*: `Session.stt_chars` column added (additive migration via
+    `_ADDITIVE_COLUMNS`). Voice WS forwarder accumulates user_final
+    char counts into `metrics["stt_chars"]`; Telegram handler writes
+    `len(user_text)`. Text playground stays at 0 (no STT happened).
+    Pricing route uses `sess.stt_chars` when > 0, falls back to
+    `tts_chars` proxy with the `stt_chars_estimated: true` flag.
+    Matrix builder now treats a provider as a valid STT option if
+    EITHER `stt_usd_per_minute` OR `stt_usd_per_1m_chars` is set —
+    previously BytePlus dropped silently out of the matrix once we
+    modelled it per-char.
+    **Lesson**: every billable counter on the read path needs an
+    explicit field on the write path, even if it overlaps
+    conceptually with another counter. "User and agent talk roughly
+    the same amount" is a reasonable heuristic; "exactly the same
+    amount" is wrong for billing.
+
 ---
 
 ## 9. Known constraints / environment quirks

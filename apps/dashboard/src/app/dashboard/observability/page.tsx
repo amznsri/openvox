@@ -4,7 +4,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import { BarChart3, Bookmark, ChevronRight, Clock, DollarSign, Loader2, MessageSquare, Phone, X } from "lucide-react";
 
-import { api, type Session, type SessionPricing } from "@/lib/api";
+import { api, type Session, type SessionPricing, type PricingRates } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -236,12 +236,33 @@ function PricingBreakdown({ pricing }: { pricing: SessionPricing }) {
   const { actual, alternatives, cheapest, savings_vs_cheapest_usd, telemetry } = pricing;
   const components = actual.components;
   const total = actual.total_usd || 0.000001;
+  // Fetch rate card so we can label each component pill with its
+  // unit + cited source. SWR caches the response so all open drawers
+  // share one fetch.
+  const { data: rates } = useSWR<PricingRates>("pricing-rates", () => api.pricingRates());
+  // Parse "stt / llm / tts" → resolved ProviderRate per role.
+  const [sttId, llmId, ttsId] = actual.rate_card.split(" / ").map((s) => s.trim());
+  const sttR = rates?.providers[sttId];
+  const llmR = rates?.providers[llmId];
+  const ttsR = rates?.providers[ttsId];
+  // Per-component unit hint. STT can be per-min OR per-char depending
+  // on provider — pick whichever rate the provider actually charges on.
+  const sttUnit = sttR
+    ? sttR.stt_usd_per_1m_chars > 0
+      ? `$${sttR.stt_usd_per_1m_chars.toFixed(2)} / 1M chars`
+      : sttR.stt_usd_per_minute > 0
+        ? `$${sttR.stt_usd_per_minute.toFixed(4)} / min`
+        : ""
+    : "";
+  const llmInUnit = llmR ? `$${llmR.llm_usd_per_1m_input.toFixed(2)} / 1M tokens` : "";
+  const llmOutUnit = llmR ? `$${llmR.llm_usd_per_1m_output.toFixed(2)} / 1M tokens` : "";
+  const ttsUnit = ttsR ? `$${ttsR.tts_usd_per_1k_chars.toFixed(3)} / 1k chars` : "";
   // Build a stacked-bar from the four components (avoid divide-by-zero).
   const bars = [
-    { key: "stt", label: "STT", value: components.stt, color: "bg-cyan-500" },
-    { key: "llm_input", label: "LLM in", value: components.llm_input, color: "bg-violet-500" },
-    { key: "llm_output", label: "LLM out", value: components.llm_output, color: "bg-fuchsia-500" },
-    { key: "tts", label: "TTS", value: components.tts, color: "bg-emerald-500" },
+    { key: "stt", label: "STT", value: components.stt, color: "bg-cyan-500", unit: sttUnit, model: sttR?.model_name },
+    { key: "llm_input", label: "LLM in", value: components.llm_input, color: "bg-violet-500", unit: llmInUnit, model: llmR?.model_name },
+    { key: "llm_output", label: "LLM out", value: components.llm_output, color: "bg-fuchsia-500", unit: llmOutUnit, model: llmR?.model_name },
+    { key: "tts", label: "TTS", value: components.tts, color: "bg-emerald-500", unit: ttsUnit, model: ttsR?.model_name },
   ];
 
   return (
@@ -256,12 +277,17 @@ function PricingBreakdown({ pricing }: { pricing: SessionPricing }) {
         <div className="flex items-baseline gap-2">
           <div className="text-3xl font-bold tabular-nums">${actual.total_usd.toFixed(4)}</div>
           <div className="text-xs text-muted-foreground">
-            for {formatDuration(pricing.duration_ms)} · {telemetry.tokens_in}↓ / {telemetry.tokens_out}↑ tokens · {telemetry.tts_chars} TTS chars
+            for {formatDuration(pricing.duration_ms)} · {telemetry.tokens_in}↓ / {telemetry.tokens_out}↑ tokens · {telemetry.stt_chars || 0} ASR / {telemetry.tts_chars} TTS chars
           </div>
         </div>
         {telemetry.estimated_from_duration && (
           <div className="text-xs text-amber-300">
             ⚠ Token counts estimated from duration (provider didn&apos;t return usage on this run).
+          </div>
+        )}
+        {telemetry.stt_chars_estimated && (
+          <div className="text-xs text-amber-300">
+            ⚠ ASR character count proxied from TTS (older session — new voice calls track it directly).
           </div>
         )}
 
@@ -277,10 +303,17 @@ function PricingBreakdown({ pricing }: { pricing: SessionPricing }) {
           </div>
           <div className="mt-2 grid grid-cols-4 gap-2 text-xs">
             {bars.map((b) => (
-              <div key={b.key} className="flex items-center gap-1.5">
-                <span className={`h-2 w-2 rounded-full ${b.color}`} />
-                <span className="text-muted-foreground">{b.label}</span>
-                <span className="ml-auto font-mono tabular-nums">${b.value.toFixed(4)}</span>
+              <div key={b.key} className="space-y-0.5">
+                <div className="flex items-center gap-1.5">
+                  <span className={`h-2 w-2 rounded-full ${b.color}`} />
+                  <span className="text-muted-foreground">{b.label}</span>
+                  <span className="ml-auto font-mono tabular-nums">${b.value.toFixed(4)}</span>
+                </div>
+                {b.unit && (
+                  <div className="pl-3.5 text-[10px] text-muted-foreground/70 font-mono leading-tight">
+                    {b.unit}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -289,6 +322,47 @@ function PricingBreakdown({ pricing }: { pricing: SessionPricing }) {
         <div className="text-xs text-muted-foreground font-mono">
           Provider combo: <span className="text-foreground/80">{actual.rate_card}</span>
         </div>
+
+        {/* Rate-card transparency expander. Surfaces model_name +
+            source_url + verified_at per provider in the active combo
+            so users can audit the numbers themselves. */}
+        {rates && (sttR || llmR || ttsR) && (
+          <details className="text-xs">
+            <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+              Rate sources
+            </summary>
+            <div className="mt-2 space-y-1.5 text-[11px]">
+              {[
+                { label: "STT", r: sttR, id: sttId },
+                { label: "LLM", r: llmR, id: llmId },
+                { label: "TTS", r: ttsR, id: ttsId },
+              ].filter((x) => x.r).map(({ label, r, id }) => (
+                <div key={label} className="flex items-baseline gap-2">
+                  <span className="text-muted-foreground w-10 shrink-0">{label}</span>
+                  <span className="font-mono">{id}</span>
+                  <span className="text-muted-foreground">·</span>
+                  <span className="text-foreground/80 truncate">{r!.model_name}</span>
+                  {r!.source_url && (
+                    <a
+                      href={r!.source_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="ml-auto text-cyan-300 hover:underline shrink-0"
+                    >
+                      source ↗
+                    </a>
+                  )}
+                  <span
+                    className={`shrink-0 text-[10px] ${r!.verified_at ? "text-muted-foreground" : "text-amber-300"}`}
+                    title={r!.notes}
+                  >
+                    {r!.verified_at || "unverified"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
 
         {/* What-if matrix */}
         {cheapest && savings_vs_cheapest_usd > 0 && (

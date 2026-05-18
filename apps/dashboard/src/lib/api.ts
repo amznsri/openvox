@@ -201,6 +201,7 @@ export const api = {
   // ── Pricing ───────────────────────────────────────────────────────
   sessionPricing: (sessionId: string) =>
     http<SessionPricing>(`/api/v1/pricing/sessions/${sessionId}`),
+  pricingRates: () => http<PricingRates>(`/api/v1/pricing/rates`),
 
   // ── Evals ─────────────────────────────────────────────────────────
   listPersonas: () => http<Persona[]>("/api/v1/evals/personas"),
@@ -440,7 +441,9 @@ export type SessionPricing = {
     tokens_in: number;
     tokens_out: number;
     tts_chars: number;
+    stt_chars: number;
     estimated_from_duration: boolean;
+    stt_chars_estimated: boolean;
   };
   actual: {
     total_usd: number;
@@ -451,6 +454,23 @@ export type SessionPricing = {
   alternatives: { combo: { stt: string; llm: string; tts: string }; total_usd: number; delta_usd: number }[];
   cheapest: { combo: { stt: string; llm: string; tts: string }; total_usd: number; delta_usd: number } | null;
   savings_vs_cheapest_usd: number;
+};
+
+export type ProviderRate = {
+  stt_usd_per_minute: number;
+  stt_usd_per_1m_chars: number;
+  llm_usd_per_1m_input: number;
+  llm_usd_per_1m_output: number;
+  tts_usd_per_1k_chars: number;
+  model_name: string;
+  source_url: string;
+  verified_at: string;
+  notes: string;
+};
+
+export type PricingRates = {
+  providers: Record<string, ProviderRate>;
+  override_via: string;
 };
 
 // ── Evals ───────────────────────────────────────────────────────────────

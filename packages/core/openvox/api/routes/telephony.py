@@ -545,6 +545,10 @@ async def _handle_telegram_update(
                     row.ended_at = ended
                     row.duration_ms = int((ended - session_started).total_seconds() * 1000)
                     row.turn_count = 1 if answer else 0
+                    # Pricing telemetry — per-char STT/TTS providers
+                    # (BytePlus Seed ASR/Speech) bill on these counters.
+                    row.stt_chars = len(user_text or "")
+                    row.tts_chars = len(answer or "")
                     row.status = "completed"
         except Exception:
             logger.exception("telegram: could not finalize session row")

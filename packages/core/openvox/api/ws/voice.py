@@ -70,6 +70,9 @@ async def voice_ws(ws: WebSocket) -> None:
         "llm_tokens_in_real": 0,
         "llm_tokens_out_real": 0,
         "tts_chars": 0,
+        # ASR-side: char count of finalised user transcripts. Feeds
+        # per-character STT pricing (BytePlus Seed ASR, Aliyun, etc.).
+        "stt_chars": 0,
     }
 
     try:
@@ -159,6 +162,7 @@ async def voice_ws(ws: WebSocket) -> None:
                             out_real if out_real > 0 else metrics.get("llm_tokens_out_approx", 0)
                         )
                         row.tts_chars = metrics.get("tts_chars", 0)
+                        row.stt_chars = metrics.get("stt_chars", 0)
                         row.status = "completed"
             except Exception:
                 logger.exception("could not finalize voice session row")
@@ -324,6 +328,11 @@ async def _forward_events(
                     metrics["llm_tokens_in_approx"] = metrics.get(
                         "llm_tokens_in_approx", 0
                     ) + max(1, len((ev.text or "").split()))
+                    # Per-character STT billing — accumulate raw char
+                    # length of the finalised user utterance.
+                    metrics["stt_chars"] = metrics.get(
+                        "stt_chars", 0
+                    ) + len(ev.text or "")
                 # Real usage arrives on the terminal stream chunk —
                 # accumulate so multi-turn sessions report correctly.
                 if ev.kind == "llm_usage" and ev.data:
