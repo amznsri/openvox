@@ -51,9 +51,21 @@ logger = logging.getLogger(__name__)
 class SessionConfig:
     system_prompt: str = "You are a helpful voice assistant."
     greeting: str = ""
-    llm_model: str = "doubao-seed-1.6-250615"
+    # Empty string → providers fall back to their configured default
+    # (BytePlus reads settings.byteplus_llm_model = "seed-2-0-pro-260328"
+    # via providers/byteplus/llm.py:_model_id). Hard-coding a model name
+    # here used to silently force every caller to "doubao-seed-1.6-250615"
+    # which doesn't exist on our key. Leave blank — the resolver does the
+    # right thing.
+    llm_model: str = ""
     temperature: float = 0.7
     max_tokens: int = 2048
+    # Safety cap on the LLM ↔ skill round-trip loop. Each iteration is
+    # "LLM returns tool_calls → we run them → feed results back". Most
+    # turns finish in 1–2 iterations; runaway loops (LLM that always
+    # asks for another tool) used to blow the Python stack. 6 is plenty
+    # for legitimate multi-step reasoning and stops the loop cleanly.
+    max_tool_iterations: int = 6
     stt: STTConfig = None  # type: ignore[assignment]
     tts: TTSConfig = None  # type: ignore[assignment]
     skills: list[str] | None = None
@@ -285,6 +297,23 @@ class VoiceSession:
             yield TurnEvent(kind="error", text=str(e))
 
     async def _llm_turn(self) -> AsyncIterator[TurnEvent]:
+        """One user turn → one (or more, if tools are called) LLM rounds.
+
+        Used to recurse on every tool-call round which made a runaway
+        skill loop fatal (Python stack blew, session crashed). Now bounded
+        by `SessionConfig.max_tool_iterations`:
+
+            for _ in range(max_tool_iterations):
+                stream LLM tokens + flush sentences to TTS
+                accumulate tool_calls
+                if no tool_calls: return  ← happy path, most turns
+                run tools, append results to history, loop
+            else: emit error("max tool iterations exceeded")
+
+        Wrapping the cap in `SessionConfig` so per-agent overrides are
+        possible (some skills genuinely chain — e.g. SDR with
+        fetch_next_lead → get_lead → record_disposition → book_demo).
+        """
         cfg = LLMConfig(
             model=self._cfg.llm_model,
             temperature=self._cfg.temperature,
@@ -292,41 +321,46 @@ class VoiceSession:
             stream=True,
             tools=self._skills.tool_specs() or None,
         )
-        try:
-            buffer = ""
-            # OpenAI-style streaming sends tool_call arguments in fragments
-            # (one chunk per few characters of JSON). We must accumulate
-            # them by `index` to get the final list of well-formed calls.
-            tool_calls_by_idx: dict[int, dict[str, Any]] = {}
 
-            async for chunk in self._llm.chat_stream(self._history, cfg):
-                if chunk.tool_calls:
-                    _merge_tool_call_deltas(tool_calls_by_idx, chunk.tool_calls)
-                if chunk.delta:
-                    buffer += chunk.delta
-                    yield TurnEvent(kind="assistant_token", text=chunk.delta)
-                    # Flush completed sentences to TTS for low latency.
-                    while True:
-                        m = _SENTENCE_BREAK.search(buffer)
-                        if not m:
-                            break
-                        sentence = buffer[: m.end()].strip()
-                        buffer = buffer[m.end():]
-                        if sentence:
-                            async for ev in self._speak(sentence):
-                                yield ev
-                if chunk.finish_reason:
-                    break
-            # Flush trailing buffer.
-            if buffer.strip():
-                async for ev in self._speak(buffer.strip()):
-                    yield ev
+        for iteration in range(self._cfg.max_tool_iterations):
+            try:
+                buffer = ""
+                # OpenAI-style streaming sends tool_call arguments in
+                # fragments (one chunk per few chars of JSON). We must
+                # accumulate them by `index` to get well-formed calls.
+                tool_calls_by_idx: dict[int, dict[str, Any]] = {}
 
-            tool_calls = _finalise_tool_calls(tool_calls_by_idx)
-            if tool_calls:
-                # OpenAI / Ark protocol requires the assistant message that
-                # *issued* the tool_calls to appear in history before the
-                # tool reply. Without it the next request returns 400.
+                async for chunk in self._llm.chat_stream(self._history, cfg):
+                    if chunk.tool_calls:
+                        _merge_tool_call_deltas(tool_calls_by_idx, chunk.tool_calls)
+                    if chunk.delta:
+                        buffer += chunk.delta
+                        yield TurnEvent(kind="assistant_token", text=chunk.delta)
+                        # Flush completed sentences to TTS for low latency.
+                        while True:
+                            m = _SENTENCE_BREAK.search(buffer)
+                            if not m:
+                                break
+                            sentence = buffer[: m.end()].strip()
+                            buffer = buffer[m.end():]
+                            if sentence:
+                                async for ev in self._speak(sentence):
+                                    yield ev
+                    if chunk.finish_reason:
+                        break
+                # Flush trailing buffer.
+                if buffer.strip():
+                    async for ev in self._speak(buffer.strip()):
+                        yield ev
+
+                tool_calls = _finalise_tool_calls(tool_calls_by_idx)
+                if not tool_calls:
+                    # No tools called → LLM is done, end the turn.
+                    return
+
+                # OpenAI / Ark protocol requires the assistant message
+                # that issued the tool_calls to appear in history before
+                # the tool replies. Without it the next request returns 400.
                 self._history.append(
                     LLMMessage(role="assistant", content=buffer, tool_calls=tool_calls)
                 )
@@ -346,8 +380,8 @@ class VoiceSession:
                     result = await self._skills.invoke(name, parsed_args)
                     yield TurnEvent(kind="skill_result", text=name, data=result)
 
-                    # Tool-result message must reference the call's id, not
-                    # the function name (OpenAI / Ark contract).
+                    # Tool-result message must reference the call's id,
+                    # not the function name (OpenAI / Ark contract).
                     self._history.append(
                         LLMMessage(
                             role="tool",
@@ -356,12 +390,27 @@ class VoiceSession:
                             content=json.dumps(result, ensure_ascii=False),
                         )
                     )
-                # Recurse — let the LLM continue with the tool result.
-                async for ev in self._llm_turn():
-                    yield ev
-        except Exception as e:
-            logger.exception("llm error")
-            yield TurnEvent(kind="error", text=str(e))
+                # Loop: ask the LLM to continue with the tool result.
+                # If the LLM responds with another tool_calls, we'll do
+                # this dance again — but only up to max_tool_iterations.
+            except Exception as e:
+                logger.exception("llm error on iteration %d", iteration)
+                yield TurnEvent(kind="error", text=str(e))
+                return
+
+        # Fell out of the for-loop → exceeded the iteration cap.
+        # Emit a clear error rather than failing silently.
+        logger.warning(
+            "tool-call loop exceeded max_tool_iterations=%d — ending turn",
+            self._cfg.max_tool_iterations,
+        )
+        yield TurnEvent(
+            kind="error",
+            text=(
+                f"tool-call loop exceeded {self._cfg.max_tool_iterations} iterations; "
+                "ending turn — your agent's skills may be calling each other in a cycle."
+            ),
+        )
 
 
     async def _speak(self, sentence: str) -> AsyncIterator[TurnEvent]:

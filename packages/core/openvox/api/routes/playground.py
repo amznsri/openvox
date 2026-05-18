@@ -38,7 +38,12 @@ router = APIRouter()
 
 class TextRequest(BaseModel):
     provider: str = "byteplus"
-    model: str = "doubao-seed-1.6-250615"
+    # Empty string → providers resolve their own default
+    # (byteplus → settings.byteplus_llm_model). Hard-coding a model
+    # here used to silently override the configured one with a stale
+    # name; see orchestrator.py SessionConfig.llm_model for the
+    # canonical pattern.
+    model: str = ""
     system: str = "You are a helpful voice assistant."
     user: str
     temperature: float = 0.7

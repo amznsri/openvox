@@ -183,7 +183,11 @@ async def _build_session(ctrl: dict) -> tuple[VoiceSession, "MCPSessionManager |
         llm_id = ctrl.get("llm_provider", "byteplus")
         sys_prompt = ctrl.get("system_prompt", "You are a helpful voice assistant.")
         greeting = ctrl.get("greeting", "")
-        llm_model = ctrl.get("llm_model", "doubao-seed-1.6-250615")
+        # Empty string → BytePlus provider falls back to
+        # settings.byteplus_llm_model (currently seed-2-0-pro-260328).
+        # The stale hard-coded "doubao-seed-1.6-250615" default used to
+        # silently override the configured model for ad-hoc sessions.
+        llm_model = ctrl.get("llm_model", "")
         voice_id = ctrl.get("voice_id", "")
         voice_lang = ctrl.get("voice_language", "en-US")
         voice_speed = float(ctrl.get("voice_speed", 1.0))
