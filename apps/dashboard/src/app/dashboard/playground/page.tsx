@@ -24,7 +24,12 @@ export default function PlaygroundPage() {
     "You are a helpful voice assistant. Keep responses under 2 sentences.",
   );
   const [llmProvider, setLlmProvider] = useState("byteplus");
-  const [llmModel, setLlmModel] = useState("doubao-seed-1.6-250615");
+  // Empty string is the canonical "use settings default" sentinel —
+  // BytePlus / OpenAI providers resolve it to their configured model
+  // (settings.byteplus_llm_model = "seed-2-0-pro-260328" by default).
+  // The previous hardcoded "doubao-seed-1.6-250615" was stale and
+  // didn't exist on the user's key — see CLAUDE.md §8 #45.
+  const [llmModel, setLlmModel] = useState("");
   const [sttProvider, setSttProvider] = useState("byteplus");
   const [ttsProvider, setTtsProvider] = useState("byteplus");
 
@@ -122,6 +127,27 @@ export default function PlaygroundPage() {
     playerRef.current = null;
     setMicState("idle");
   }
+
+  // Aggressive lifecycle cleanup — if the user navigates away (tab
+  // switch, page hide, component unmount) we MUST stop the mic and
+  // close the WebSocket. Otherwise the open mic keeps streaming
+  // background audio, BytePlus STT transcribes it as garbage
+  // utterances, and the LLM responds — playing TTS audio "every few
+  // seconds" with no apparent trigger from the user's side.
+  useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState === "hidden") stopVoice();
+    };
+    const onPagehide = () => stopVoice();
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", onPagehide);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", onPagehide);
+      stopVoice();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function handleEvent(ev: Record<string, unknown>) {
     const type = ev.type as string;
@@ -233,7 +259,15 @@ export default function PlaygroundPage() {
             </div>
             <div>
               <Label>Model</Label>
-              <Input value={llmModel} onChange={(e) => setLlmModel(e.target.value)} />
+              <Input
+                value={llmModel}
+                onChange={(e) => setLlmModel(e.target.value)}
+                // Leaving blank is the canonical "use the provider's
+                // configured default" sentinel — surfaced as a
+                // placeholder so users don't think the field is
+                // broken when an agent has no explicit model set.
+                placeholder="(use provider default from .env)"
+              />
             </div>
             <div>
               <Label>STT</Label>

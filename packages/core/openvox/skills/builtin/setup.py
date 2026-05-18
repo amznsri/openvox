@@ -287,6 +287,19 @@ class InstantiateTemplateSkill(BaseSkill):
         # the user just said.
         defaults["name"] = name
         defaults["template_id"] = template_id
+        # Mirror the regular template-instantiate route's behaviour:
+        # pull llm_model + voice_id from .env defaults when the
+        # template didn't pin them itself. Without this, agents
+        # created by the Setup Assistant land with empty `llm_model`
+        # and `voice_id` columns — they still WORK (the provider
+        # falls back to settings at call time), but the dashboard
+        # form shows a blank field which confuses users.
+        from openvox.config import get_settings
+        settings = get_settings()
+        if not defaults.get("llm_model"):
+            defaults["llm_model"] = settings.byteplus_llm_model
+        if not defaults.get("voice_id"):
+            defaults["voice_id"] = settings.byteplus_tts_default_voice
 
         async with db_session() as s:
             a = Agent(**{k: v for k, v in defaults.items() if hasattr(Agent, k)})

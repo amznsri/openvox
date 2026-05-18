@@ -99,14 +99,36 @@ export function SetupAssistant() {
       .map((l) => ({ role: l.role, content: l.text }));
   }
 
-  // ── Cleanup on unmount ───────────────────────────────────────────
-  useEffect(() => () => {
-    captureRef.current?.stop();
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "end" }));
-      wsRef.current.close();
+  // ── Aggressive lifecycle cleanup ─────────────────────────────────
+  // Without this, an open mic + WS keeps streaming background audio
+  // even after the user navigates away. BytePlus STT transcribes
+  // ambient noise as garbage utterances, the LLM dutifully responds,
+  // and TTS plays "every few seconds" with no apparent trigger.
+  // Cleanup must fire on unmount AND on tab-visibility-change AND on
+  // page-hide so we cover every navigation path.
+  useEffect(() => {
+    function teardown() {
+      captureRef.current?.stop();
+      captureRef.current = null;
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        try { wsRef.current.send(JSON.stringify({ type: "end" })); } catch { /* socket dying */ }
+        wsRef.current.close();
+      }
+      wsRef.current = null;
+      playerRef.current?.close?.();
+      playerRef.current = null;
+      setMicState("idle");
     }
-    playerRef.current?.close?.();
+    const onHide = () => {
+      if (document.visibilityState === "hidden") teardown();
+    };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", teardown);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", teardown);
+      teardown();
+    };
   }, []);
 
   // ── Voice WS plumbing ────────────────────────────────────────────
