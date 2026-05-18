@@ -503,27 +503,79 @@ Important file pointers:
     - **Telegram end-to-end test**: blocked on Docker daemon
       being down at the time the rest shipped.
 
+- **Session 10 voice-driven Setup Assistant** (2026-05-18): commit
+  `71f47d2`. Six new skills (list_templates, recommend_template,
+  instantiate_template, update_agent_field, publish_agent,
+  describe_remaining_setup) + a built-in `setup-assistant` template
+  + a `/dashboard/agents/new` chooser page (Form / Voice) + a new
+  `SetupAssistant.tsx` split-pane component + landing-page CTA +
+  `POST /api/v1/agents/{id}/turn` route for text-mode turns. Both
+  user decisions landed verbatim: voice + text hybrid input,
+  first-class CTA on public landing + topbar.
+  **Key design choice that makes voice+text hybrid work**: the
+  draft_agent_id stash moved off ephemeral `ctx.metadata` onto the
+  Setup Assistant agent's own `channels.setup_state` JSON column.
+  Both transports converge on the same persistent state — user can
+  speak one turn and type the next without losing context.
+  **Verified end-to-end** with four real LLM turns:
+  *"I run a salon..." → recommended Receptionist → instantiated
+  "Acme Salon" → set greeting → described remaining setup → published.*
+- **Session 11 polish pass** (2026-05-18, evening): five commits
+  shaking out real-user feedback against the Telegram bot, voice
+  agents, and Setup Assistant flow.
+  - `bc2d53c` Gateway telephony stubs were swallowing Telegram
+    webhooks. Node Fastify had stub handlers for
+    `/api/v1/telephony/{telegram,whatsapp,twilio}/*` that returned
+    200 OK without forwarding to core. **Removed** the stub
+    registration entirely; the catch-all `proxyRoutes` now forwards
+    everything to Python. Affected WhatsApp + Twilio paths too —
+    they'll work once credentials/numbers land.
+  - `46da6a1` Telegram polish: Telegram voice notes arrive as `.oga`
+    (OGG/Opus) which `_decode_to_pcm16k` didn't recognise →
+    silently failed pydub decode. Now normalised `oga`→`ogg` at
+    both the per-call site and the recogniser's ext list.
+    **Separately**, `_handle_telegram_update` was calling plain
+    `llm.chat()` without `tools=` — agents would hallucinate
+    function calls as plain text ("Function call begins, query_documents
+    parameters..."). Replaced with the full skill loop, matching
+    `/api/v1/agents/{id}/turn`.
+  - `d63e429` + `7bdee64` + `8b83dab` TTS quality sweep:
+    `openvox/utils/text.py:clean_for_tts` (originally
+    `strip_markdown_for_tts`) sanitises **everything** that TTS
+    engines mis-pronounce: markdown emphasis, hyphens in compound
+    words, URLs, emoji, HTML entities, repeated punctuation. Wired
+    into both the orchestrator's `_speak()` (voice WS, playground)
+    and `_telegram_synthesize_ogg()`. Companion ASR helper
+    `looks_like_real_speech()` rejects background-noise transcripts
+    before they hit the LLM. Conservative scope by design: emails,
+    file extensions, ampersands, slashes deliberately untouched
+    because TTS reads them sensibly in context.
+  - `bc31bf1` Three UX bugs from a live playground test:
+    (a) stale `"doubao-seed-1.6-250615"` default hardcoded in
+    `playground/page.tsx` — fixed by defaulting to `""` and adding
+    a placeholder explaining the field. CLAUDE.md §8 #45 lesson
+    re-learned (we'd swept the Python sites but missed the TS side).
+    (b) Setup Assistant skill created agents with empty `llm_model`
+    column. Pre-fill from settings now to match the regular
+    /instantiate route.
+    (c) Random "voice gets activated every few seconds when idle" —
+    open mic + WS left from previous voice session kept transcribing
+    background noise → LLM responded → TTS spoke. Fixed via
+    aggressive teardown on visibilitychange + pagehide + unmount in
+    both playground and SetupAssistant. The playground page had **no
+    cleanup useEffect at all** previously.
+  - `af6dd8b` Agent delete silently failed for agents with attached
+    Session rows. Original cascade only handled Document /
+    DocumentChunk — Session 8/9 added five more tables that reference
+    agent_id (EvalRun, Recording, ScheduledJob, JobRun via
+    ScheduledJob, plus the hard FK on Sessions itself with cascading
+    Transcripts). Route now cascades through every reference in
+    strict dependency order. Dashboard `destroy()` also gained
+    try/catch with alert + explicit `mutate("agents")` invalidation.
+
 ### 🚧 In progress
-- (none — Session 9 effectively wrapped; the three deferred items
-  above are external-dependency-gated, not code-incomplete.)
-
-### 📋 Designed, queued for next session
-See [`docs/PLANNING_SESSION10.md`](docs/PLANNING_SESSION10.md) for
-the full Session 10 spec.
-
-**Session 10 — Voice-driven Setup Assistant (~2.5 days)**:
-build a "build voice agents by talking to a voice agent" flow.
-Five new skills (`list_templates`, `recommend_template`,
-`instantiate_template`, `update_agent_field`, `publish_agent`,
-`describe_remaining_setup`) + a built-in `setup-assistant` agent +
-a `/dashboard/agents/new` chooser page (Form / Voice). Both user
-decisions locked: hybrid voice+text input, first-class CTA on
-public landing + topbar.
-
-**Gated**: only proceed once the three deferred Session 9 items
-(image diet, WeChat/Lark audio, Telegram E2E test) clear, since
-Session 10 amplifies the voice pipeline to a much broader audience
-and benefits from those being in place.
+- (none — Session 11 wrapped. Three Session 9 items still gated on
+  external dependencies; see PLANNING_NEXT.md.)
 
 ### ⏳ Pending / roadmap
 - **Speech-to-Speech (S2S)** — placeholder. OpenAI Realtime works today as alternative.
@@ -818,6 +870,128 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     high enough for legitimate chains (SDR
     `fetch_next_lead → record_disposition → book_demo` is four),
     low enough to fail fast on tight loops.
+
+### Telephony / proxy gateway pitfalls (Session 11)
+47. **Node gateway stubs swallowed Telegram/WhatsApp/Twilio webhooks.**
+    `packages/server/src/routes/telephony.ts` had `fastify.post(
+    "/telegram/webhook", async () => ({forwarded: true}))` and
+    similar stubs for the WhatsApp + Twilio webhooks. Mounted under
+    the `/api/v1/telephony` prefix AFTER the catch-all `proxyRoutes`,
+    Fastify's route-specificity match meant the stubs intercepted
+    every webhook delivery. Telegram saw 200 OK + a synthetic
+    response → cleared its queue → user wondered why messages
+    delivered to `@their_bot` never reached the agent. Four real
+    user messages were lost before we noticed.
+    *Fix*: remove the `telephonyRoutes` registration entirely. The
+    Python core has the real implementations; the catch-all proxy
+    now forwards `/api/v1/telephony/*` straight through.
+    **Lesson**: the gateway is a transparent proxy. If you ever add
+    a route in `packages/server/src/routes/` that overlaps with the
+    `/api/v1/*` prefix, you're shadowing core. Either delete it or
+    delegate to core via an explicit `fetch()` call — don't return
+    a synthetic response from the gateway.
+
+### Audio / TTS / ASR quality (Session 11)
+48. **Telegram voice notes arrive as `.oga`, not `.ogg`.**
+    Telegram's `voice` Update payload returns files with extension
+    `.oga` (OGG container, Opus codec). `_decode_to_pcm16k`'s
+    recognised extension list had `ogg` but not `oga`, so format
+    detection fell through to `None` and ffmpeg refused to guess:
+    `code 183: Invalid data found when processing input`. The
+    transcribe helper then returned `""` and the user got the
+    fallback "I couldn't make out what you said".
+    *Fix*: normalise `oga → ogg` at both the per-call site in
+    `_telegram_transcribe` and the recogniser's ext list in
+    `_decode_to_pcm16k`. Belt + braces.
+    **Lesson**: when accepting audio from any third-party API,
+    normalise the filename extension yourself — don't trust the
+    source's naming conventions.
+49. **`llm.chat()` without `tools=` is a footgun for agents whose
+    `system_prompt` mentions skills.** The Telegram text path used
+    a plain `llm.chat(messages, cfg)` call without passing
+    `tools=runner.tool_specs()`. When the Doc Assistant's prompt
+    told the LLM to use `query_documents`, the LLM dutifully
+    "described" the call as plain text in the response. That text
+    then got TTS-synthesized: "Function call begins, they do not
+    name query_documents parameters query list of all APIs."
+    *Fix*: replace the bare chat with the full skill loop — same
+    shape as `orchestrator._llm_turn` and the
+    `/api/v1/agents/{id}/turn` route. Bounded at 6 iterations.
+    **Lesson**: every text-mode transport (Telegram, WeChat, Lark,
+    any future channel) must run the skill loop, not a one-shot
+    `chat()`. Add this to the channel-bring-up checklist.
+50. **Raw LLM text to TTS is a quality disaster.** LLMs write for
+    readers, not listeners. Markdown emphasis (`**bold**`), URLs,
+    emoji, repeated punctuation, hyphens in compound words —
+    every one of these reads wrong out loud. We hit each in turn
+    over a single test session:
+    - `**ListAssets**` → "asterisk asterisk ListAssets" (commit `d63e429`)
+    - `real-human guide--ModelArk` → "real dash human guide dash dash
+       ModelArk" (`7bdee64`)
+    - `https://docs...` → "h-t-t-p-s-colon-slash-slash"
+    - 🎉 emoji → "white heavy check mark"
+    - `&amp;` → "ampersand a m p semicolon" (`8b83dab`)
+    *Fix*: centralised `openvox/utils/text.py:clean_for_tts()`
+    sanitises every voice-hostile pattern. Wired into orchestrator
+    `_speak()` AND `_telegram_synthesize_ogg()` so every TTS-emitting
+    path gets the same treatment.
+    **Lesson**: never feed raw LLM text to a TTS engine. Always
+    sanitise first. New TTS code paths (future WeChat audio, Lark
+    audio, Twilio outbound) must route through `clean_for_tts`.
+    Conservative-by-default — we deliberately leave email
+    addresses, file extensions, ampersands, slashes alone because
+    TTS engines pronounce those acceptably in context.
+
+### Dashboard state hygiene (Session 11)
+51. **Stale defaults can persist in TypeScript state even after a
+    Python sweep.** Bug #45 fixed three Python sites that hardcoded
+    `"doubao-seed-1.6-250615"` as the LLM model default. Missed
+    `apps/dashboard/src/app/dashboard/playground/page.tsx:27` which
+    had the same string as the initial form state. Result: the
+    Playground voice tab silently overrode every ad-hoc session's
+    model to a name that doesn't exist on the user's BytePlus key.
+    *Fix*: default to empty string + placeholder "(use provider
+    default from .env)" in the field.
+    **Lesson**: when sweeping a stale literal, search the whole
+    monorepo (`grep -rn "doubao-seed-1.6"`), not just one language.
+    Add a pre-commit lint or a CI step that catches re-introduction.
+52. **Voice sessions leak across page navigation.** The playground
+    page had **no cleanup useEffect at all**, so leaving the page
+    while the mic was active left the WebSocket open and the mic
+    capturing background audio. BytePlus STT transcribed ambient
+    noise as garbage utterances → LLM responded → TTS played.
+    User-facing symptom: "every few seconds voice gets activated"
+    on unrelated dashboard pages.
+    *Fix*: aggressive teardown on every navigation path — unmount
+    AND `visibilitychange` AND `pagehide` listeners — applied to
+    both the Playground page and the Setup Assistant component.
+    **Lesson**: every component that opens a WebSocket OR captures
+    mic OR holds an AudioContext needs visibility/unload teardown,
+    not just unmount. Next.js client navigation doesn't always
+    unmount eagerly, and even when it does, browser tab-switching
+    doesn't trigger unmount.
+
+### Foreign-key cascades (recurring family)
+53. **Agent delete missed five new tables added by Session 8/9.**
+    Bug #30 expanded the delete route to handle Documents +
+    DocumentChunks. Sessions 8/9 then added EvalRun, Recording,
+    ScheduledJob (+ JobRun via ScheduledJob.id), and the Sessions
+    hard FK with cascading Transcripts. None were covered. User
+    hit "Delete agent" + confirm → silent failure (the route
+    threw `ForeignKeyViolationError` on the Sessions FK, the
+    dashboard caught it but didn't surface the error, `router.push`
+    never ran).
+    *Fix*: route now cascades through eight tables in strict
+    dependency order: EvalRun → Recording → JobRun → ScheduledJob
+    → Transcript → Session → DocumentChunk → Document → Agent.
+    Dashboard `destroy()` also got try/catch with `alert()` so
+    future failures surface instead of disappearing.
+    **Lesson**: this is the THIRD FK-cascade bug in the register
+    (#29, #30, #53). Every new table that references `agents.id`
+    or `sessions.id` must update the relevant delete route. Worth
+    a one-time schema migration to add `ondelete="CASCADE"` on
+    every such FK so future tables don't need this dance — listed
+    in PLANNING_NEXT.md.
 
 ---
 

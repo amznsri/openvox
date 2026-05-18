@@ -584,6 +584,220 @@ PyTorch CPU-index blocked by Zscaler (#44).
 
 ---
 
+## Session 9 — 2026-05-18 (closing the Session-8 backlog)
+
+**Goal**: ship the seven priority items carried forward from Session 8
+(eval framework UI, pricing card, image diet, real LLM token usage,
+WeChat/Lark audio bridges, scheduler webhook, skill hot-reload), plus
+verify Session 8 features end-to-end against the running stack.
+
+### What shipped
+
+Five of seven priority items closed:
+- **#6 Scheduler webhook trigger** (`a3b9a63`): `trigger_type="webhook"`,
+  `POST /api/v1/jobs/webhook/{token}` route with token-based auth,
+  dashboard `WebhookUrlCallout` with copy button. Optional JSON body
+  merged into payload for that single run; disabled / wrong-token
+  cases return 200 with `received:false` to prevent enumeration.
+- **#7 Skill hot-reload** (`a3b9a63`): `watchfiles>=0.24.0` watching
+  `~/.openvox/skills/` (or `OPENVOX_SKILLS_DIR` override), wired
+  into the FastAPI lifespan.
+- **#4 Real provider-reported LLM token usage** (`384e462`):
+  `LLMResponseChunk.usage` + `stream_options.include_usage=true`
+  on every OpenAI-compat client. Orchestrator emits a new
+  `llm_usage` TurnEvent kind. WS forwarder + text playground track
+  both word-count `_approx` (always populated) and provider
+  `_real` (when emitted); final write prefers `_real` when > 0.
+- **#2 Pricing-breakdown card on Observability** (`384e462`): clickable
+  session rows → slide-in drawer with stacked-bar component cost
+  + what-if matrix + "switch to X to save $Y" recommendation.
+- **#1 Evals dashboard page** (`384e462`): full UI over the eval
+  framework backend — stats row, recent-runs table, detail drawer
+  with per-criterion judge breakdown + transcript, RunEvalModal
+  for new runs. Observability drawer gains "Save as recording".
+  Sidebar gets the Evals link.
+
+Also caught + fixed two correctness bugs surfaced during code review
+(commit `d04f85b`): stale `"doubao-seed-1.6-250615"` default in three
+sites, unbounded recursion in `_llm_turn`. Both logged as CLAUDE.md
+§8 #45 and #46.
+
+Plus a Session-9-kickoff `2e0fc7a` shipped the **ngrok sidecar
+service + complete Telegram pipeline** (webhook handler with
+secret-token verification, voice + text inbound, voice + text reply,
+ffmpeg PCM→OGG-Opus encoding, dashboard "Connect Telegram" wizard
+with @BotFather deep-link). Voice/text hybrid pre-bakes the
+infrastructure Session 10 will need.
+
+### Deferred (three items, all external-dependency-gated)
+
+1. **Image-size diet** — PyTorch CPU mirror Zscaler-blocked here.
+   Retry from unrestricted egress.
+2. **WeChat Work / Lark audio bridges** — needs verified test
+   credentials (WeCom EncodingAESKey + Lark tenant_access_token).
+3. **Telegram E2E test** — Docker daemon was down when the rest
+   of Session 9 shipped; pipeline code complete.
+
+### End-of-session verification pass
+
+After Docker came back up: rebuilt core + dashboard, verified each
+of the five shipped items via curl + dashboard click-through. Found
++ fixed two telemetry leaks in the process (commit `1bf4a3e`):
+
+- Dockerfile set `OPENVOX_DATA_DIR=/data` but pydantic-settings
+  reads `DATA_DIR`. The `/data` volume mount was silently ignored
+  → settings.data_dir resolved to `./.openvox` inside `/app`.
+  Renamed Dockerfile ENV to match settings field name.
+- `/api/v1/sessions` serialisers didn't expose the new pricing
+  telemetry columns (llm_tokens_in/out, tts_chars). Columns were
+  being WRITTEN correctly but dashboard list view couldn't see
+  them. Added to `_session_to_dict`.
+
+### Files touched
+
+```
+packages/core/openvox/scheduler/engine.py        (webhook trigger_type)
+packages/core/openvox/api/routes/jobs.py         (webhook fire route)
+packages/core/openvox/skills/registry.py         (reload_local())
+packages/core/openvox/skills/watcher.py          (new — async file watcher)
+packages/core/openvox/providers/base.py          (LLMResponseChunk.usage)
+packages/core/openvox/providers/byteplus/llm.py  (stream_options)
+packages/core/openvox/providers/openai_compat/_openai_base.py (same)
+packages/core/openvox/api/routes/pricing.py      (new)
+packages/core/openvox/api/routes/evals.py        (already existed; now used)
+packages/core/openvox/api/routes/sessions.py     (new telemetry columns)
+apps/dashboard/src/app/dashboard/evals/page.tsx  (new)
+apps/dashboard/src/app/dashboard/observability/page.tsx (pricing drawer)
+apps/dashboard/src/app/dashboard/schedules/page.tsx (WebhookUrlCallout)
+apps/dashboard/src/components/nav/sidebar.tsx    (Evals link)
+apps/dashboard/src/lib/api.ts                    (pricing + eval helpers)
+docker-compose.yml                                (ngrok sidecar)
+.env.example                                      (NGROK_AUTHTOKEN)
+packages/core/openvox/api/routes/telephony.py    (Telegram pipeline)
+packages/core/openvox/telephony/telegram.py      (new — Bot API wrapper)
+apps/dashboard/src/components/setup/             (Telegram wizard)
+```
+
+Commits: `8d02382` (plan) → `2e0fc7a` (Telegram kickoff) → `d04f85b`
+(correctness fixes) → `a3b9a63` (#6 + #7) → `384e462` (#4 + #2 + #1)
+→ `1bf4a3e` (verification fixes) → `8238b3a` (memory refresh).
+
+---
+
+## Session 10 — 2026-05-18 (voice-driven Setup Assistant)
+
+**Goal**: build the headline differentiation feature — non-technical
+users create voice agents *by talking to a voice agent*.
+
+### What shipped
+
+Single commit `71f47d2` (~1300 LOC). End-to-end verified with four
+real LLM turns against the live BytePlus Ark stack — the agent
+correctly classified the use-case, instantiated the right template,
+named the agent, set its greeting verbatim, described remaining
+manual setup, and published.
+
+**Backend**:
+- `skills/builtin/setup.py` (new) — six skills:
+  `list_templates`, `recommend_template` (keyword classifier, not
+  another LLM round), `instantiate_template`, `update_agent_field`
+  (with hard-coded allow-list), `publish_agent`,
+  `describe_remaining_setup`.
+- `api/routes/templates.py` — added `setup-assistant` built-in
+  template + `GET /api/v1/templates/setup-assistant/singleton`
+  (get-or-create, idempotent so the agents page doesn't accumulate
+  one SA entry per voice-setup click).
+- `api/routes/agents.py` — new `POST /api/v1/agents/{id}/turn`
+  route. One text turn with full skill loop. Stateless: caller
+  supplies history. Returns assistant text + event log so the
+  SetupAssistant UI can render skill calls in the transcript.
+
+**Dashboard**:
+- `components/setup/SetupAssistant.tsx` (new) — split-pane: chat
+  with mic-toggle + text input on the left, live preview of the
+  draft agent on the right (SWR-poll every 2 s). Voice via
+  `/ws/voice`, text via the new `/turn` route — **both write to
+  the same persistent draft state** via the Setup Assistant
+  agent's `channels.setup_state.draft_agent_id` JSON column.
+- `app/dashboard/agents/new/page.tsx` — refactored into a chooser:
+  no `?mode` → Form/Voice cards; `?mode=voice` → SetupAssistant;
+  `?mode=form` → the existing form (preserved verbatim under
+  `FormFlow`). Wrapped in `<Suspense>` for `useSearchParams`.
+- `app/page.tsx` — public landing CTA promoted: "🎙 Build by voice"
+  is now the primary gradient button; "Open dashboard" demoted to
+  outline.
+
+### Key design choice
+
+Voice + text hybrid only works if draft state survives transport
+switches. We moved the `draft_agent_id` stash from per-runner
+`ctx.metadata` (ephemeral) to the Setup Assistant agent's own
+`channels.setup_state` JSON column (persisted). Both modes converge
+on the same agent and the same persisted state — user can speak one
+turn and type the next.
+
+### Out-of-scope (explicit per the locked plan)
+
+- API-key / token / webhook-URL dictation stays form-only.
+- MCP server configuration via voice — same.
+- Edit-by-voice on published agents — Session 11+ if anyone asks.
+
+---
+
+## Session 11 — 2026-05-18 (post-merge polish + telephony quality)
+
+**Goal**: shake out real-user feedback against the new Telegram
+pipeline + Setup Assistant + voice paths. Six bug-classes hit and
+shipped in five commits.
+
+### What was broken vs. what landed
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| Telegram bot ignored all messages | Node gateway stubs returned 200 OK without proxying to core (`packages/server/src/routes/telephony.ts`) | Removed `telephonyRoutes` registration; `/api/v1/telephony/*` falls through to `proxyRoutes` ([bc2d53c](https://github.com/amznsri/openvox/commit/bc2d53c)) |
+| Voice → "I couldn't make out what you said" always | Telegram delivers OGG-Opus as `.oga`; pydub ext list had `ogg` not `oga` → ffmpeg "Invalid data" | Normalise `oga→ogg` in `_telegram_transcribe` + add to recogniser ext list ([46da6a1](https://github.com/amznsri/openvox/commit/46da6a1)) |
+| Text → voice reply reads "Function call begins, query_documents parameters..." | `_handle_telegram_update` called `llm.chat()` without `tools=` — LLM hallucinated function call as plain text | Replace with full skill loop (mirrors `agent_text_turn`) ([46da6a1](https://github.com/amznsri/openvox/commit/46da6a1)) |
+| Voice reply says "asterisk asterisk" | LLM emits `**bold**` markdown; TTS reads chars literally | `clean_for_tts` strips markdown ([d63e429](https://github.com/amznsri/openvox/commit/d63e429)) |
+| Voice reply says "dash" inside compound words | Hyphens in `real-human` etc. read as "dash" by BytePlus TTS | Hyphen-between-alpha → space; multi-dash → comma+space ([7bdee64](https://github.com/amznsri/openvox/commit/7bdee64)) |
+| URLs spelled letter-by-letter, emoji read as "white heavy check mark", repeated `!!!` spluttery | Same broad family — raw LLM text to TTS | Comprehensive `clean_for_tts` sweep: URLs stripped, emoji removed, HTML entities decoded, repeated punctuation collapsed. Companion `looks_like_real_speech` rejects ASR noise before LLM ([8b83dab](https://github.com/amznsri/openvox/commit/8b83dab)) |
+| Playground LLM Model field shows stale `doubao-seed-1.6-250615` | Hardcoded in `playground/page.tsx:27` (missed during the Python sweep) | Default to `""` with placeholder "(use provider default from .env)" ([bc31bf1](https://github.com/amznsri/openvox/commit/bc31bf1)) |
+| Setup Assistant created agents with empty `llm_model` column | `InstantiateTemplateSkill` didn't pre-fill from settings the way the regular instantiate route does | Pre-fill `llm_model` + `voice_id` from `settings.byteplus_*` in `defaults` dict ([bc31bf1](https://github.com/amznsri/openvox/commit/bc31bf1)) |
+| Random voice activation "every few seconds" with no mic interaction | Playground page had no cleanup `useEffect`; mic stayed open across navigation → STT transcribed ambient noise → LLM responded → TTS spoke | Aggressive teardown on `visibilitychange` + `pagehide` + unmount, in both Playground and SetupAssistant ([bc31bf1](https://github.com/amznsri/openvox/commit/bc31bf1)) |
+| "Delete agent" silently failed for agents with prior Session rows | Delete route's cascade missed five tables added by Session 8/9 (EvalRun, Recording, ScheduledJob, JobRun, **the Sessions FK itself**). FK violation thrown, dashboard caught it silently | Route cascades through eight tables in dependency order; dashboard surfaces errors via `alert()` and invalidates SWR caches ([af6dd8b](https://github.com/amznsri/openvox/commit/af6dd8b)) |
+
+### Lessons logged to CLAUDE.md §8
+
+Bugs #47 (gateway transparent-proxy rule), #48 (third-party audio
+extension normalisation), #49 (text-mode handlers must pass `tools=`),
+#50 (clean_for_tts is mandatory on every TTS path), #51 (sweep
+literals across the WHOLE monorepo, not one language), #52 (every
+WS/mic/AudioContext consumer needs visibility+unload teardown),
+#53 (FK-cascade family now at 3 occurrences — overdue for an Alembic
+migration adding `ondelete="CASCADE"` to every agent-referencing
+table).
+
+### New TTS sanitiser is universal
+
+`openvox/utils/text.py` `clean_for_tts()` handles:
+markdown emphasis, hyphens-in-compound-words, multi-dash, URLs,
+emoji ranges, HTML entities, repeated terminal punctuation, tab +
+multi-space normalisation. Wired into:
+- `pipeline/orchestrator.py:_speak()` — voice WS / playground.
+- `api/routes/telephony.py:_telegram_synthesize_ogg()` — Telegram
+  voice replies.
+
+Future TTS-emitting paths (WeChat audio, Lark audio, Twilio outbound
+voice when wired) inherit it automatically by going through these
+two functions.
+
+### Verification
+
+Each fix verified live. The earlier 4-turn Setup Assistant E2E
+remains green. Telegram voice + text round-trips work cleanly with
+the Doc Assistant agent.
+
+---
+
 ## Open follow-ups (carried forward)
 
 Updated end of Session 8 (post-deploy-fixups). Items shipped this
