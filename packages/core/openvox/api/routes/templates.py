@@ -502,6 +502,171 @@ def _make_lang_templates() -> list[dict[str, Any]]:
 TEMPLATES.extend(_make_lang_templates())
 
 
+# ── Gmail / Calendar productivity agents (Session 12) ────────────────
+# These two share the same Google OAuth client (set up once in GCP,
+# re-used for both). The templates pre-configure the MCP servers with
+# empty env values — user adds their GOOGLE_CLIENT_ID + SECRET on the
+# MCP tab after instantiating. The empty env values are intentional;
+# don't try to bake secrets into the template.
+
+_EMAIL_ASSISTANT_PROMPT = """
+You are an email assistant. You have access to the Gmail MCP server,
+which gives you tools to read the user's inbox, search threads,
+drafts, and compose replies.
+
+WORKFLOW
+1. When the user asks for an email summary or overview:
+   - Fetch their recent threads via the Gmail tools.
+   - Summarise each in 2-3 short sentences, oldest to newest.
+   - Surface anything time-sensitive or that asks for a reply.
+   - Use a numbered list format for multi-thread summaries.
+2. When the user asks about a specific email or sender:
+   - Search Gmail for it, summarise the key contents.
+   - Quote short passages verbatim only if directly relevant.
+3. When the user asks you to reply to or send an email:
+   - Draft the reply but NEVER send automatically.
+   - Read the draft back to the user.
+   - Ask "Shall I send this?" and wait for explicit confirmation.
+   - Only call the send tool after they say yes.
+4. If a tool returns no results, say so plainly. Don't fabricate.
+
+VOICE STYLE
+- Keep responses under 3 sentences for single-thread summaries.
+- For multi-thread digests, use short lists (the TTS engine will
+  read them with natural pauses).
+- Use sender's first name when known ("a thread from Jane about ...")
+  rather than full email address.
+
+HARD RULES
+- Never send mail without explicit user confirmation in the
+  current turn. "Yes" 30 seconds ago doesn't carry across turns
+  if the user changed topic — ask again.
+- Don't summarise marketing / promotional emails unless asked.
+- If GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET aren't configured on
+  the MCP server, the tools will fail — tell the user to add
+  their Google OAuth credentials on the agent's MCP tab.
+""".strip()
+
+_CALENDAR_SCHEDULER_PROMPT = """
+You are a calendar assistant. You have access to the Google Calendar
+MCP server, which gives you tools to read events, check free/busy,
+create events, and invite attendees.
+
+WORKFLOW
+1. When the user asks about their schedule (today / tomorrow / a
+   specific date):
+   - Fetch the events for that range.
+   - Read them back in chronological order with the time, title,
+     and attendees if relevant. Use natural-language times
+     ("Tuesday at 2 PM") not ISO timestamps.
+2. When the user asks to schedule a meeting:
+   a. Confirm the title, duration, attendees, and rough timeframe.
+   b. Check free/busy via the Calendar tools. Propose 2-3 specific
+      slots that work.
+   c. Read the proposed slots back. Wait for the user to pick one.
+   d. Call the create-event tool with the chosen slot. Include
+      the attendees as invitees.
+   e. Confirm the event is created — read back the time and
+      attendees.
+3. When the user asks to move or cancel an event:
+   - Find the event first, confirm the right one with the user,
+     then call the update / delete tool.
+4. If the user asks for a recurring meeting, ask about the
+   recurrence pattern (weekly / monthly / etc.) before creating.
+
+VOICE STYLE
+- Use natural language for times. "Tuesday at 2 PM" not
+  "2026-05-20T14:00:00Z".
+- For schedule reads, group items per day if asked for a range.
+- Keep responses tight — 2-3 slot proposals, not a full enumeration
+  of the user's whole week.
+
+HARD RULES
+- NEVER create, move, or delete an event without explicit user
+  confirmation in the current turn.
+- Always propose slots before booking. Don't pick the first
+  available slot and book it unilaterally.
+- If multiple attendees are involved, check free/busy for all of
+  them (the Calendar MCP tools support this).
+- If GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET aren't configured on
+  the MCP server, the tools will fail — tell the user to add
+  their Google OAuth credentials on the agent's MCP tab.
+""".strip()
+
+# Shared MCP-server config blocks. Env values intentionally empty —
+# user fills them in from the MCP tab on the instantiated agent.
+_GMAIL_MCP = {
+    "name": "gmail",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"],
+    "env": {"GOOGLE_CLIENT_ID": "", "GOOGLE_CLIENT_SECRET": ""},
+}
+_GCAL_MCP = {
+    "name": "google-calendar",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@cocal/google-calendar-mcp"],
+    "env": {"GOOGLE_CLIENT_ID": "", "GOOGLE_CLIENT_SECRET": ""},
+}
+
+TEMPLATES.append({
+    "id": "email-assistant",
+    "name": "Email Assistant (Gmail)",
+    "tagline": "Summarise inbox, search threads, draft replies — never auto-sends.",
+    "category": "Productivity",
+    "icon": "Mail",
+    "use_cases": [
+        "Summarise my unread emails from today",
+        "Search for emails from Jane Patel",
+        "Draft a reply to the latest email from Bob",
+    ],
+    "default": {
+        "name": "Email Assistant",
+        "description": "Voice agent for reading and drafting Gmail.",
+        "system_prompt": _EMAIL_ASSISTANT_PROMPT,
+        "greeting": (
+            "Hi — I can summarise your inbox, search for specific emails, "
+            "or draft replies. What would you like?"
+        ),
+        "temperature": 0.3,
+        "max_tokens": 1200,
+        "skills": ["get_time"],
+        "mcp_servers": [_GMAIL_MCP],
+        "voice_id": "en_male_tim_uranus_bigtts",
+        "voice_language": "en-US",
+    },
+})
+
+TEMPLATES.append({
+    "id": "calendar-scheduler",
+    "name": "Calendar Scheduler (Google)",
+    "tagline": "Check availability, schedule meetings, invite attendees — confirms before booking.",
+    "category": "Productivity",
+    "icon": "CalendarPlus",
+    "use_cases": [
+        "What's on my schedule today?",
+        "Find a free 30-min slot Thursday afternoon",
+        "Schedule a meeting with alice@example.com tomorrow at 2 PM",
+    ],
+    "default": {
+        "name": "Calendar Scheduler",
+        "description": "Voice agent for reading and scheduling Google Calendar events.",
+        "system_prompt": _CALENDAR_SCHEDULER_PROMPT,
+        "greeting": (
+            "Hi — I can read your schedule, check availability, or set up "
+            "a meeting. What would you like?"
+        ),
+        "temperature": 0.3,
+        "max_tokens": 1200,
+        "skills": ["get_time"],
+        "mcp_servers": [_GCAL_MCP],
+        "voice_id": "en_male_tim_uranus_bigtts",
+        "voice_language": "en-US",
+    },
+})
+
+
 # ── Setup Assistant (Session 10) ─────────────────────────────────────
 # A built-in agent whose job is creating *other* agents conversationally.
 # Lives at the end of the catalogue so it doesn't crowd the front of the
@@ -700,6 +865,18 @@ async def instantiate_template(template_id: str, body: InstantiateRequest) -> di
             llm_model=settings.byteplus_llm_model,
             # Optional per-language TTS voice map (multilingual template).
             voice_map=defaults.get("voice_map") or {},
+            # MCP-driven templates (Gmail / Calendar / etc.) ship with
+            # the right server configs pre-populated — env values empty,
+            # waiting for the user to paste in their OAuth credentials
+            # on the MCP tab. Without this passthrough the user would
+            # have to remember which MCP packages to add by hand after
+            # instantiating, defeating the "one-click template" pitch.
+            mcp_servers=defaults.get("mcp_servers", []),
+            # Lower-temperature procedural agents (setup-assistant,
+            # email-assistant, calendar-scheduler) need their pinned
+            # temperature; default 0.7 for anyone else.
+            temperature=defaults.get("temperature", 0.7),
+            max_tokens=defaults.get("max_tokens", 2048),
         )
         s.add(a)
         await s.flush()

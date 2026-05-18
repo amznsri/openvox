@@ -12,9 +12,12 @@ import {
   Loader2,
   ArrowRight,
   Calendar,
+  CalendarPlus,
   FileText,
+  Mail,
   PhoneOutgoing,
   Languages,
+  Wand2,
 } from "lucide-react";
 
 import { api, type Agent, type Template } from "@/lib/api";
@@ -28,9 +31,12 @@ const ICONS = {
   TrendingUp,
   Mic,
   Calendar,
+  CalendarPlus,
   FileText,
+  Mail,
   PhoneOutgoing,
   Languages,
+  Wand2,
 } as const;
 
 export default function TemplatesPage() {
