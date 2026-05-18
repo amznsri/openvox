@@ -112,26 +112,24 @@ DEFAULT_RATES: dict[str, ProviderRates] = {
     "openai": ProviderRates(
         llm_usd_per_1m_input=2.50,
         llm_usd_per_1m_output=15.00,
-        # TTS rate is commonly cited as tts-1 standard at $15/1M chars
-        # ($0.015/1k chars) by aggregators (tokenmix.ai, costgoat.com,
-        # OpenAI dev forum threads) but the openai.com/api/pricing page
-        # currently 403s our fetch tool and the developer-docs page
-        # doesn't render TTS rates inline. Treat as unverified vs the
-        # primary source until you can hit the live page; if you swap
-        # to gpt-4o-mini-tts the model is token-based ($0.60/1M input
-        # chars + $12/1M audio output tokens ≈ $0.015/min) and the
-        # per-1k-chars unit doesn't apply cleanly.
-        tts_usd_per_1k_chars=0.015,
-        model_name="gpt-5.4 (LLM) + tts-1 standard (TTS)",
+        # TTS rate uses tts-1-hd ($30/1M chars = $0.030/1k chars) —
+        # the quality-comparable counterpart to BytePlus Seed-Speech
+        # 2.0. Standard tts-1 is half the rate ($0.015/1k) but lower
+        # fidelity; comparing it against Seed-Speech HD would
+        # systematically understate the OpenAI TTS bill in the matrix.
+        # Aggregator-sourced (tokenmix.ai, costgoat.com) since
+        # openai.com/api/pricing returns 403 to our fetch tool.
+        tts_usd_per_1k_chars=0.030,
+        model_name="gpt-5.4 (LLM) + tts-1-hd (TTS)",
         source_url="https://openai.com/api/pricing/",
         verified_at="2026-05-19",  # LLM verified; TTS aggregator-only
         notes=(
             "LLM: gpt-5.4 short-context. Above 272K input doubles to "
             "$5/1M. Cached input drops to $1.25/1M (50% off). "
-            "TTS: $0.015/1k chars is tts-1 standard per third-party "
-            "aggregators (openai.com pricing page is not directly "
-            "fetchable). tts-1-hd is $0.030/1k chars; gpt-4o-mini-tts "
-            "is token-based at $0.60/1M input + $12/1M audio tokens."
+            "TTS: tts-1-hd at $0.030/1k chars — quality-comparable to "
+            "Seed-Speech 2.0. Standard tts-1 is $0.015/1k but lower "
+            "fidelity. gpt-4o-mini-tts is token-based at $0.60/1M "
+            "input + $12/1M audio tokens."
         ),
     ),
     "anthropic": ProviderRates(
