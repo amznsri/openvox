@@ -70,6 +70,26 @@ export function SetupAssistant() {
   const captureRef = useRef<{ stop: () => void } | null>(null);
   const playerRef = useRef<AudioPlaybackQueue | null>(null);
 
+  // Auto-follow scroll. `scrollRef` is the transcript container;
+  // `wasAtBottomRef` tracks whether the user is parked at the
+  // bottom so we don't yank them back when they've scrolled up to
+  // read an earlier message. Standard chat-UI affordance.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const wasAtBottomRef = useRef(true);
+  function onTranscriptScroll() {
+    const el = scrollRef.current;
+    if (!el) return;
+    // 50px tolerance — touch / momentum scrolls overshoot a bit;
+    // treating "within 50px of bottom" as "at the bottom" avoids
+    // breaking the follow when the user is genuinely at the end.
+    wasAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+  }
+  useEffect(() => {
+    if (!wasAtBottomRef.current) return;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [lines]);
+
   // ── Live preview ─────────────────────────────────────────────────
   // Poll the assistant agent so we can read draft_agent_id out of its
   // channels.setup_state. The draft agent itself is then SWR'd via
@@ -323,7 +343,12 @@ export function SetupAssistant() {
         {/* LEFT: chat panel */}
         <Card className="min-h-[60vh] flex flex-col">
           <CardContent className="flex flex-col flex-1 pt-6 gap-3">
-            <div className="flex-1 overflow-y-auto space-y-2 max-h-[55vh]" id="setup-transcript">
+            <div
+              ref={scrollRef}
+              onScroll={onTranscriptScroll}
+              className="flex-1 overflow-y-auto space-y-2 max-h-[55vh]"
+              id="setup-transcript"
+            >
               {!assistantAgent ? (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground py-8">
                   <Loader2 className="h-4 w-4 animate-spin" />
