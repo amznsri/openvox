@@ -454,32 +454,76 @@ Important file pointers:
     score aggregation. CRUD routes under `/api/v1/evals/*`. Example
     GitHub Action in `.github/workflows/evals.example.yml`; full
     framework guide in `docs/EVALS.md`.
+- **Session 9 closeout** (2026-05-18): five of seven priority items
+  shipped end-to-end. Commits: `a3b9a63` (#6 + #7) → `384e462`
+  (#4 + #2 + #1).
+  - **#6 Scheduler webhook trigger**: `trigger_type="webhook"` joins
+    cron/interval/once. Token minted on create (idempotent),
+    `POST /api/v1/jobs/webhook/{token}` fires the job, optional JSON
+    body merges into payload for that single run, disabled/wrong-
+    token cases return 200 with `received:false` to prevent
+    enumeration. Dashboard renders a `WebhookUrlCallout` with full
+    URL + copy-to-clipboard on each webhook job card.
+  - **#7 Skill hot-reload**: `watchfiles>=0.24.0`; the new
+    `skills/watcher.py` runs `awatch()` filtered to `*.py`, drops
+    cached instances, and re-runs `_load_local_folder()` on every
+    change. `OPENVOX_SKILLS_DIR` env override for users who want a
+    shared volume. Wired into FastAPI lifespan as
+    `start_watcher` / `stop_watcher`.
+  - **#4 Real provider-reported LLM token usage**:
+    `LLMResponseChunk` gains a `usage` field; BytePlus + every
+    OpenAI-compat client set `stream_options.include_usage=true`
+    so the terminal stream chunk carries `{prompt_tokens,
+    completion_tokens, total_tokens}`. Orchestrator emits a new
+    `llm_usage` TurnEvent kind. WS forwarder + text playground
+    track both word-count `_approx` (always populated) and
+    provider `_real` (when emitted); final write prefers
+    `_real` when > 0. Pricing calculator now bills against
+    actual token counts on the BytePlus / OpenAI / Anthropic /
+    DeepSeek / Gemini paths.
+  - **#2 Pricing-breakdown card**: Observability rows are now
+    clickable → slide-in `SessionDetailDrawer` with a
+    `PricingBreakdown` component (stacked STT/LLM-in/LLM-out/TTS
+    bar, what-if matrix sorted cheapest-first, "Switch to X to
+    save $Y" recommendation). Also surfaces whether the row's
+    token counts were provider-reported or duration-estimated.
+  - **#1 Evals dashboard page** (`/dashboard/evals`): full UI over
+    the eval framework backend. Stats row, recent-runs table with
+    verdict + score badge, click-through drawer with per-criterion
+    judge breakdown + transcript. `RunEvalModal` lets users spin
+    up new runs (agent + persona-OR-recording + criteria + max
+    turns). Observability drawer gains a **Save as recording**
+    button feeding `/api/v1/evals/recordings/from-session`.
+    Sidebar gains the Evals link.
+  - **Deferred** (3 of 7 items):
+    - **#3 Image-size diet**: PyTorch CPU-only mirror is blocked
+      by Zscaler on this machine; retry from unrestricted egress.
+    - **#5 WeChat/Lark audio bridges**: blocked on test
+      credentials.
+    - **Telegram end-to-end test**: blocked on Docker daemon
+      being down at the time the rest shipped.
 
 ### 🚧 In progress
-- (none — Session 8 wrapped fully. Carried-forward UI surfaces listed
-  in §8 below + `docs/PLANNING_NEXT.md`.)
+- (none — Session 9 effectively wrapped; the three deferred items
+  above are external-dependency-gated, not code-incomplete.)
 
 ### 📋 Designed, queued for next session
-See [`docs/PLANNING_NEXT.md`](docs/PLANNING_NEXT.md) for full design.
-Top of stack going into Session 9:
+See [`docs/PLANNING_SESSION10.md`](docs/PLANNING_SESSION10.md) for
+the full Session 10 spec.
 
-1. **Dashboard `/dashboard/evals` page** — wire the eval framework UI
-   (backend is live: recordings + personas + run + runs routes work,
-   `docs/EVALS.md` covers the API). ~1 day.
-2. **Dashboard pricing-breakdown card** on the Observability page —
-   render the what-if matrix from `/api/v1/pricing/sessions/{id}`.
-   ~0.5 day.
-3. **Image-size diet**: torch CUDA wheels balloon the core image to
-   ~9.7 GB; need a PyTorch-CPU-index install (blocked here by
-   Zscaler — works in unrestricted CI). ~0.5 day.
-4. **Real provider-reported LLM token usage** — current `llm_tokens_in/out`
-   is a word-count proxy; wire BytePlus / OpenAI usage fields through
-   `LLMResponseChunk`. ~0.5 day.
-5. **Real audio bridge for WeChat Work / Lark** — needs verified test
-   credentials. ~1 day once those are in hand.
-6. **Scheduler webhook trigger** — `POST /api/v1/jobs/webhook/{token}`
-   for event-driven jobs. ~2 hrs.
-7. **Skill hot-reload** — file watcher on `~/.openvox/skills/`. ~2 hrs.
+**Session 10 — Voice-driven Setup Assistant (~2.5 days)**:
+build a "build voice agents by talking to a voice agent" flow.
+Five new skills (`list_templates`, `recommend_template`,
+`instantiate_template`, `update_agent_field`, `publish_agent`,
+`describe_remaining_setup`) + a built-in `setup-assistant` agent +
+a `/dashboard/agents/new` chooser page (Form / Voice). Both user
+decisions locked: hybrid voice+text input, first-class CTA on
+public landing + topbar.
+
+**Gated**: only proceed once the three deferred Session 9 items
+(image diet, WeChat/Lark audio, Telegram E2E test) clear, since
+Session 10 amplifies the voice pipeline to a much broader audience
+and benefits from those being in place.
 
 ### ⏳ Pending / roadmap
 - **Speech-to-Speech (S2S)** — placeholder. OpenAI Realtime works today as alternative.

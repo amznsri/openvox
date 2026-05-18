@@ -1,14 +1,79 @@
 # Planning — next session
 
-Updated end of Session 8 (2026-05-14).
+Updated end of Session 9 (2026-05-18).
 
-> **Detailed Session 8 plan** is preserved in
-> [`docs/PLANNING_SESSION8.md`](PLANNING_SESSION8.md). This file rolls
-> forward to Session 9.
+> **Detailed Session 10 plan** is locked in
+> [`docs/PLANNING_SESSION10.md`](PLANNING_SESSION10.md). This file
+> shows what shipped in Session 9 and the small punch-list of items
+> still gated on external dependencies.
 
 ---
 
-## Shipped Session 8 — competitive-differentiation push
+## Next session — Session 10 (Voice-driven Setup Assistant)
+
+See [`PLANNING_SESSION10.md`](PLANNING_SESSION10.md) for the locked
+spec. Two-and-a-half days of work — 5 new skills + 1 built-in
+template + 1 chooser route + a landing-page CTA. Both user
+decisions already locked: voice + text hybrid, first-class CTA on
+the public landing page + dashboard topbar.
+
+**Soft-gated**: Session 10 amplifies the voice pipeline to a much
+broader audience, so the three deferred Session 9 items below are
+worth clearing before kickoff if you can. Acceptable to start
+Session 10 first if the deferrals stay external-dependency-bound
+(WeChat/Lark credentials, etc.).
+
+---
+
+## Shipped Session 9 — closing the Session-8 backlog
+
+Five of seven priority items closed end-to-end.
+Commits: [`a3b9a63`](https://github.com/amznsri/openvox/commit/a3b9a63)
+(#6 + #7) → [`384e462`](https://github.com/amznsri/openvox/commit/384e462)
+(#4 + #2 + #1).
+
+- ✅ **#6 Scheduler webhook trigger** — `trigger_type="webhook"`,
+  `POST /api/v1/jobs/webhook/{token}`, dashboard `WebhookUrlCallout`
+  with copy-to-clipboard.
+- ✅ **#7 Skill hot-reload** — `watchfiles` watcher over
+  `~/.openvox/skills/` (or `OPENVOX_SKILLS_DIR`), wired into the
+  FastAPI lifespan.
+- ✅ **#4 Real provider-reported LLM token usage** —
+  `LLMResponseChunk.usage` + `stream_options.include_usage=true`
+  on BytePlus + every OpenAI-compat client. Orchestrator emits a
+  `llm_usage` TurnEvent; WS forwarder + text playground use real
+  counts when emitted, fall back to word-count when not.
+- ✅ **#2 Pricing-breakdown card on Observability** — clickable
+  rows → slide-in drawer with stacked-bar component cost +
+  what-if matrix + "switch to X to save $Y" recommendation.
+- ✅ **#1 Evals dashboard page** (`/dashboard/evals`) — full UI
+  over the eval framework backend: stats row, recent-runs table,
+  detail drawer with per-criterion judge breakdown + transcript,
+  RunEvalModal for new runs, "Save as recording" button on the
+  Observability drawer.
+
+### Deferred — three items remain (all external-dependency-gated)
+
+These are *code-complete or N/A*, not "I gave up". Pick up whenever
+the gating dependency clears.
+
+1. **#3 Image-size diet** — core container is ~9.7 GB because
+   PyTorch pulls CUDA wheels. Dockerfile already has the CPU-only
+   index install wrapped in `|| true`, but `download.pytorch.org`
+   is Zscaler-blocked on this machine. Three escape hatches:
+   - retry from a CI runner with unrestricted egress;
+   - mirror the torch CPU wheels at an in-network URL;
+   - swap silero-vad to the ONNX backend (~80 MB) and drop torch
+     entirely (saves the whole ~3 GB).
+2. **#5 Real WeChat Work / Lark audio bridges** — webhooks +
+   signature verification work; voice-message decrypt / download /
+   transcribe / reply remains TODO. Blocked on verified test
+   credentials (WeCom EncodingAESKey + Lark tenant_access_token).
+3. **Telegram end-to-end test** — pipeline shipped Session 9
+   kickoff (commit `2e0fc7a`), but Docker daemon was down when
+   the rest of Session 9 landed. Bring up `docker compose
+   --profile tunnel up` once Docker is healthy, complete the
+   `@BotFather` wizard, and verify voice in/out works.
 
 All nine items from PLANNING_SESSION8.md landed end-to-end:
 
@@ -40,83 +105,6 @@ default but NOT exclusive)**
 Commits: `8d02382` (plan) → `a8c5d79` (checkpoint) → `1d4e770` (final).
 
 ---
-
-## After Session 9 — Session 10 scope locked
-
-See [`PLANNING_SESSION10.md`](PLANNING_SESSION10.md) for the
-full spec. Top-line:
-
-- **Build a built-in "Setup Assistant" agent** so non-technical
-  users can create agents *by talking to a voice agent* (yes,
-  recursively). Hybrid voice + text input, first-class CTA on the
-  public landing page + dashboard topbar.
-- ~2.5 days. 5 new skills + 1 built-in template + 1 new dashboard
-  route. No new infrastructure — runs on the existing voice
-  pipeline.
-- **Gated**: do not start Session 10 until Session 9 ships fully.
-  The setup assistant exposes the voice pipeline to a much broader
-  audience; we want eval framework + WeChat/Lark audio bridges +
-  real LLM token usage in place first so the experience is solid.
-
----
-
-## Session 9 priority stack
-
-Top of stack — these *complete* Session 8 features (backend live,
-dashboard UI deferred) and unblock the post-fix-ups list. Pick from
-the top.
-
-### 1. Dashboard `/dashboard/evals` page — ~1 day
-Backend is fully live (`/api/v1/evals/{recordings,personas,run,runs}`),
-5 built-in personas seeded, judge verified end-to-end. Needed UI:
-- List recent runs with pass/fail badge, click → judge breakdown
-  drawer.
-- "Run eval" wizard: pick agent → pick recording OR persona → enter
-  criteria → run → poll. Same shape as the existing Skills tab.
-- "Save as recording" button on any completed Session row in
-  Observability.
-
-### 2. Dashboard pricing breakdown card — ~0.5 day
-Backend at `/api/v1/pricing/sessions/{id}` already computes per-
-component cost + a sorted alternatives matrix. Needed UI:
-- A "Cost" card on the Observability session detail (when we land
-  that page) or inline on the per-session row.
-- Stacked bar showing STT / LLM-in / LLM-out / TTS USD.
-- "Switching X → Y saves $Z" recommendation card from
-  `alternatives[0]`.
-
-### 3. Image-size diet — ~0.5 day
-Core image at ~9.7 GB because torch pulls CUDA wheels even though we
-only need CPU inference. Already tried `download.pytorch.org/whl/cpu`
-index in the Dockerfile (wrapped in `|| true`) but Zscaler blocks
-that host. Workarounds:
-- Test from a CI runner with unrestricted egress.
-- Mirror the torch CPU wheels locally and serve via an in-network URL.
-- Switch silero-vad to the ONNX backend (~80 MB) and drop torch
-  entirely — saves the full ~3 GB.
-
-### 4. Real provider-reported LLM token usage — ~0.5 day
-Current `llm_tokens_in/out` columns are populated by a word-count
-proxy in the WS forwarder. Plumb the real `usage.prompt_tokens` /
-`usage.completion_tokens` fields from each LLM provider through
-`LLMResponseChunk.raw` so the pricing calculator becomes accurate
-to the cent.
-
-### 5. Real WeChat Work / Lark audio bridge — ~1 day
-Webhooks are mounted and signature-verified, but voice-message
-decryption + download + transcription is marked TODO. Lands once we
-have:
-- A verified WeCom corp with EncodingAESKey we can test against.
-- A Lark tenant with `tenant_access_token` flow exercised.
-
-### 6. Scheduler webhook trigger — ~2 hrs (deferred from Session 7)
-`POST /api/v1/jobs/webhook/{token}` for event-driven (vs cron) jobs.
-Unblocks "external upload → process via agent" use cases.
-
-### 7. Skill hot-reload — ~2 hrs (deferred from Session 7)
-`watchfiles` on `~/.openvox/skills/`. On change re-run
-`SkillRegistry._load_local_folder()` so new sessions pick up edits
-without a restart.
 
 ---
 
