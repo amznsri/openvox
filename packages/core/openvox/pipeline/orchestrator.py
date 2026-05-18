@@ -426,12 +426,13 @@ class VoiceSession:
         # will still finish but we won't generate audio.
         if self._tts_disabled_for_turn:
             return
-        # Markdown scrub: LLMs slip into `**bold**` / `_italic_` /
-        # `` `code` `` even in voice agents, and TTS reads those as
-        # "asterisk asterisk". Strip before synthesis so users hear the
-        # words, not the markup. Cheap (regex over a sentence).
-        from openvox.utils.text import strip_markdown_for_tts
-        spoken = strip_markdown_for_tts(sentence)
+        # TTS sanitisation: LLMs emit text optimised for reading, not
+        # listening — markdown emphasis, URLs, emoji, repeated
+        # punctuation, hyphens in compound words all read terribly.
+        # Strip / normalise before synthesis. Cheap (regex over a
+        # sentence). See openvox/utils/text.py for the full list.
+        from openvox.utils.text import clean_for_tts
+        spoken = clean_for_tts(sentence)
         if not spoken:
             return
         # Multilingual support: if the agent's voice_map has an entry for

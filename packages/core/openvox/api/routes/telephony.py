@@ -381,7 +381,11 @@ async def _handle_telegram_update(
             return
         # Decode OGG-Opus → 16 kHz PCM s16le, feed through STT.
         user_text = await _telegram_transcribe(audio_bytes, ext)
-        if not user_text:
+        # ASR sanitiser — `looks_like_real_speech` rejects empty
+        # results, single-char noise, and pure punctuation. Saves an
+        # LLM round-trip on background coughs / button-bumps.
+        from openvox.utils.text import looks_like_real_speech
+        if not looks_like_real_speech(user_text):
             await tg.send_text(bot_token, chat_id, "(I couldn't make out what you said — try again?)")
             return
     elif "text" in message:
@@ -581,20 +585,21 @@ async def _telegram_synthesize_ogg(
     ffmpeg (already in the core image) for the codec swap. Doing it
     here in-process keeps the round-trip serialised and easy to debug.
 
-    Markdown scrub before synthesis:
-        LLMs love wrapping API names and emphasis in `**bold**` /
-        `_italic_` / `` `code` ``. TTS reads those literally as
-        "asterisk asterisk ListAssets ...". Surfaced first time we
-        put Doc Assistant on Telegram voice. `strip_markdown_for_tts`
-        cleans them out — universal fix, no per-agent prompt change.
+    TTS sanitisation before synthesis:
+        LLMs emit text optimised for reading, not listening. Markdown
+        emphasis, URLs, emoji, repeated punctuation, hyphens in
+        compound words all read terribly when spoken. Centralised
+        cleanup in `clean_for_tts` so every TTS-emitting code path
+        gets the same treatment. See openvox/utils/text.py for the
+        full list of patterns + rationale per pattern.
     """
     from openvox.providers.base import TTSConfig
-    from openvox.utils.text import strip_markdown_for_tts
+    from openvox.utils.text import clean_for_tts
     import asyncio
     import subprocess
     import tempfile
 
-    spoken = strip_markdown_for_tts(text)
+    spoken = clean_for_tts(text)
 
     # 1. Synthesize full PCM stream.
     cfg = TTSConfig(voice_id=voice_id, language=language, sample_rate=24000, encoding="pcm16")
