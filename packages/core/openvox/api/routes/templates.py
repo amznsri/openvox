@@ -65,7 +65,11 @@ TEMPLATES: list[dict[str, Any]] = [
             ),
             "greeting": "Hi there — what would you like to learn about today?",
             "skills": ["calculator", "explain_concept", "web_search"],
-            "voice_id": "en_male_adam_mars_bigtts",
+            # Use the same activated default as the other English templates.
+            # The previous `en_male_adam_mars_bigtts` value wasn't licensed on
+            # the user's BytePlus key and produced a runtime 55000000 error
+            # on every voice turn (bug #25 / #58).
+            "voice_id": "en_male_tim_uranus_bigtts",
         },
     },
     {

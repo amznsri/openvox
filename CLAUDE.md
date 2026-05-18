@@ -1105,6 +1105,27 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     the same amount" is a reasonable heuristic; "exactly the same
     amount" is wrong for billing.
 
+### Template voice drift (Session 12)
+58. **Science Tutor template shipped with an unactivated voice.**
+    `templates.py` set `voice_id="en_male_adam_mars_bigtts"` for the
+    Education Tutor template. The user's BytePlus key only has
+    `en_male_tim_uranus_bigtts` licensed (§9). Result: every voice
+    turn in the playground returned the documented
+    `code=55000000 message='resource ID is mismatched with speaker
+    related resource'` error. Bug #25 in spirit (we *knew* this
+    voice family was finicky) but a new instance because the
+    template was added without checking the activated-voice list.
+    *Fix*: template now uses the same `en_male_tim_uranus_bigtts`
+    default as every other English template. Migrated in-DB agents
+    via the bulk-PUT pattern from §10.
+    **Lesson**: when adding a new template that sets `voice_id`, the
+    chosen voice MUST be in the activated-on-user-key list. Until
+    we ship a "list licensed voices" endpoint + dashboard validator,
+    default to `en_male_tim_uranus_bigtts` and let the user override
+    later. Multi-language templates (zh, yue, es, id, fr, hi voices)
+    are *intentionally* exempt — they need language-appropriate
+    voices by design, and the user activates them per-demo.
+
 ---
 
 ## 9. Known constraints / environment quirks
