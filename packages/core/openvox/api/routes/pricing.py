@@ -42,11 +42,16 @@ async def get_rates() -> dict[str, Any]:
                 "llm_usd_per_1m_input": r.llm_usd_per_1m_input,
                 "llm_usd_per_1m_output": r.llm_usd_per_1m_output,
                 "tts_usd_per_1k_chars": r.tts_usd_per_1k_chars,
+                # Auditability surface — dashboard renders these so
+                # users can click through to the live pricing page and
+                # see when a rate was last verified.
+                "model_name": r.model_name,
+                "source_url": r.source_url,
+                "verified_at": r.verified_at,
                 "notes": r.notes,
             }
             for pid, r in rates.items()
         },
-        "rates_as_of": "2026-05-14",
         "override_via": "OPENVOX_RATES_FILE=/path/to/rates.json",
     }
 
