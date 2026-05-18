@@ -248,7 +248,9 @@ TEMPLATES: list[dict[str, Any]] = [
             # they activate voices in the BytePlus console.
             "voice_map": {
                 "en": "en_male_tim_uranus_bigtts",
-                "zh": "zh_female_cancan_mars_bigtts",
+                # `_mars_bigtts` was the old TTS 1.0 family. The current
+                # TTS 2.0 catalogue uses `_uranus_bigtts` exclusively.
+                "zh": "zh_female_cancan_uranus_bigtts",
                 "es": "es_male_felipe_uranus_bigtts",
                 "fr": "fr_male_usseau_uranus_bigtts",
                 "ja": "jp_female_minimi_uranus_bigtts",
@@ -438,14 +440,37 @@ def _telesales_prompt(lang: str) -> str:
     }[lang]
 
 
+# Every `voice` here must exist in `providers/byteplus/voices.py`
+# (the real TTS 2.0 catalogue). The original cut of this map invented
+# IDs that don't exist:
+#   - zh_female_qiniao_bigtts        — TTS 1.0 family, removed
+#   - zh_female_cantonese_bigtts     — no Cantonese voice in TTS 2.0
+#   - multilingual_v2_{rachel,alice,henri,aria} — these are ElevenLabs
+#                                                  voice IDs, not BytePlus
+# Result: every multilingual template using these IDs got
+# `code=55000000` at TTS time.
+#
+# Replacements:
+#   zh   → Celeste (Chinese Female Clear) — real Mandarin voice.
+#   yue  → Celeste again. The catalogue has no native Cantonese
+#          voice; Mandarin TTS reading Cantonese romanisation gives
+#          the closest acceptable demo until BytePlus ships one.
+#   es   → Felipe (Mexican Spanish Male Clear) — real ES voice.
+#   id   → Han (Indonesian Bahasa Male Clear) — real ID voice.
+#   fr   → Usseau (French Male Clear) — real FR voice.
+#   hi   → Vivi (Mixed-language Female Vivid). NOTE: TTS 2.0 has no
+#          native Hindi voice. Vivi covers en/zh/ja/es/id but not hi;
+#          the Hindi template will read text as transliterated English.
+#          Documented limitation — to fix properly, swap TTS provider
+#          to ElevenLabs Multilingual v2 for hi-IN agents.
 _LANG_META: dict[str, dict[str, str]] = {
-    "en":  {"name": "English",            "bcp47": "en-US",  "voice": "en_male_tim_uranus_bigtts",            "flag": "🇺🇸"},
-    "zh":  {"name": "Mandarin (中文)",     "bcp47": "zh-CN",  "voice": "zh_female_qiniao_bigtts",              "flag": "🇨🇳"},
-    "yue": {"name": "Cantonese (粤语)",    "bcp47": "yue-HK", "voice": "zh_female_cantonese_bigtts",           "flag": "🇭🇰"},
-    "es":  {"name": "Spanish (Español)",  "bcp47": "es-ES",  "voice": "multilingual_v2_rachel",               "flag": "🇪🇸"},
-    "id":  {"name": "Bahasa Indonesia",   "bcp47": "id-ID",  "voice": "multilingual_v2_alice",                "flag": "🇮🇩"},
-    "fr":  {"name": "French (Français)",  "bcp47": "fr-FR",  "voice": "multilingual_v2_henri",                "flag": "🇫🇷"},
-    "hi":  {"name": "Hindi (हिन्दी)",     "bcp47": "hi-IN",  "voice": "multilingual_v2_aria",                 "flag": "🇮🇳"},
+    "en":  {"name": "English",            "bcp47": "en-US",  "voice": "en_male_tim_uranus_bigtts",                "flag": "🇺🇸"},
+    "zh":  {"name": "Mandarin (中文)",     "bcp47": "zh-CN",  "voice": "zh_female_qingxinnvsheng_uranus_bigtts",   "flag": "🇨🇳"},
+    "yue": {"name": "Cantonese (粤语)",    "bcp47": "yue-HK", "voice": "zh_female_qingxinnvsheng_uranus_bigtts",   "flag": "🇭🇰"},
+    "es":  {"name": "Spanish (Español)",  "bcp47": "es-ES",  "voice": "es_male_felipe_uranus_bigtts",             "flag": "🇪🇸"},
+    "id":  {"name": "Bahasa Indonesia",   "bcp47": "id-ID",  "voice": "id_male_han_uranus_bigtts",                "flag": "🇮🇩"},
+    "fr":  {"name": "French (Français)",  "bcp47": "fr-FR",  "voice": "fr_male_usseau_uranus_bigtts",             "flag": "🇫🇷"},
+    "hi":  {"name": "Hindi (हिन्दी)",     "bcp47": "hi-IN",  "voice": "zh_female_vv_uranus_bigtts",               "flag": "🇮🇳"},
 }
 
 

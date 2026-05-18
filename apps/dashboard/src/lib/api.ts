@@ -52,7 +52,8 @@ export const api = {
   // Providers / skills
   listProviders: (type?: string) =>
     http<Provider[]>(`/api/v1/providers${type ? `?type=${type}` : ""}`),
-  listVoices: () => http<Record<string, Voice[]>>("/api/v1/providers/voices"),
+  listVoices: () =>
+    http<Record<string, Voice[] | string>>("/api/v1/providers/voices"),
   listSkills: () => http<Skill[]>("/api/v1/skills"),
   invokeSkill: (skill_id: string, args: Record<string, unknown>) =>
     http<{ ok: boolean; output: unknown; error: string }>("/api/v1/skills/invoke", {
@@ -304,7 +305,17 @@ export type Provider = {
   available: boolean;
 };
 
-export type Voice = { id: string; name: string };
+export type Voice = {
+  id: string;
+  name: string;
+  // Catalogue-only metadata (BytePlus voices have these; curated
+  // ElevenLabs/OpenAI entries don't and the fields are simply absent).
+  language?: string;
+  gender?: string;
+  style?: string;
+  scenario?: string;
+  language_codes?: string[];
+};
 
 export type Skill = {
   id: string;

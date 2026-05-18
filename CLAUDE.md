@@ -1125,6 +1125,40 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     later. Multi-language templates (zh, yue, es, id, fr, hi voices)
     are *intentionally* exempt — they need language-appropriate
     voices by design, and the user activates them per-demo.
+59. **Multilingual templates referenced fabricated voice IDs.**
+    Reading from `templates.py:_LANG_META` the zh/yue voices used
+    `zh_female_qiniao_bigtts` and `zh_female_cantonese_bigtts` (both
+    TTS 1.0-era names that don't exist in the current TTS 2.0
+    catalogue), and the es/id/fr/hi voices used `multilingual_v2_*`
+    IDs which are **ElevenLabs** voice IDs accidentally fed to the
+    BytePlus TTS provider. Result: every multilingual template
+    instantiation gave `code=55000000` at TTS time, identical
+    symptom to bug #25/#58 but a completely different root cause
+    (invented IDs vs licensed-but-wrong IDs).
+    *Fix*: created `providers/byteplus/voices.py` with the full TTS
+    2.0 catalogue (41 voices, refreshed against `ModelMD/TTS2_voices.md`
+    on 2026-05-19). `_LANG_META` now uses real IDs from that
+    catalogue. `GET /api/v1/providers/voices` returns the full
+    catalogue so the dashboard agent-edit form can render a
+    **dropdown** (`VoiceSelector` component) — typos like `_qiniao_`
+    are now structurally impossible. Also added a "Test voice"
+    button that POSTs to `/playground/synthesize` and plays the
+    returned PCM, so users can confirm activation per-voice without
+    starting a full voice session.
+    Hindi (`hi`) caveat: TTS 2.0 has no native Hindi voice. The
+    Hindi template now uses Vivi (multilingual; covers en/zh/ja/es/id
+    but **not hi**) — Hindi text will read as transliterated
+    English. To fix properly, route hi-IN agents through the
+    ElevenLabs TTS provider with `multilingual_v2_*` voice IDs
+    (which is what the original code accidentally tried to do — it
+    just stuffed those IDs into BytePlus instead of switching
+    provider).
+    **Lesson**: any voice/model/provider ID hardcoded into a
+    template must be validated against the receiving provider's
+    catalogue at code-write time. The catalogue module exists for
+    this — `is_known("...")` / `voices_for_language("...")` make
+    validation trivial. Run them in a unit test on every template
+    file (TODO).
 
 ---
 

@@ -17,25 +17,28 @@ async def list_providers(type: str | None = None) -> list[dict[str, Any]]:
 
 
 @router.get("/voices")
-async def list_voices() -> dict[str, list[dict[str, str]]]:
+async def list_voices() -> dict[str, Any]:
     """Catalogue of voices we ship with for each TTS provider.
 
-    These are static for now — production would call each provider's
-    `voices` endpoint.
+    BytePlus catalogue is the **full TTS 2.0 voice list** mirrored
+    from `providers/byteplus/voices.py` (which itself is sourced
+    from the BytePlus docs page on the date stamped there). Every
+    `id` in the BytePlus list is a real Seed-Speech 2.0 voice — the
+    dashboard can safely render this as a dropdown.
+
+    Caveats:
+      • Each voice must still be **activated** on the user's BytePlus
+        account in the console before use. We can't probe activation
+        without burning API quota; expose the catalogue + a "Test
+        voice" button so users can validate per-voice on demand.
+      • OpenAI / ElevenLabs / Cartesia entries are short curated
+        samples — not the full provider catalogue.
     """
+    from openvox.providers.byteplus.voices import VOICES, VOICES_REFRESHED_AT
+
     return {
-        # Seed-Speech 2.0 — full catalog at:
-        #   https://docs.byteplus.com/en/docs/byteplusvoice/voicelist
-        # Each voice must be activated on your BytePlus account before use.
-        "byteplus": [
-            {"id": "en_male_tim_uranus_bigtts", "name": "Tim (en, male)"},
-            {"id": "en_female_skye_emo_v2_mars_bigtts", "name": "Skye — expressive (en, female)"},
-            {"id": "en_male_adam_mars_bigtts", "name": "Adam (en, male)"},
-            {"id": "en_female_anna_mars_bigtts", "name": "Anna (en, female)"},
-            {"id": "zh_female_cancan_mars_bigtts", "name": "Cancan (zh-CN, female)"},
-            {"id": "zh_female_vv_uranus_bigtts", "name": "VV (zh-CN, female)"},
-            {"id": "ja_female_hina_mars_bigtts", "name": "Hina (ja-JP, female)"},
-        ],
+        "byteplus": [v.to_dict() for v in VOICES],
+        "byteplus_refreshed_at": VOICES_REFRESHED_AT,
         "elevenlabs": [
             {"id": "21m00Tcm4TlvDq8ikWAM", "name": "Rachel"},
             {"id": "AZnzlk1XvdvUeBnXmlld", "name": "Domi"},

@@ -23,7 +23,7 @@ import {
   X,
 } from "lucide-react";
 
-import { api, type Agent, type DocumentRecord, type McpCatalogueEntry, type McpServerConfig, type Skill } from "@/lib/api";
+import { api, type Agent, type DocumentRecord, type McpCatalogueEntry, type McpServerConfig, type Skill, type Voice } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Label, Select, Textarea } from "@/components/ui/input";
@@ -35,6 +35,11 @@ export default function AgentDetailPage() {
   const router = useRouter();
   const { data: agent } = useSWR<Agent>(id ? `agent-${id}` : null, () => api.getAgent(id));
   const { data: skills = [] } = useSWR<Skill[]>("skills", () => api.listSkills());
+  // Voice catalogue per TTS provider. Used to render the Voice ID
+  // field as a dropdown rather than a free-text input — prevents
+  // typos like `zh_female_qiniao_bigtts` (TTS 1.0 family, no longer
+  // exists) producing a runtime `code=55000000` at TTS time.
+  const { data: voicesByProvider } = useSWR("provider-voices", () => api.listVoices());
 
   const [form, setForm] = useState<Partial<Agent>>({});
   const [busy, setBusy] = useState(false);
@@ -275,7 +280,12 @@ export default function AgentDetailPage() {
                 </div>
                 <div>
                   <Label>Voice ID</Label>
-                  <Input value={form.voice_id || ""} onChange={(e) => set("voice_id", e.target.value)} />
+                  <VoiceSelector
+                    provider={form.tts_provider || "byteplus"}
+                    value={form.voice_id || ""}
+                    onChange={(v) => set("voice_id", v)}
+                    catalogue={voicesByProvider}
+                  />
                 </div>
                 <div>
                   <Label>Speed</Label>
@@ -1166,6 +1176,133 @@ function TelegramWizard({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// VoiceSelector
+// ────────────────────────────────────────────────────────────────────────
+//
+// Drop-in replacement for the free-text Voice ID input. The catalogue
+// for the currently-selected TTS provider becomes a dropdown; if the
+// agent's stored voice_id isn't in the catalogue (legacy data, custom
+// voice, or a TTS-1.0 family name like `zh_female_qiniao_bigtts`), we
+// show an amber "unknown voice" warning and keep the value so the user
+// can still edit/save freely.
+//
+// The "Test voice" button calls /api/v1/playground/synthesize with
+// "Hello! This is a quick voice test." and plays the returned PCM
+// chunk so the user can confirm activation without leaving the page.
+
+function VoiceSelector({
+  provider,
+  value,
+  onChange,
+  catalogue,
+}: {
+  provider: string;
+  value: string;
+  onChange: (v: string) => void;
+  catalogue: Record<string, Voice[] | string> | undefined;
+}) {
+  const raw = catalogue?.[provider];
+  const voices: Voice[] = Array.isArray(raw) ? raw : [];
+  const known = voices.some((v) => v.id === value);
+  const [testing, setTesting] = useState(false);
+  const [testMsg, setTestMsg] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
+
+  async function testVoice() {
+    if (!value) return;
+    setTesting(true);
+    setTestMsg(null);
+    try {
+      // Use the existing /playground/synthesize endpoint — returns
+      // PCM bytes + an X-Sample-Rate header. We decode + play via the
+      // Web Audio API rather than wiring a full PcmPlayer dependency.
+      const res = await fetch("/api/v1/playground/synthesize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: "Hello! This is a quick voice test.",
+          voice_id: value,
+          tts_provider: provider,
+        }),
+      });
+      if (!res.ok) {
+        // Surface the TTS error message verbatim — most useful when
+        // the user picked a voice their key doesn't have activated
+        // (BytePlus error 55000000).
+        const txt = await res.text();
+        throw new Error(txt.slice(0, 400) || `HTTP ${res.status}`);
+      }
+      const sampleRate = parseInt(res.headers.get("X-Sample-Rate") || "24000", 10);
+      const buf = await res.arrayBuffer();
+      const i16 = new Int16Array(buf, 0, Math.floor(buf.byteLength / 2));
+      const f32 = new Float32Array(i16.length);
+      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+      const ctx = new AudioContext({ sampleRate });
+      const audioBuf = ctx.createBuffer(1, f32.length, sampleRate);
+      audioBuf.copyToChannel(f32, 0);
+      const src = ctx.createBufferSource();
+      src.buffer = audioBuf;
+      src.connect(ctx.destination);
+      src.start();
+      setTestMsg({ kind: "ok", msg: "Played sample — voice works." });
+    } catch (e: any) {
+      setTestMsg({ kind: "err", msg: e.message || "voice test failed" });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  // If the provider has no catalogue entries (Cartesia / unknown
+  // provider), fall back to the original free-text input.
+  if (voices.length === 0) {
+    return (
+      <Input value={value} onChange={(e) => onChange(e.target.value)} />
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex gap-2">
+        <Select
+          value={known ? value : ""}
+          onChange={(e) => onChange(e.target.value)}
+          className="flex-1"
+        >
+          <option value="">Select a voice…</option>
+          {voices.map((v) => (
+            <option key={v.id} value={v.id}>
+              {v.name}
+              {v.language ? ` — ${v.language}` : ""}
+              {v.gender ? ` (${v.gender}${v.style ? `, ${v.style}` : ""})` : ""}
+            </option>
+          ))}
+        </Select>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={testVoice}
+          disabled={testing || !value}
+        >
+          {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Test voice"}
+        </Button>
+      </div>
+      {!known && value && (
+        <div className="text-xs text-amber-300">
+          ⚠ <span className="font-mono">{value}</span> isn&apos;t in the {provider}{" "}
+          catalogue. Either pick from the dropdown above or keep the value if
+          this is a custom-trained voice.
+        </div>
+      )}
+      {testMsg && (
+        <div className={`text-xs ${testMsg.kind === "ok" ? "text-emerald-300" : "text-rose-300"}`}>
+          {testMsg.msg}
+        </div>
+      )}
     </div>
   );
 }
