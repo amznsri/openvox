@@ -399,7 +399,21 @@ async def _handle_telegram_update(
         # photo / sticker / document / etc. — politely defer.
         return
 
-    # ── Run agent ───────────────────────────────────────────────────
+    # ── Run agent (with the FULL skill loop) ────────────────────────
+    # The original cut here used a plain `llm.chat()` without `tools=`,
+    # which meant the model had no real tool surface — it would
+    # hallucinate function calls in plain text in the reply ("Function
+    # call begins, query_documents parameters ..."). That text would
+    # then get TTS-synthesized and read back to the user. Awful.
+    # Fix: run the same skill-loop the orchestrator runs in voice
+    # mode, with `tools=runner.tool_specs()` set. Agents that don't
+    # have any skills still work — runner.tool_specs() returns an
+    # empty list and the loop completes in one iteration.
+    import json as _json
+
+    from openvox.skills import SkillContext
+    from openvox.skills.runner import SkillRunner
+
     reg = get_registry()
     async with db_session() as s:
         a = await s.get(Agent, agent_id)
@@ -416,16 +430,72 @@ async def _handle_telegram_update(
         max_tokens = a.max_tokens
         voice_id = a.voice_id
         voice_lang = a.voice_language
+        skill_ids = list(a.skills or [])
+
+    runner = SkillRunner(
+        skill_ids=skill_ids,
+        ctx=SkillContext(
+            agent_id=agent_id,
+            metadata={"source": "telegram", "caller_id": str((message.get("from") or {}).get("id") or "")},
+        ),
+    )
 
     messages = [
         LLMMessage(role="system", content=system_prompt),
         LLMMessage(role="user", content=user_text),
     ]
+    cfg = LLMConfig(
+        model=llm_model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        stream=False,
+        tools=runner.tool_specs() or None,
+    )
+
+    # Skill loop — same shape as orchestrator._llm_turn / agent_text_turn.
+    # Bounded at 6 iterations (CLAUDE.md §8 #46).
+    answer = ""
     try:
-        answer = await llm.chat(
-            messages,
-            LLMConfig(model=llm_model, temperature=temperature, max_tokens=max_tokens, stream=False),
-        )
+        for _iter in range(6):
+            last_chunk = None
+            async for chunk in llm.chat_stream(messages, cfg):
+                last_chunk = chunk
+            if last_chunk is None:
+                break
+            delta = last_chunk.delta or ""
+            answer += delta
+            tool_calls = last_chunk.tool_calls or []
+            if not tool_calls:
+                break
+            # Append the assistant tool_calls message (Ark / OpenAI
+            # contract — see CLAUDE.md §8 #18).
+            messages.append(
+                LLMMessage(role="assistant", content=delta, tool_calls=tool_calls)
+            )
+            for tc in tool_calls:
+                fn = tc.get("function") or {}
+                name = fn.get("name") or ""
+                raw_args = fn.get("arguments") or "{}"
+                try:
+                    parsed_args = _json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                except _json.JSONDecodeError:
+                    parsed_args = {"_raw": raw_args}
+                if not isinstance(parsed_args, dict):
+                    parsed_args = {"_value": parsed_args}
+                logger.info("telegram skill_call: %s args=%s", name, parsed_args)
+                result = await runner.invoke(name, parsed_args)
+                messages.append(
+                    LLMMessage(
+                        role="tool",
+                        tool_call_id=tc.get("id") or "",
+                        name=name,
+                        content=_json.dumps(result, ensure_ascii=False),
+                    )
+                )
+        else:
+            answer = (answer or "") + (
+                "\n\n(I had to abandon a tool loop — please try a simpler question.)"
+            )
     except Exception as e:
         logger.exception("telegram llm call failed")
         await tg.send_text(bot_token, chat_id, f"(model error: {e})")
@@ -461,6 +531,14 @@ async def _telegram_transcribe(audio_bytes: bytes, ext: str) -> str:
     Reuses the playground's PCM-via-pydub + push-frames-to-WS pattern,
     which already handles every format the BytePlus streaming endpoint
     can't consume directly. Returns "" on any failure.
+
+    Format-hint normalisation:
+        Telegram's voice-note files come back as `<id>.oga` — OGG
+        container, Opus codec. `_decode_to_pcm16k` (the playground
+        decoder) sniffs format from the *file extension*, and its
+        recognised list doesn't include `oga`. Without a format hint
+        ffmpeg refuses to guess and we get `code 183: Invalid data`.
+        Coerce `oga → ogg` here so the decoder picks the right path.
     """
     from openvox.api.routes.playground import _decode_to_pcm16k, _stream_pcm_to_stt
     from openvox.providers import ProviderType, get_registry
@@ -470,12 +548,20 @@ async def _telegram_transcribe(audio_bytes: bytes, ext: str) -> str:
     stt = get_registry().get(ProviderType.STT, "byteplus")
     if not isinstance(stt, STTProvider) or not stt.is_available():
         return ""
+
+    # Map Telegram-isms onto the decoder's recognised extensions.
+    ext_norm = (ext or "").lower().lstrip(".")
+    if ext_norm in {"oga", "opus"}:
+        ext_norm = "ogg"
+    elif ext_norm == "":
+        ext_norm = "ogg"  # voice messages are OGG by default
+
     try:
         pcm, duration_ms = await asyncio.to_thread(
-            _decode_to_pcm16k, audio_bytes, None, f"voice.{ext}"
+            _decode_to_pcm16k, audio_bytes, None, f"voice.{ext_norm}"
         )
     except Exception:
-        logger.exception("telegram: pcm decode failed")
+        logger.exception("telegram: pcm decode failed (ext=%s normalized=%s)", ext, ext_norm)
         return ""
     try:
         transcript, _ = await _stream_pcm_to_stt(pcm, duration_ms, stt, language="en-US")

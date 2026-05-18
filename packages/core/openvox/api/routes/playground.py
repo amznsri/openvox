@@ -150,9 +150,11 @@ def _decode_to_pcm16k(data: bytes, content_type: str | None, filename: str | Non
 
     name = (filename or "").lower()
     fmt = None
-    for ext in ("mp3", "wav", "m4a", "mp4", "ogg", "flac", "aac", "webm", "opus"):
+    # `oga` is Telegram's voice-note extension (OGG container, Opus codec).
+    # Map onto "ogg" so pydub / ffmpeg pick the right demuxer.
+    for ext in ("mp3", "wav", "m4a", "mp4", "ogg", "oga", "flac", "aac", "webm", "opus"):
         if name.endswith("." + ext):
-            fmt = "mp4" if ext == "m4a" else ext
+            fmt = "mp4" if ext == "m4a" else ("ogg" if ext == "oga" else ext)
             break
     if fmt is None:
         ct = (content_type or "").lower()
