@@ -1010,6 +1010,29 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     same error silently — now it doesn't.
 
     **The Fastify-v5-strict-spec family is now at FOUR bugs**:
+55. **Voice WS + Telegram never wrote `Transcript` rows.** Bug #38
+    half-fixed this by adding the `Session` row to the voice WS and
+    text playground. Text playground also writes per-turn `Transcript`
+    rows (lines 89 + 133 of `routes/playground.py`); voice WS and
+    Telegram did NOT. Symptom: every voice session in Observability
+    rendered with no turn-by-turn detail, and "Save as recording" →
+    Replay-eval recordings showed "0 turns" in the dropdown. Starting
+    a replay eval fed an empty transcript to the candidate → judge
+    correctly failed both criteria with "No agent dialogue appears in
+    the provided empty transcript".
+    *Fix*: `api/ws/voice.py:_forward_events` now persists a `Transcript`
+    row for each `user_final` and `assistant_done` event scoped to
+    the session's `db_session_id`. `api/routes/telephony.py:
+    _handle_telegram_update` now creates a `Session` row up-front +
+    writes user/assistant Transcripts + finalises the row on
+    completion (mirrors the voice WS lifecycle).
+    **Lesson — extension of #38**: "if a dashboard page reads from a
+    table, grep for writers." But also: "if a *feature* reads from a
+    table (replay eval reads Transcript), every channel that produces
+    that feature's input must write to it." When you add a new channel
+    (next up: WeChat/Lark voice bridges), the channel-bring-up
+    checklist must include Session + Transcript persistence, not just
+    "the LLM responds correctly".
     - #8  handler signature changed (`(socket, request)` not `(conn, req)`)
     - #9  `ws` library Buffer discrimination via `isBinary` flag
     - #10 `addContentTypeParser` passthrough for multipart/octet-stream

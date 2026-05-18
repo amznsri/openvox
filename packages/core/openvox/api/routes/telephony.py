@@ -414,9 +414,34 @@ async def _handle_telegram_update(
     # have any skills still work — runner.tool_specs() returns an
     # empty list and the loop completes in one iteration.
     import json as _json
+    from datetime import datetime, timezone
 
+    from openvox.db.models import Session as DBSession, Transcript
     from openvox.skills import SkillContext
     from openvox.skills.runner import SkillRunner
+
+    # Persist a Session row + user Transcript so this conversation shows
+    # up in Observability AND is replayable via the eval framework's
+    # "Save as recording" → Replay flow. Without this, Telegram
+    # conversations would be invisible to the rest of the platform.
+    # Best-effort: DB hiccups never kill the chat reply itself.
+    db_session_id = ""
+    session_started = datetime.now(timezone.utc)
+    try:
+        async with db_session() as s:
+            row = DBSession(
+                agent_id=agent_id,
+                channel="telegram",
+                caller_id=str((message.get("from") or {}).get("id") or "telegram-user"),
+                started_at=session_started,
+                status="active",
+            )
+            s.add(row)
+            await s.flush()
+            db_session_id = row.id
+            s.add(Transcript(session_id=db_session_id, role="user", text=user_text[:8000]))
+    except Exception:
+        logger.exception("telegram: could not create session row")
 
     reg = get_registry()
     async with db_session() as s:
@@ -505,6 +530,25 @@ async def _handle_telegram_update(
         await tg.send_text(bot_token, chat_id, f"(model error: {e})")
         return
     answer = (answer or "").strip()
+
+    # Persist the assistant reply + finalize the Session row. Even when
+    # the answer is empty we close out the row so it shows up cleanly in
+    # Observability (just with turn_count=0).
+    if db_session_id:
+        try:
+            ended = datetime.now(timezone.utc)
+            async with db_session() as s:
+                if answer:
+                    s.add(Transcript(session_id=db_session_id, role="assistant", text=answer[:8000]))
+                row = await s.get(DBSession, db_session_id)
+                if row is not None:
+                    row.ended_at = ended
+                    row.duration_ms = int((ended - session_started).total_seconds() * 1000)
+                    row.turn_count = 1 if answer else 0
+                    row.status = "completed"
+        except Exception:
+            logger.exception("telegram: could not finalize session row")
+
     if not answer:
         await tg.send_text(bot_token, chat_id, "(no response from the model)")
         return

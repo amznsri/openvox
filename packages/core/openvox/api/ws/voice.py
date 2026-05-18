@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from openvox.db import db_session
-from openvox.db.models import Agent
+from openvox.db.models import Agent, Transcript
 from openvox.db.models import Session as DBSession
 from openvox.pipeline.orchestrator import SessionConfig, VoiceSession
 from openvox.providers import ProviderType, get_registry
@@ -103,7 +103,7 @@ async def voice_ws(ws: WebSocket) -> None:
                                 db_session_id = row.id
                         except Exception:
                             logger.exception("could not create voice session row")
-                    forward_task = asyncio.create_task(_forward_events(session, ws, metrics, started_at))
+                    forward_task = asyncio.create_task(_forward_events(session, ws, metrics, started_at, db_session_id))
                 elif kind == "end":
                     if session:
                         await session.end_audio()
@@ -276,9 +276,25 @@ async def _forward_events(
     ws: WebSocket,
     metrics: dict | None = None,
     started_at: datetime | None = None,
+    db_session_id: str = "",
 ) -> None:
     try:
         async for ev in session.run():
+            # Persist user_final + assistant_done as Transcript rows so
+            # Observability shows turn-by-turn detail AND "Save as recording"
+            # captures something the eval replay runner can feed back in.
+            # Without this, voice recordings end up with transcript=[] and
+            # replay evals always fail with "no agent dialogue in transcript".
+            if db_session_id and ev.kind in ("user_final", "assistant_done") and (ev.text or "").strip():
+                try:
+                    async with db_session() as s:
+                        s.add(Transcript(
+                            session_id=db_session_id,
+                            role="user" if ev.kind == "user_final" else "assistant",
+                            text=(ev.text or "")[:8000],
+                        ))
+                except Exception:
+                    logger.exception("could not persist transcript row")
             # Update observability counters as events flow past us.
             if metrics is not None:
                 if ev.kind == "assistant_done":
