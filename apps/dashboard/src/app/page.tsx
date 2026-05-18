@@ -72,8 +72,8 @@ const features = [
   },
   {
     icon: ShieldCheck,
-    title: "Local-first by default",
-    desc: "Runs on your laptop. SQLite + filesystem. Your audio never leaves your machine.",
+    title: "Self-hosted, no cloud in the loop",
+    desc: "Runs on your laptop. SQLite + filesystem. You pick the providers; OpenVox itself never sees your data.",
   },
   {
     icon: Globe,
@@ -139,14 +139,15 @@ export default function LandingPage() {
         <div className="container py-24 md:py-32 text-center">
           <Badge variant="primary" className="mb-6 mx-auto">
             <span className="h-1.5 w-1.5 rounded-full bg-violet-400 mr-1.5 animate-pulse" />
-            Open-source • Local-first • Apache-2.0
+            Open-source • Self-hosted • Apache-2.0
           </Badge>
           <h1 className="text-5xl md:text-7xl font-bold tracking-tight">
             Voice agents that <span className="gradient-text">actually ship.</span>
           </h1>
           <p className="mt-6 text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto">
             OpenVox is the open platform for building, testing, and deploying production-grade voice
-            agents. Every layer is swappable. Every byte stays on your machine — until you say otherwise.
+            agents. Every layer is swappable. Self-hosted glue — your providers see audio + text,
+            but no OpenVox cloud sits in the loop.
           </p>
           <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
             <Link href="/dashboard/agents/new?mode=voice">

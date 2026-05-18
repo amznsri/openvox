@@ -2,10 +2,10 @@
 
 # OpenVox
 
-**Open-source, local-first voice agent platform.**
+**Open-source, self-hosted voice agent platform.**
 
 Build, test, and deploy production-grade voice agents — across web, phone, WhatsApp, and Telegram —
-on your laptop. Apache-2.0.
+on your laptop. Apache-2.0. No OpenVox cloud in the loop — you pick the providers.
 
 [Dashboard](#) · [SDK](#) · [Templates](#templates) · [Architecture](docs/architecture.md)
 
@@ -23,7 +23,10 @@ non-technical users, and an SDK + CLI for engineers.
 - 🎯 **Sub-300 ms** end-to-end latency (sentence-level token streaming).
 - 🔌 **Pluggable providers** — BytePlus, ElevenLabs, Deepgram, OpenAI, Anthropic, Gemini,
   Cartesia, AssemblyAI, Whisper, plus phone and WhatsApp.
-- 🏠 **Local-first** — SQLite + filesystem out of the box. No telemetry. Your audio stays put.
+- 🏠 **Self-hosted, no cloud middle-man** — SQLite + filesystem out of the box, no telemetry,
+  no OpenVox-operated cloud. Your audio + text travel only to the providers you configure
+  (BytePlus / OpenAI / ElevenLabs / etc.) per their own privacy policies. Want everything on-device?
+  Swap in local Whisper + Ollama + Piper — same provider interface, zero outbound calls.
 - 🧰 **Extensible** — drop a Python file in `~/.openvox/skills/`, ship a pip package, or wire a
   third-party tool.
 - 🧪 **Live playground** — talk to your agent in the browser with one click.
