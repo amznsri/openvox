@@ -426,6 +426,14 @@ class VoiceSession:
         # will still finish but we won't generate audio.
         if self._tts_disabled_for_turn:
             return
+        # Markdown scrub: LLMs slip into `**bold**` / `_italic_` /
+        # `` `code` `` even in voice agents, and TTS reads those as
+        # "asterisk asterisk". Strip before synthesis so users hear the
+        # words, not the markup. Cheap (regex over a sentence).
+        from openvox.utils.text import strip_markdown_for_tts
+        spoken = strip_markdown_for_tts(sentence)
+        if not spoken:
+            return
         # Multilingual support: if the agent's voice_map has an entry for
         # the currently-detected language, swap the speaker for this
         # utterance. Falls through to the configured voice_id otherwise.
@@ -444,7 +452,7 @@ class VoiceSession:
         # input (during _listen_one_turn) and shouldn't trigger interrupt.
         self._speaking = True
         try:
-            async for chunk in self._tts.synthesize_stream(sentence, tts_cfg):
+            async for chunk in self._tts.synthesize_stream(spoken, tts_cfg):
                 if self._cancel_tts.is_set():
                     self._cancel_tts.clear()
                     yield TurnEvent(kind="interrupt")
