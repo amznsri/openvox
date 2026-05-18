@@ -24,6 +24,12 @@ def _session_to_dict(s: Session) -> dict[str, Any]:
         "cost_usd": s.cost_usd,
         "first_token_ms": s.first_token_ms,
         "avg_response_ms": s.avg_response_ms,
+        # Per-session telemetry counters used by the pricing calculator.
+        # Surfaced here so the dashboard list view can show them inline
+        # without hitting /api/v1/pricing/sessions/{id} for every row.
+        "llm_tokens_in": getattr(s, "llm_tokens_in", 0) or 0,
+        "llm_tokens_out": getattr(s, "llm_tokens_out", 0) or 0,
+        "tts_chars": getattr(s, "tts_chars", 0) or 0,
         "status": s.status,
         "audio_url": s.audio_url,
         "transcript_url": s.transcript_url,

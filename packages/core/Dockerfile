@@ -34,7 +34,7 @@ COPY main.py ./
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    OPENVOX_DATA_DIR=/data
+    DATA_DIR=/data
 
 EXPOSE 8000
 CMD ["python", "main.py"]
