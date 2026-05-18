@@ -10,8 +10,13 @@ import { env } from "./config.js";
 import { healthRoutes } from "./routes/health.js";
 import { proxyRoutes } from "./routes/proxy.js";
 import { authRoutes } from "./routes/auth.js";
-import { telephonyRoutes } from "./routes/telephony.js";
 import { voiceWsRoute } from "./ws/voice.js";
+// Note: we used to register telephonyRoutes here with stub handlers
+// for /telegram/webhook, /whatsapp/webhook, /twilio/voice. Those
+// stubs returned 200 OK immediately and never proxied to the Python
+// core — meaning real Telegram messages got ack'd but never reached
+// our handler. Killing the stubs lets the catch-all proxyRoutes
+// forward `/api/v1/telephony/*` to core where the real handlers live.
 
 const server = Fastify({
   logger: {
@@ -63,7 +68,7 @@ server.decorate("authenticate", async function (request: any, reply: any) {
 await server.register(healthRoutes);
 await server.register(authRoutes, { prefix: "/api/v1/auth" });
 await server.register(proxyRoutes, { prefix: "/api/v1" });
-await server.register(telephonyRoutes, { prefix: "/api/v1/telephony" });
+// telephonyRoutes deliberately not registered — see import block above.
 await server.register(voiceWsRoute);
 
 try {
