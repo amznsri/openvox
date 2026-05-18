@@ -993,6 +993,40 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     every such FK so future tables don't need this dance — listed
     in PLANNING_NEXT.md.
 
+### Fastify v5 strict spec compliance (recurring family)
+54. **Dashboard `http<T>` helper always attached
+    `Content-Type: application/json`** — even on DELETEs and other
+    bodyless requests. Fastify v5 enforces RFC 7231 strictly: if you
+    declare `Content-Type: application/json` you must supply a JSON
+    body. Empty + declared = `FST_ERR_CTP_EMPTY_JSON_BODY` 400 at
+    the gateway, before the request ever reaches core. User clicked
+    Delete on an agent → got the Fastify error string verbatim in
+    an alert (which we surface since #53's `destroy()` improvements,
+    so at least we saw the bug now).
+    *Fix*: in `apps/dashboard/src/lib/api.ts:http`, only set
+    Content-Type when `init.body` is truthy. Caller-supplied
+    headers still honoured for explicit overrides. Side benefit:
+    `publishAgent` (a bodyless POST) was probably tripping the
+    same error silently — now it doesn't.
+
+    **The Fastify-v5-strict-spec family is now at FOUR bugs**:
+    - #8  handler signature changed (`(socket, request)` not `(conn, req)`)
+    - #9  `ws` library Buffer discrimination via `isBinary` flag
+    - #10 `addContentTypeParser` passthrough for multipart/octet-stream
+    - #54 don't declare Content-Type on bodyless requests
+    **Meta-rule**: any time you add a new HTTP client or change
+    request shapes on the dashboard / SDK side, run through this
+    checklist:
+      1. Bodyless requests (GET, DELETE, bodyless POST like
+         `/publish`) → no Content-Type header.
+      2. Multipart uploads → core needs
+         `addContentTypeParser("multipart/*", ...)` passthrough.
+      3. Octet-stream / text/plain → same passthrough required.
+      4. WS frames → discriminate on `isBinary` parameter, never
+         on `data instanceof Buffer` (always true in Node WS).
+    Fastify is opinionated about spec compliance. Better to learn
+    that with intentional checks than to ship a 400 to a user.
+
 ---
 
 ## 9. Known constraints / environment quirks
