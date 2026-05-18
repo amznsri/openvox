@@ -142,3 +142,149 @@ async def delete_agent(agent_id: str) -> None:
         await s.execute(delete(DocumentChunk).where(DocumentChunk.agent_id == agent_id))
         await s.execute(delete(Document).where(Document.agent_id == agent_id))
         await s.delete(a)
+
+
+# ── Session 10: text-mode turn for the Setup Assistant ───────────────
+# The Setup Assistant ships as a voice agent but the user-facing
+# component supports both voice AND typed input. Voice goes through the
+# existing /ws/voice WS; text comes in here. Both invoke the same agent
+# + skills, both write to the same Agent.channels.setup_state, so the
+# "draft" state stays consistent when the user switches mid-flow.
+#
+# Out of scope for v1: streaming. The skill-loop nature of an LLM round
+# (LLM → maybe-tool-call → result → re-invoke LLM) is awkward to stream
+# over a single HTTP response; the SetupAssistant doesn't need it
+# because typed input is naturally turn-based. Reply payload includes
+# every event the orchestrator would have emitted, in order.
+
+
+class TurnRequest(BaseModel):
+    user_text: str
+    # Optional — lets the caller carry a conversational history across
+    # turns. Each item is `{"role": "user"|"assistant", "content": "..."}`.
+    # If omitted we treat this as a fresh turn (still uses the agent's
+    # configured system_prompt + greeting).
+    history: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@router.post("/{agent_id}/turn")
+async def agent_text_turn(agent_id: str, body: TurnRequest) -> dict[str, Any]:
+    """Run a single LLM turn (with skill calls) against `agent_id`.
+
+    Returns the assistant text plus an array of every event the
+    orchestrator emitted (skill_call / skill_result / errors) so the
+    SetupAssistant UI can render a faithful transcript even when the
+    LLM took a multi-step tool path.
+    """
+    import json
+
+    from openvox.providers import ProviderType, get_registry
+    from openvox.providers.base import LLMConfig, LLMMessage, LLMProvider
+    from openvox.skills import SkillContext
+    from openvox.skills.runner import SkillRunner
+
+    user_text = (body.user_text or "").strip()
+    if not user_text:
+        raise HTTPException(400, "user_text is required")
+
+    async with db_session() as s:
+        a = await s.get(Agent, agent_id)
+        if a is None:
+            raise HTTPException(404, "agent not found")
+        system_prompt = a.system_prompt
+        skill_ids = list(a.skills or [])
+        llm_id = a.llm_provider
+        llm_model = a.llm_model
+        temperature = a.temperature
+        max_tokens = a.max_tokens
+
+    llm = get_registry().get(ProviderType.LLM, llm_id)
+    if not isinstance(llm, LLMProvider) or not llm.is_available():
+        raise HTTPException(400, f"LLM provider '{llm_id}' unavailable")
+
+    runner = SkillRunner(
+        skill_ids=skill_ids,
+        ctx=SkillContext(agent_id=agent_id, metadata={"source": "agent_text_turn"}),
+    )
+
+    # Build a fresh message list — system prompt + caller-supplied
+    # history + the new user turn. We're not persisting history here;
+    # the SetupAssistant client carries it. Keeps this endpoint stateless
+    # at the HTTP layer while still letting the LLM see the full thread.
+    messages: list[LLMMessage] = [LLMMessage(role="system", content=system_prompt)]
+    for h in body.history:
+        role = h.get("role")
+        content = h.get("content") or ""
+        if role in {"user", "assistant"} and content:
+            messages.append(LLMMessage(role=role, content=content))
+    messages.append(LLMMessage(role="user", content=user_text))
+
+    cfg = LLMConfig(
+        model=llm_model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        stream=False,
+        tools=runner.tool_specs() or None,
+    )
+
+    # ── Skill loop ───────────────────────────────────────────────────
+    # Mirrors `orchestrator._llm_turn`'s shape but in non-streaming mode
+    # because text replies don't need sub-sentence chunking. Same cap
+    # on tool iterations (default 6) for the same reason —
+    # see CLAUDE.md §8 #46.
+    events: list[dict[str, Any]] = []
+    full_text = ""
+    max_iters = 6
+
+    for iteration in range(max_iters):
+        # Non-streaming call returns one chunk with the full delta
+        # plus possibly tool_calls.
+        last_chunk = None
+        async for chunk in llm.chat_stream(messages, cfg):
+            last_chunk = chunk
+        if last_chunk is None:
+            break
+        delta = last_chunk.delta or ""
+        full_text += delta
+        if delta:
+            events.append({"type": "assistant_token", "text": delta})
+
+        tool_calls = last_chunk.tool_calls or []
+        if not tool_calls:
+            # LLM is done.
+            break
+
+        # Echo the assistant message that issued the tool_calls so the
+        # next LLM call's history is well-formed (OpenAI / Ark contract).
+        messages.append(
+            LLMMessage(role="assistant", content=delta, tool_calls=tool_calls)
+        )
+        for tc in tool_calls:
+            fn = tc.get("function") or {}
+            name = fn.get("name") or ""
+            raw_args = fn.get("arguments") or "{}"
+            try:
+                parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            except json.JSONDecodeError:
+                parsed_args = {"_raw": raw_args}
+            if not isinstance(parsed_args, dict):
+                parsed_args = {"_value": parsed_args}
+            events.append({"type": "skill_call", "name": name, "args": parsed_args})
+            result = await runner.invoke(name, parsed_args)
+            events.append({"type": "skill_result", "name": name, "output": result})
+            messages.append(
+                LLMMessage(
+                    role="tool",
+                    tool_call_id=tc.get("id") or "",
+                    name=name,
+                    content=json.dumps(result, ensure_ascii=False),
+                )
+            )
+    else:
+        events.append({
+            "type": "error",
+            "text": f"tool-call loop exceeded {max_iters} iterations",
+        })
+
+    events.append({"type": "assistant_done", "text": full_text})
+    return {"text": full_text, "events": events}

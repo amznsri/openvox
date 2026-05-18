@@ -13,4 +13,8 @@ __all__ = [
     "reception",
     "sales",
     "language",
+    # Session 10 — voice-driven agent creation. Used by the
+    # built-in `setup-assistant` template; harmless to leave
+    # registered on other agents (they just won't call these tools).
+    "setup",
 ]

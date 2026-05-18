@@ -149,19 +149,28 @@ export default function LandingPage() {
             agents. Every layer is swappable. Every byte stays on your machine — until you say otherwise.
           </p>
           <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
-            <Link href="/dashboard">
+            <Link href="/dashboard/agents/new?mode=voice">
               <Button variant="gradient" size="lg">
-                Open the dashboard
+                <Mic className="h-4 w-4" />
+                Build by voice
                 <ArrowRight className="h-4 w-4" />
               </Button>
             </Link>
-            <Link href="/dashboard/playground">
+            <Link href="/dashboard">
               <Button variant="outline" size="lg">
-                <Mic className="h-4 w-4" />
+                Open the dashboard
+              </Button>
+            </Link>
+            <Link href="/dashboard/playground">
+              <Button variant="ghost" size="lg">
                 Try the playground
               </Button>
             </Link>
           </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            🎙 Talk to the Setup Assistant — it&apos;ll build your first agent
+            for you. Or hop straight to the dashboard.
+          </p>
 
           <div className="mt-12 flex flex-wrap items-center justify-center gap-3 text-xs text-muted-foreground">
             <span className="font-medium tracking-wide uppercase">Powered by</span>

@@ -502,6 +502,113 @@ def _make_lang_templates() -> list[dict[str, Any]]:
 TEMPLATES.extend(_make_lang_templates())
 
 
+# ── Setup Assistant (Session 10) ─────────────────────────────────────
+# A built-in agent whose job is creating *other* agents conversationally.
+# Lives at the end of the catalogue so it doesn't crowd the front of the
+# Templates page; the public landing + topbar route users into the voice
+# flow directly, not via this template card.
+
+_SETUP_ASSISTANT_PROMPT = """
+You are OpenVox's Setup Assistant. Your job is to help a user build a
+new voice agent conversationally — they don't want to fill out a form.
+
+Available templates (call `list_templates` to enumerate, or
+`recommend_template(description)` to map the user's free-text into one):
+  - ecommerce-support, education-tutor, stock-analyst, receptionist,
+    sales-sdr, document-qa, multilingual-support, voice-analyzer,
+    plus 21 language-specific variants (hotline-{lang} /
+    reactivation-{lang} / telesales-{lang} for 7 languages).
+
+WORKFLOW
+1. Ask ONE clarifying question about what kind of agent they want.
+   Don't dump the full template list at them — wait until they've
+   described their use case.
+2. Call `recommend_template` with the user's description.
+3. Read back the recommended template name and ask the user to
+   confirm. Phrase it like a peer offering an option, not a clerk
+   reciting a form: "Sounds like Receptionist would fit — that
+   right?" rather than "Confirm template ID receptionist."
+4. Once they confirm, ask for an agent name (2-4 words, concrete).
+5. Call `instantiate_template(template_id, name)`. The skill stashes
+   the new agent's id automatically.
+6. Walk through these voice-editable fields, ONE AT A TIME, calling
+   `update_agent_field` for each:
+     - greeting       (the bot's first line to callers — keep it
+                       short, friendly, named)
+     - system_prompt  (optional — only ask if they want behaviour
+                       different from the template default)
+     - voice_id       (optional — only if they explicitly mention)
+   After EACH write, read the value back: "Greeting set to
+   'Welcome to Acme Salon, how can I help?' — sound right?"
+7. Call `describe_remaining_setup` once. Read the manual items
+   they still need to handle through the dashboard UI (API keys,
+   phone numbers, MCP servers). Be matter-of-fact, not alarmist:
+   "There are three things you'll need to fill in by clicking
+   through the dashboard: ..."
+8. Ask: "Want me to publish this agent so you can test it?"
+9. If yes, call `publish_agent`. Tell them where to find it
+   ("Open the Agents page or Playground and look for ...").
+10. If they want to make more changes, loop back to step 6.
+
+HARD RULES
+- Never ask the user to dictate API keys, tokens, webhook URLs, or
+  phone numbers. Voice-hostile by design — defer to the form. Same
+  for MCP server configuration.
+- Never call `update_agent_field` for a field that isn't in this
+  list: name, description, greeting, system_prompt, voice_id,
+  voice_language, voice_speed, temperature, max_tokens, skills,
+  voice_map. The skill will reject anything else — don't waste a
+  turn by trying.
+- If the user says something you genuinely don't understand,
+  ask them to rephrase. Don't guess. Voice mishears compound;
+  "What did you say?" is fine.
+- Keep your spoken turns SHORT — under 25 words when possible.
+  This is voice, not chat. Long bot monologues kill the
+  conversational feel.
+- If the user says "publish" or "save it" or similar before you've
+  walked through the basics, do it anyway — they can always edit
+  later from the dashboard. Respect their pace.
+""".strip()
+
+TEMPLATES.append({
+    "id": "setup-assistant",
+    "name": "Setup Assistant",
+    "tagline": "Build voice agents by talking to a voice agent.",
+    "category": "Meta",
+    "icon": "Wand2",
+    "use_cases": [
+        "Help me build a customer support agent",
+        "I run a salon — make a booking bot",
+        "Set up a stock analyst that reads me morning briefings",
+    ],
+    "default": {
+        "name": "Setup Assistant",
+        "description": "Built-in meta-agent that creates other agents via voice.",
+        "system_prompt": _SETUP_ASSISTANT_PROMPT,
+        "greeting": (
+            "Hi — I'm here to help you build a voice agent. "
+            "Describe what you'd like it to do, or who your users will be."
+        ),
+        # Lower temperature so skill-call selection stays consistent
+        # turn-to-turn. Setup is a procedural task, not a creative one.
+        "temperature": 0.3,
+        "max_tokens": 800,
+        # Just the setup skills — keeping the toolset tight stops the
+        # LLM from drifting into "let me look up the weather" etc.
+        "skills": [
+            "list_templates",
+            "recommend_template",
+            "instantiate_template",
+            "update_agent_field",
+            "publish_agent",
+            "describe_remaining_setup",
+        ],
+        "voice_id": "en_male_tim_uranus_bigtts",
+        "voice_language": "en-US",
+    },
+})
+
+
 @router.get("")
 async def list_templates() -> list[dict[str, Any]]:
     return TEMPLATES
@@ -517,6 +624,58 @@ async def get_template(template_id: str) -> dict[str, Any]:
 
 class InstantiateRequest(BaseModel):
     name: str | None = None
+
+
+# Session 10 — the Setup Assistant. We want at most ONE agent of this
+# template existing across the system (it's a tool, not a use-case-
+# specific agent), so the dashboard's voice-setup route hits the
+# `singleton` endpoint instead of `instantiate` on every page load.
+
+
+@router.get("/setup-assistant/singleton")
+async def setup_assistant_singleton() -> dict[str, Any]:
+    """Return the canonical Setup Assistant agent, creating it on first use.
+
+    Idempotent: subsequent calls return the same row. Keeps the
+    Agents page from accumulating one Setup Assistant entry per
+    user click of the voice-setup CTA.
+    """
+    from sqlalchemy import select
+
+    async with db_session() as s:
+        existing = (
+            await s.execute(
+                select(Agent)
+                .where(Agent.template_id == "setup-assistant")
+                .order_by(Agent.created_at.asc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if existing is not None:
+            return _agent_to_dict(existing)
+
+    # First use → fall through to a normal instantiate.
+    return await instantiate_template("setup-assistant", InstantiateRequest(name="Setup Assistant"))
+
+
+def _agent_to_dict(a: Agent) -> dict[str, Any]:
+    """Subset of the routes/agents.py serialiser the SetupAssistant cares about."""
+    return {
+        "id": a.id,
+        "name": a.name,
+        "description": a.description,
+        "template_id": a.template_id,
+        "stt_provider": a.stt_provider,
+        "tts_provider": a.tts_provider,
+        "llm_provider": a.llm_provider,
+        "llm_model": a.llm_model,
+        "voice_id": a.voice_id,
+        "voice_language": a.voice_language,
+        "greeting": a.greeting,
+        "system_prompt": a.system_prompt,
+        "skills": a.skills or [],
+        "status": a.status,
+    }
 
 
 @router.post("/{template_id}/instantiate", status_code=201)

@@ -207,6 +207,21 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ session_id: sessionId, name: name || "" }),
     }),
+
+  // ── Setup Assistant (Session 10) ──────────────────────────────────
+  setupAssistantSingleton: () =>
+    http<Agent>("/api/v1/templates/setup-assistant/singleton"),
+  // Text-mode turn against any agent (used by SetupAssistant's text
+  // input — voice goes through /ws/voice instead). Returns assistant
+  // text + an event log so the UI can render skill calls.
+  agentTurn: (agentId: string, userText: string, history: { role: string; content: string }[]) =>
+    http<{
+      text: string;
+      events: { type: string; name?: string; text?: string; args?: any; output?: any }[];
+    }>(`/api/v1/agents/${agentId}/turn`, {
+      method: "POST",
+      body: JSON.stringify({ user_text: userText, history }),
+    }),
 };
 
 export const wsUrl = (path: string) => `${WS}${path}`;
