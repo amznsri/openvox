@@ -64,6 +64,12 @@ class OpenAICompatLLM(LLMProvider):
         }
         if config.tools:
             body["tools"] = config.tools
+        # Same trick as the BytePlus path: opt in to the terminal usage
+        # frame on streaming so the orchestrator can record real token
+        # counts. Providers that don't support this flag will simply
+        # ignore it (OpenAI, DeepSeek, Gemini-OpenAI-compat all do).
+        if config.stream:
+            body["stream_options"] = {"include_usage": True}
 
         if not config.stream:
             r = await self._client.post(self.base_url, json=body)
@@ -74,6 +80,7 @@ class OpenAICompatLLM(LLMProvider):
                 delta=ch["message"].get("content") or "",
                 finish_reason=ch.get("finish_reason"),
                 tool_calls=ch["message"].get("tool_calls"),
+                usage=data.get("usage") or None,
                 raw=data,
             )
             return
@@ -90,12 +97,15 @@ class OpenAICompatLLM(LLMProvider):
                     obj = json.loads(payload)
                 except json.JSONDecodeError:
                     continue
-                ch = (obj.get("choices") or [{}])[0]
+                # Final usage chunk has empty choices[] but populated usage.
+                choices = obj.get("choices") or []
+                ch = choices[0] if choices else {}
                 delta = ch.get("delta") or {}
                 yield LLMResponseChunk(
                     delta=delta.get("content") or "",
                     finish_reason=ch.get("finish_reason"),
                     tool_calls=delta.get("tool_calls"),
+                    usage=obj.get("usage") or None,
                     raw=obj,
                 )
 

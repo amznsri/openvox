@@ -61,8 +61,14 @@ async def voice_ws(ws: WebSocket) -> None:
     metrics = {
         "turn_count": 0,
         "first_token_ms": 0,
-        "llm_tokens_in": 0,
-        "llm_tokens_out": 0,
+        # Word-count proxy (always populated) — used as fallback when
+        # the provider doesn't return usage.
+        "llm_tokens_in_approx": 0,
+        "llm_tokens_out_approx": 0,
+        # Provider-reported counts (populated by `llm_usage` events
+        # when stream_options.include_usage is honoured).
+        "llm_tokens_in_real": 0,
+        "llm_tokens_out_real": 0,
         "tts_chars": 0,
     }
 
@@ -141,8 +147,17 @@ async def voice_ws(ws: WebSocket) -> None:
                         row.duration_ms = duration_ms
                         row.turn_count = metrics["turn_count"]
                         row.first_token_ms = metrics["first_token_ms"]
-                        row.llm_tokens_in = metrics.get("llm_tokens_in", 0)
-                        row.llm_tokens_out = metrics.get("llm_tokens_out", 0)
+                        # Prefer provider-reported usage when any landed
+                        # (some providers return 0 for sub-token finals);
+                        # else fall back to the word-count proxy.
+                        in_real = metrics.get("llm_tokens_in_real", 0)
+                        out_real = metrics.get("llm_tokens_out_real", 0)
+                        row.llm_tokens_in = (
+                            in_real if in_real > 0 else metrics.get("llm_tokens_in_approx", 0)
+                        )
+                        row.llm_tokens_out = (
+                            out_real if out_real > 0 else metrics.get("llm_tokens_out_approx", 0)
+                        )
                         row.tts_chars = metrics.get("tts_chars", 0)
                         row.status = "completed"
             except Exception:
@@ -280,17 +295,28 @@ async def _forward_events(
                     metrics["first_token_ms"] = int(
                         (datetime.now(timezone.utc) - started_at).total_seconds() * 1000
                     )
-                # Crude tokens estimate from token deltas. For real billing
-                # accuracy the LLM provider should return usage; we'll wire
-                # that in a follow-up Session 8.x.
+                # Token accounting — we track *both* a word-count proxy
+                # (`_approx`) and provider-reported usage (`_real`).
+                # When the call finalises we prefer real if any landed,
+                # else fall back to approx. This way pricing stays
+                # honest even when a provider doesn't return usage.
                 if ev.kind == "assistant_token":
-                    metrics["llm_tokens_out"] = metrics.get("llm_tokens_out", 0) + max(
-                        1, len((ev.text or "").split())
-                    )
+                    metrics["llm_tokens_out_approx"] = metrics.get(
+                        "llm_tokens_out_approx", 0
+                    ) + max(1, len((ev.text or "").split()))
                 if ev.kind == "user_final":
-                    metrics["llm_tokens_in"] = metrics.get("llm_tokens_in", 0) + max(
-                        1, len((ev.text or "").split())
-                    )
+                    metrics["llm_tokens_in_approx"] = metrics.get(
+                        "llm_tokens_in_approx", 0
+                    ) + max(1, len((ev.text or "").split()))
+                # Real usage arrives on the terminal stream chunk —
+                # accumulate so multi-turn sessions report correctly.
+                if ev.kind == "llm_usage" and ev.data:
+                    metrics["llm_tokens_in_real"] = metrics.get(
+                        "llm_tokens_in_real", 0
+                    ) + int(ev.data.get("prompt_tokens") or 0)
+                    metrics["llm_tokens_out_real"] = metrics.get(
+                        "llm_tokens_out_real", 0
+                    ) + int(ev.data.get("completion_tokens") or 0)
             if ev.kind == "assistant_audio":
                 await ws.send_bytes(ev.audio)
             else:

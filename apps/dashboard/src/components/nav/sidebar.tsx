@@ -9,6 +9,7 @@ import {
   Wand2,
   Plug,
   BarChart3,
+  ClipboardCheck,
   Settings,
   Mic,
   Github,
@@ -36,6 +37,7 @@ const sections = [
     title: "Operate",
     items: [
       { href: "/dashboard/schedules", label: "Schedules", icon: Clock },
+      { href: "/dashboard/evals", label: "Evals", icon: ClipboardCheck },
       { href: "/dashboard/providers", label: "Providers", icon: Plug },
       { href: "/dashboard/observability", label: "Observability", icon: BarChart3 },
       { href: "/dashboard/settings", label: "Settings", icon: Settings },

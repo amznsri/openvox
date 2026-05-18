@@ -116,6 +116,13 @@ class LLMResponseChunk:
     role: str = "assistant"
     finish_reason: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
+    # Provider-reported token usage. OpenAI-compatible APIs (incl. Ark)
+    # emit `{"usage": {"prompt_tokens": N, "completion_tokens": N,
+    # "total_tokens": N}}` on the FINAL chunk when the request includes
+    # `stream_options.include_usage = true`. Older proxies sometimes
+    # send it mid-stream — accept whatever we get, last-write-wins on
+    # the orchestrator side.
+    usage: dict[str, int] | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 

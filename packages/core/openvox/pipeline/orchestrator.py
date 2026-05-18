@@ -346,6 +346,14 @@ class VoiceSession:
                             if sentence:
                                 async for ev in self._speak(sentence):
                                     yield ev
+                    # Provider-reported usage usually arrives in the
+                    # terminal chunk (after we set stream_options.
+                    # include_usage on the request). Surface it as its
+                    # own TurnEvent so the WS forwarder / pricing
+                    # calculator can overwrite the word-count proxy
+                    # with the real number.
+                    if chunk.usage:
+                        yield TurnEvent(kind="llm_usage", data=dict(chunk.usage))
                     if chunk.finish_reason:
                         break
                 # Flush trailing buffer.

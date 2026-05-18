@@ -93,12 +93,20 @@ async def text_chat(req: TextRequest) -> StreamingResponse:
     async def gen():
         first_token_ms = 0
         full = ""
+        # Track real provider-reported usage when it arrives in the
+        # terminal chunk; fall back to a word-count proxy if not.
+        usage_in_real = 0
+        usage_out_real = 0
         async for chunk in llm.chat_stream(msgs, cfg):
             if chunk.delta:
                 if first_token_ms == 0:
                     first_token_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
                 full += chunk.delta
                 yield chunk.delta
+            if chunk.usage:
+                # OpenAI-compat usage frame — pluck token counts.
+                usage_in_real = int(chunk.usage.get("prompt_tokens") or 0)
+                usage_out_real = int(chunk.usage.get("completion_tokens") or 0)
         # Finalize the session row once the LLM stream completes. We do
         # this in a fresh db_session because the request-scoped one above
         # closed at the yield boundary.
@@ -106,6 +114,11 @@ async def text_chat(req: TextRequest) -> StreamingResponse:
             try:
                 ended = datetime.now(timezone.utc)
                 duration_ms = int((ended - started).total_seconds() * 1000)
+                # Prefer real over approx (word-count). Approx is the
+                # length-of-words heuristic — fine for a fallback, bad
+                # for billing.
+                tokens_in = usage_in_real if usage_in_real > 0 else max(1, len(req.user.split()))
+                tokens_out = usage_out_real if usage_out_real > 0 else max(1, len(full.split()))
                 async with db_session() as s:
                     sess = await s.get(DBSession, session_id)
                     if sess is not None:
@@ -113,6 +126,9 @@ async def text_chat(req: TextRequest) -> StreamingResponse:
                         sess.duration_ms = duration_ms
                         sess.first_token_ms = first_token_ms
                         sess.turn_count = 1
+                        sess.llm_tokens_in = tokens_in
+                        sess.llm_tokens_out = tokens_out
+                        sess.tts_chars = len(full)
                         sess.status = "completed"
                     s.add(Transcript(session_id=session_id, role="assistant", text=full[:8000]))
             except Exception:

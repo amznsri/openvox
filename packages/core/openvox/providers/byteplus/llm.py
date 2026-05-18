@@ -107,6 +107,13 @@ class BytePlusLLM(LLMProvider):
             body["tools"] = config.tools
         if config.response_format:
             body["response_format"] = config.response_format
+        # Ask Ark to emit the `usage` block on the terminal stream
+        # chunk. Without this the streaming path returns no token
+        # counts at all and our pricing calculator falls back to a
+        # word-count estimate. The non-streaming path always includes
+        # usage in the response body — no flag needed there.
+        if config.stream:
+            body["stream_options"] = {"include_usage": True}
 
         if not config.stream:
             r = await self._client.post(self._endpoint, json=body)
@@ -117,6 +124,7 @@ class BytePlusLLM(LLMProvider):
                 delta=choice["message"].get("content") or "",
                 finish_reason=choice.get("finish_reason"),
                 tool_calls=choice["message"].get("tool_calls"),
+                usage=data.get("usage") or None,
                 raw=data,
             )
             return
@@ -134,12 +142,18 @@ class BytePlusLLM(LLMProvider):
                 except json.JSONDecodeError:
                     logger.debug("bad sse line: %s", line[:200])
                     continue
-                choice = (obj.get("choices") or [{}])[0]
+                # With stream_options.include_usage Ark sends a final
+                # frame whose `choices` is empty and `usage` is set.
+                # Surface it on the chunk so the orchestrator can
+                # record real token counts.
+                choices = obj.get("choices") or []
+                choice = choices[0] if choices else {}
                 delta = choice.get("delta") or {}
                 yield LLMResponseChunk(
                     delta=delta.get("content") or "",
                     finish_reason=choice.get("finish_reason"),
                     tool_calls=delta.get("tool_calls"),
+                    usage=obj.get("usage") or None,
                     raw=obj,
                 )
 

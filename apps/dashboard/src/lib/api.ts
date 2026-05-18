@@ -190,6 +190,23 @@ export const api = {
     ),
   telegramDisconnect: (agentId: string) =>
     http<{ disconnected: boolean }>(`/api/v1/telephony/telegram/connect/${agentId}`, { method: "DELETE" }),
+
+  // ── Pricing ───────────────────────────────────────────────────────
+  sessionPricing: (sessionId: string) =>
+    http<SessionPricing>(`/api/v1/pricing/sessions/${sessionId}`),
+
+  // ── Evals ─────────────────────────────────────────────────────────
+  listPersonas: () => http<Persona[]>("/api/v1/evals/personas"),
+  listRecordings: () => http<RecordingRecord[]>("/api/v1/evals/recordings"),
+  listEvalRuns: (limit = 50) => http<EvalRunRecord[]>(`/api/v1/evals/runs?limit=${limit}`),
+  getEvalRun: (id: string) => http<EvalRunRecord>(`/api/v1/evals/runs/${id}`),
+  runEval: (body: RunEvalRequest) =>
+    http<EvalRunRecord>("/api/v1/evals/run", { method: "POST", body: JSON.stringify(body) }),
+  saveSessionAsRecording: (sessionId: string, name?: string) =>
+    http<RecordingRecord>(`/api/v1/evals/recordings/from-session`, {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId, name: name || "" }),
+    }),
 };
 
 export const wsUrl = (path: string) => `${WS}${path}`;
@@ -390,4 +407,79 @@ export type JobRunRecord = {
   status: string;
   result: Record<string, unknown>;
   error: string;
+};
+
+// ── Pricing ─────────────────────────────────────────────────────────────
+
+export type SessionPricing = {
+  session_id: string;
+  duration_ms: number;
+  telemetry: {
+    tokens_in: number;
+    tokens_out: number;
+    tts_chars: number;
+    estimated_from_duration: boolean;
+  };
+  actual: {
+    total_usd: number;
+    components: { stt: number; llm_input: number; llm_output: number; tts: number };
+    rate_card: string;
+    warnings: string[];
+  };
+  alternatives: { combo: { stt: string; llm: string; tts: string }; total_usd: number; delta_usd: number }[];
+  cheapest: { combo: { stt: string; llm: string; tts: string }; total_usd: number; delta_usd: number } | null;
+  savings_vs_cheapest_usd: number;
+};
+
+// ── Evals ───────────────────────────────────────────────────────────────
+
+export type Persona = {
+  id: string;
+  name: string;
+  description: string;
+  system_prompt: string;
+  voice_id: string;
+  tags: string[];
+  llm_provider?: string;
+  llm_model?: string;
+  builtin: boolean;
+  created_at?: string;
+};
+
+export type RecordingRecord = {
+  id: string;
+  name: string;
+  source_session_id: string;
+  source_agent_id: string;
+  transcript: { role: string; text: string; skill_id?: string }[];
+  audio_url: string;
+  tags: string[];
+  notes: string;
+  turn_count: number;
+  created_at: string;
+};
+
+export type EvalRunRecord = {
+  id: string;
+  agent_id: string;
+  recording_id: string | null;
+  persona_id: string | null;
+  criteria: string[];
+  transcript: { role: string; text: string }[];
+  verdict: string;       // "pass" | "fail" | "partial" | "running" | "error"
+  score: number;
+  judge_breakdown: { criterion: string; verdict: string; reasoning: string }[];
+  error: string;
+  turn_count: number;
+  duration_ms: number;
+  started_at: string;
+  ended_at: string | null;
+};
+
+export type RunEvalRequest = {
+  agent_id: string;
+  recording_id?: string;
+  persona_id?: string;
+  criteria?: string[];
+  max_turns?: number;
 };
