@@ -76,5 +76,31 @@
     "docs_url": "https://docs.stripe.com/agents",
     "icon": "💳",
     "category": "payments"
+  },
+  {
+    "id": "gmail",
+    "name": "Gmail",
+    "tagline": "Read mail, summarise threads, draft + send replies. OAuth — first run opens browser to authorise.",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"],
+    "env_required": ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
+    "env_optional": ["GMAIL_REFRESH_TOKEN"],
+    "docs_url": "https://github.com/GongRzhe/Gmail-MCP-Server",
+    "icon": "✉️",
+    "category": "communication"
+  },
+  {
+    "id": "google-calendar",
+    "name": "Google Calendar",
+    "tagline": "Read events, check free/busy, schedule meetings + invite attendees. Shares Google OAuth client with Gmail.",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@cocal/google-calendar-mcp"],
+    "env_required": ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
+    "env_optional": ["GOOGLE_REFRESH_TOKEN"],
+    "docs_url": "https://github.com/nspady/google-calendar-mcp",
+    "icon": "📅",
+    "category": "productivity"
   }
 ]
