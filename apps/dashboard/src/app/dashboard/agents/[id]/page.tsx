@@ -91,7 +91,23 @@ export default function AgentDetailPage() {
   async function destroy() {
     const name = agent?.name ?? form.name ?? "this agent";
     if (!confirm(`Delete agent "${name}"? This cannot be undone.`)) return;
-    await api.deleteAgent(id);
+    try {
+      await api.deleteAgent(id);
+    } catch (e: any) {
+      // Bubble the actual error up. Previously this would silently fail
+      // (router.push wouldn't fire) and the user saw "nothing happened".
+      alert(`Could not delete agent: ${e?.message || e}`);
+      return;
+    }
+    // Invalidate the agents list cache so the list view reflects the
+    // delete *before* SWR's revalidate interval ticks — otherwise the
+    // user navigates back and sees the deleted agent for ~5 seconds.
+    await mutate("agents");
+    // Also drop the per-agent and per-agent-docs caches we used here
+    // so a future visit to this id (if anyone bookmarked it) cleanly
+    // 404s instead of showing stale data.
+    mutate(`agent-${id}`, undefined);
+    mutate(`agent-${id}-docs`, undefined);
     router.push("/dashboard/agents");
   }
 

@@ -10,7 +10,18 @@ from sqlalchemy import delete, select
 
 from openvox.config import get_settings
 from openvox.db import db_session
-from openvox.db.models import Agent, AgentStatus, Document, DocumentChunk
+from openvox.db.models import (
+    Agent,
+    AgentStatus,
+    Document,
+    DocumentChunk,
+    EvalRun,
+    JobRun,
+    Recording,
+    ScheduledJob,
+    Session as DBSession,
+    Transcript,
+)
 
 router = APIRouter()
 
@@ -131,16 +142,55 @@ async def publish_agent(agent_id: str) -> dict[str, Any]:
 
 @router.delete("/{agent_id}", status_code=204)
 async def delete_agent(agent_id: str) -> None:
+    """Delete an agent + every row that references it.
+
+    The agent table has two hard FK dependents (Session, Document) and
+    several soft string-keyed dependents added across later sessions
+    (DocumentChunk, ScheduledJob, JobRun, Recording, EvalRun). The
+    hard FKs cause a `ForeignKeyViolationError` if children are not
+    deleted first; the soft ones don't block delete but leave orphan
+    rows that clutter the eval framework, RAG store, and scheduler.
+
+    Pattern: cascade in dependency order, then `s.delete(a)`. Plain
+    `s.delete(a)` with `relationship(cascade="all, delete-orphan")`
+    has historically been unreliable in async-mode SQLAlchemy when
+    the relationship isn't pre-loaded — see bugs #29, #30 in
+    CLAUDE.md §8. In-route cascades are slower but bulletproof.
+    """
     async with db_session() as s:
         a = await s.get(Agent, agent_id)
         if a is None:
             raise HTTPException(404, "agent not found")
-        # Same in-route cascade pattern as bug #29 (job_runs): clean up FK
-        # dependents first because the schema doesn't declare ON DELETE
-        # CASCADE. Document chunks reference the agent via a plain string
-        # column (no FK), but we drop them too to keep the RAG store tidy.
+
+        # 1. Eval framework — runs reference the agent directly,
+        #    recordings via source_agent_id.
+        await s.execute(delete(EvalRun).where(EvalRun.agent_id == agent_id))
+        await s.execute(delete(Recording).where(Recording.source_agent_id == agent_id))
+
+        # 2. Scheduler — kill job_runs first (FK to scheduled_jobs),
+        #    then the jobs themselves. Same pattern as the
+        #    /api/v1/jobs/{id} route uses (CLAUDE.md §8 #29).
+        job_ids = (
+            await s.execute(select(ScheduledJob.id).where(ScheduledJob.agent_id == agent_id))
+        ).scalars().all()
+        if job_ids:
+            await s.execute(delete(JobRun).where(JobRun.job_id.in_(job_ids)))
+        await s.execute(delete(ScheduledJob).where(ScheduledJob.agent_id == agent_id))
+
+        # 3. Voice / text sessions — transcripts FK to sessions, so
+        #    clear those first. Hard FK constraint.
+        session_ids = (
+            await s.execute(select(DBSession.id).where(DBSession.agent_id == agent_id))
+        ).scalars().all()
+        if session_ids:
+            await s.execute(delete(Transcript).where(Transcript.session_id.in_(session_ids)))
+        await s.execute(delete(DBSession).where(DBSession.agent_id == agent_id))
+
+        # 4. Documents + RAG chunks. Hard FK on Document, soft on chunks.
         await s.execute(delete(DocumentChunk).where(DocumentChunk.agent_id == agent_id))
         await s.execute(delete(Document).where(Document.agent_id == agent_id))
+
+        # 5. Finally the agent itself.
         await s.delete(a)
 
 
