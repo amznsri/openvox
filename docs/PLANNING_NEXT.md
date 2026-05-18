@@ -41,6 +41,25 @@ Commits: `8d02382` (plan) → `a8c5d79` (checkpoint) → `1d4e770` (final).
 
 ---
 
+## After Session 9 — Session 10 scope locked
+
+See [`PLANNING_SESSION10.md`](PLANNING_SESSION10.md) for the
+full spec. Top-line:
+
+- **Build a built-in "Setup Assistant" agent** so non-technical
+  users can create agents *by talking to a voice agent* (yes,
+  recursively). Hybrid voice + text input, first-class CTA on the
+  public landing page + dashboard topbar.
+- ~2.5 days. 5 new skills + 1 built-in template + 1 new dashboard
+  route. No new infrastructure — runs on the existing voice
+  pipeline.
+- **Gated**: do not start Session 10 until Session 9 ships fully.
+  The setup assistant exposes the voice pipeline to a much broader
+  audience; we want eval framework + WeChat/Lark audio bridges +
+  real LLM token usage in place first so the experience is solid.
+
+---
+
 ## Session 9 priority stack
 
 Top of stack — these *complete* Session 8 features (backend live,

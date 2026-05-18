@@ -737,6 +737,44 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     main install still pulls the standard CUDA wheel as a fallback.
     Future-you: re-attempt when network policy allows.
 
+### Defaults drift + recursion bombs (Session 9 review catches)
+45. **Stale default LLM model in three places.**
+    `SessionConfig.llm_model`, `playground.TextRequest.model`, and
+    the voice WS ad-hoc fallback all hard-coded
+    `"doubao-seed-1.6-250615"` — a model name that doesn't exist on
+    our BytePlus key (the real default lives in
+    `settings.byteplus_llm_model = "seed-2-0-pro-260328"`). Every
+    caller that didn't pass an explicit `model=` was silently hitting
+    the wrong endpoint, and BytePlus's behaviour in that case is
+    implementation-defined (sometimes 400, sometimes auto-route).
+    Could have been costing real money against a model the user
+    doesn't intend to use.
+    *Fix*: all three defaults are now empty string, matching the
+    canonical `Agent.llm_model = ""` pattern. The provider's
+    `_model_id(requested) → requested or self._default_model` then
+    resolves to the configured model.
+    **Lesson**: when you add a *fallback* default, make it
+    something that defers to the same source of truth used elsewhere
+    (env / settings). Hard-coded literals drift the moment the real
+    default changes.
+46. **`VoiceSession._llm_turn` recursed on every tool-call round**
+    with no depth limit. One buggy or adversarial skill that always
+    triggers another `tool_call` → unbounded Python recursion →
+    stack overflow → session dies. Particularly risky with
+    user-controlled MCP servers, which are external processes that
+    could deliberately or accidentally loop.
+    *Fix*: replaced the `async for ev in self._llm_turn(): yield ev`
+    recursion with a bounded
+    `for iteration in range(self._cfg.max_tool_iterations):` loop
+    (default 6). On overflow we emit a clear `error` TurnEvent
+    rather than crash. Per-agent override possible via
+    `SessionConfig.max_tool_iterations`.
+    **Lesson**: any LLM ↔ tool round-trip is recursive by nature
+    (LLM may call more tools after seeing results). Cap it. Six is
+    high enough for legitimate chains (SDR
+    `fetch_next_lead → record_disposition → book_demo` is four),
+    low enough to fail fast on tight loops.
+
 ---
 
 ## 9. Known constraints / environment quirks
