@@ -8,10 +8,17 @@ const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 const WS = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3001";
 
 async function http<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const r = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(init.headers || {}) },
-    ...init,
-  });
+  // Only attach `Content-Type: application/json` when there's a body
+  // to send. Fastify v5 (our gateway) is strict: receiving a DELETE
+  // or POST with `Content-Type: application/json` but an empty body
+  // returns `FST_ERR_CTP_EMPTY_JSON_BODY` before the request reaches
+  // the Python core. The dashboard's DELETE handlers (api.deleteAgent
+  // and similar) don't carry a body, so we'd 400 every time.
+  const headers: Record<string, string> = { ...(init.headers as any || {}) };
+  if (init.body !== undefined && init.body !== null && !("Content-Type" in headers)) {
+    headers["Content-Type"] = "application/json";
+  }
+  const r = await fetch(`${BASE}${path}`, { ...init, headers });
   if (!r.ok) {
     const text = await r.text().catch(() => "");
     throw new Error(`${r.status} ${r.statusText}: ${text}`);
