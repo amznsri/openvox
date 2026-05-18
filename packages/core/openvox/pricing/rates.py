@@ -89,9 +89,11 @@ DEFAULT_RATES: dict[str, ProviderRates] = {
         # $1.00 / $6.00. See `notes` for the tier ladder.
         llm_usd_per_1m_input=0.50,
         llm_usd_per_1m_output=3.00,
-        # BytePlus Seed ASR 2.0 — billed per-character of transcribed
-        # output, NOT per minute. $50/1M chars, pay-as-you-go.
-        stt_usd_per_1m_chars=50.0,
+        # BytePlus Seed ASR 2.0 — billed PER MINUTE of audio at
+        # $0.15/hour = $0.0025/min (user-verified 2026-05-19).
+        # Previous cut had this as $50/1M chars which was a
+        # misread of the docs.
+        stt_usd_per_minute=0.0025,
         # BytePlus Seed-Speech 2.0 — $45/1M chars = $0.045/1k chars.
         tts_usd_per_1k_chars=0.045,
         model_name="seed-2-0-pro-260328 + Seed ASR/Speech 2.0",
@@ -101,7 +103,7 @@ DEFAULT_RATES: dict[str, ProviderRates] = {
             "LLM: tiered by prompt length. [0,128]→$0.50/$3.00 (used here); "
             "(128,256]→$1.00/$6.00. Cache-write $0.0083/1M; cache-hit $0.10/1M "
             "(short prompts) or $0.20/1M (long). "
-            "ASR (Seed ASR 2.0): $50/1M chars, pay-as-you-go "
+            "ASR (Seed ASR 2.0): $0.15/hour pay-as-you-go "
             "(see docs/byteplusvoice/asrbilling). "
             "TTS (Seed-Speech 2.0): $45/1M chars, pay-as-you-go "
             "(see docs/byteplusvoice/TTS_Billing)."
@@ -110,14 +112,26 @@ DEFAULT_RATES: dict[str, ProviderRates] = {
     "openai": ProviderRates(
         llm_usd_per_1m_input=2.50,
         llm_usd_per_1m_output=15.00,
-        tts_usd_per_1k_chars=0.015,  # tts-1 standard; HD is 0.030
-        model_name="gpt-5.4 (short-context ≤272K)",
+        # TTS rate is commonly cited as tts-1 standard at $15/1M chars
+        # ($0.015/1k chars) by aggregators (tokenmix.ai, costgoat.com,
+        # OpenAI dev forum threads) but the openai.com/api/pricing page
+        # currently 403s our fetch tool and the developer-docs page
+        # doesn't render TTS rates inline. Treat as unverified vs the
+        # primary source until you can hit the live page; if you swap
+        # to gpt-4o-mini-tts the model is token-based ($0.60/1M input
+        # chars + $12/1M audio output tokens ≈ $0.015/min) and the
+        # per-1k-chars unit doesn't apply cleanly.
+        tts_usd_per_1k_chars=0.015,
+        model_name="gpt-5.4 (LLM) + tts-1 standard (TTS)",
         source_url="https://openai.com/api/pricing/",
-        verified_at="2026-05-19",
+        verified_at="2026-05-19",  # LLM verified; TTS aggregator-only
         notes=(
-            "gpt-5.4 short-context tier. Above 272K input doubles to "
-            "$5/1M. Cached input drops to $1.25/1M (50% off). TTS rate "
-            "is tts-1 standard ($0.015/1k chars); tts-1-hd is $0.030."
+            "LLM: gpt-5.4 short-context. Above 272K input doubles to "
+            "$5/1M. Cached input drops to $1.25/1M (50% off). "
+            "TTS: $0.015/1k chars is tts-1 standard per third-party "
+            "aggregators (openai.com pricing page is not directly "
+            "fetchable). tts-1-hd is $0.030/1k chars; gpt-4o-mini-tts "
+            "is token-based at $0.60/1M input + $12/1M audio tokens."
         ),
     ),
     "anthropic": ProviderRates(
