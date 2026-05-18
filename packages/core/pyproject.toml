@@ -70,6 +70,9 @@ dependencies = [
   "apscheduler>=3.10.4",
   # Model Context Protocol — connect to external tool servers.
   "mcp>=1.2.0",
+  # Hot-reload of user skills in ~/.openvox/skills/ — small async-friendly
+  # wrapper around inotify/FSEvents/ReadDirectoryChangesW.
+  "watchfiles>=0.24.0",
 ]
 
 [project.optional-dependencies]

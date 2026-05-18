@@ -32,6 +32,7 @@ from openvox.db import init_db
 from openvox.providers.bootstrap import register_builtins
 from openvox.scheduler import start_scheduler, stop_scheduler
 from openvox.skills.registry import get_skill_registry
+from openvox.skills.watcher import start_watcher, stop_watcher
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +79,10 @@ async def _lifespan(app: FastAPI):
     await init_db()
     await _seed_builtin_personas()
     await start_scheduler()
+    await start_watcher()  # hot-reload skills dropped in ~/.openvox/skills/
     logger.info("OpenVox core started — auth=%s storage=%s", settings.openvox_auth, settings.storage_backend)
     yield
+    await stop_watcher()
     await stop_scheduler()
     logger.info("OpenVox core shutting down")
 

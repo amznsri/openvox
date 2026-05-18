@@ -368,7 +368,7 @@ export type JobRecord = {
   kind: "agent_query" | "skill_run" | "audio_batch" | string;
   payload: Record<string, unknown>;
   agent_id: string;
-  trigger_type: "cron" | "interval" | "once" | string;
+  trigger_type: "cron" | "interval" | "once" | "webhook" | string;
   trigger_expr: string;
   timezone: string;
   enabled: boolean;
@@ -378,6 +378,9 @@ export type JobRecord = {
   last_error: string;
   created_at: string;
   updated_at: string;
+  // Webhook-trigger jobs only — full URL the integration should POST to.
+  webhook_url?: string;
+  webhook_token?: string;
 };
 
 export type JobRunRecord = {

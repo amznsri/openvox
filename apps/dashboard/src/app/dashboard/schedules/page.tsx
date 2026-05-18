@@ -5,6 +5,7 @@ import useSWR from "swr";
 import { useState } from "react";
 import {
   Clock,
+  Copy,
   Loader2,
   Play,
   Plus,
@@ -15,6 +16,7 @@ import {
   PlayCircle,
   History,
   AlertCircle,
+  Link as LinkIcon,
 } from "lucide-react";
 
 import { api, type Agent, type JobRecord, type JobRunRecord } from "@/lib/api";
@@ -200,16 +202,29 @@ function JobCard({
           <div>
             <div className="uppercase tracking-wider">Trigger</div>
             <div className="font-mono text-foreground/90 mt-0.5">
-              {job.trigger_type}: {job.trigger_expr}
+              {job.trigger_type === "webhook"
+                ? "webhook (fires on POST)"
+                : `${job.trigger_type}: ${job.trigger_expr}`}
             </div>
           </div>
           <div>
-            <div className="uppercase tracking-wider">Next run</div>
+            <div className="uppercase tracking-wider">
+              {job.trigger_type === "webhook" ? "Last delivery" : "Next run"}
+            </div>
             <div className="text-foreground/90 mt-0.5">
-              {job.next_run_at ? formatDate(job.next_run_at) : "—"}
+              {job.trigger_type === "webhook"
+                ? job.last_run_at
+                  ? formatDate(job.last_run_at)
+                  : "never"
+                : job.next_run_at
+                  ? formatDate(job.next_run_at)
+                  : "—"}
             </div>
           </div>
         </div>
+        {job.trigger_type === "webhook" && job.webhook_url && (
+          <WebhookUrlCallout url={job.webhook_url} />
+        )}
         {job.last_error && (
           <div className="mt-3 text-xs text-rose-300 flex items-start gap-2">
             <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
@@ -433,6 +448,7 @@ function JobModal({
                 <option value="cron">cron — &quot;0 20 * * *&quot; for 20:00 daily</option>
                 <option value="interval">interval — e.g. &quot;5m&quot;, &quot;1h&quot;, &quot;1d&quot;</option>
                 <option value="once">once — ISO datetime</option>
+                <option value="webhook">webhook — fires on POST</option>
               </Select>
             </div>
             <div className="col-span-2">
@@ -445,8 +461,11 @@ function JobModal({
                     ? "0 20 * * *"
                     : form.trigger_type === "interval"
                       ? "1h"
-                      : "2026-05-12T20:00:00"
+                      : form.trigger_type === "once"
+                        ? "2026-05-12T20:00:00"
+                        : "(ignored — webhook URL is generated on save)"
                 }
+                disabled={form.trigger_type === "webhook"}
               />
             </div>
           </div>
@@ -474,6 +493,53 @@ function JobModal({
           </div>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// WebhookUrlCallout — read-only URL display + copy button. Used by
+// trigger_type="webhook" jobs so users can paste the fire URL into their
+// integration without ever hand-constructing it. The URL embeds the
+// per-job random token; treat it like an API key.
+// ────────────────────────────────────────────────────────────────────────
+
+function WebhookUrlCallout({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Older browsers / non-HTTPS contexts: fall back to the manual path.
+      // Most users on localhost are fine; we just no-op rather than alert.
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded-md border border-violet-500/40 bg-violet-500/5 p-3">
+      <div className="flex items-center gap-2 mb-1.5 text-xs text-violet-300">
+        <LinkIcon className="h-3 w-3" />
+        <span className="uppercase tracking-wider">Webhook URL</span>
+        <span className="text-muted-foreground normal-case tracking-normal">
+          — POST here to fire this job
+        </span>
+      </div>
+      <div className="flex items-center gap-2">
+        <code className="flex-1 text-xs font-mono break-all bg-black/30 px-2 py-1.5 rounded">
+          {url}
+        </code>
+        <Button size="sm" variant="outline" onClick={copy} className="shrink-0">
+          <Copy className="h-3.5 w-3.5" />
+          {copied ? "Copied" : "Copy"}
+        </Button>
+      </div>
+      <p className="mt-1.5 text-xs text-muted-foreground">
+        Body optional. JSON object is merged into the job&apos;s payload for that one run.
+        Treat the URL as an API key.
+      </p>
     </div>
   );
 }

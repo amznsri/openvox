@@ -244,9 +244,16 @@ class ScheduledJob(Base):
     agent_id: Mapped[str] = mapped_column(String(36), default="")
 
     # Trigger.
-    trigger_type: Mapped[str] = mapped_column(String(20), default="cron")  # cron|interval|once
+    # `webhook` joins the time-based triggers — these jobs fire only on
+    # explicit POST to /api/v1/jobs/webhook/{token}. trigger_expr is
+    # unused for webhook jobs; webhook_token holds the random URL slug.
+    trigger_type: Mapped[str] = mapped_column(String(20), default="cron")  # cron|interval|once|webhook
     trigger_expr: Mapped[str] = mapped_column(String(200), default="0 20 * * *")
     timezone: Mapped[str] = mapped_column(String(50), default="UTC")
+    # Set on creation for webhook jobs (also any other job that wants
+    # an external-trigger backdoor — non-webhook jobs simply ignore it).
+    # URL-safe random; check `Authorization` or path on the fire route.
+    webhook_token: Mapped[str] = mapped_column(String(64), default="")
 
     # State.
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
