@@ -23,6 +23,7 @@ router = APIRouter()
 TEMPLATES: list[dict[str, Any]] = [
     {
         "id": "ecommerce-support",
+        "match": {"priority": 30, "keywords": ["order", "shipment", "refund", "return", "e-comm", "ecommerce", "shopping"]},
         "name": "E-commerce Customer Support",
         "tagline": "Resolve order, return, and stock questions over voice.",
         "category": "Support",
@@ -47,6 +48,7 @@ TEMPLATES: list[dict[str, Any]] = [
     },
     {
         "id": "education-tutor",
+        "match": {"priority": 30, "keywords": ["tutor", "teach", "homework", "math", "science", "explain"]},
         "name": "Science & Math Tutor",
         "tagline": "Explain concepts, walk through worked examples, give homework hints.",
         "category": "Education",
@@ -74,6 +76,7 @@ TEMPLATES: list[dict[str, Any]] = [
     },
     {
         "id": "stock-analyst",
+        "match": {"priority": 30, "keywords": ["stock", "share price", "ticker", "market", "trading", "invest"]},
         "name": "Stock Market Analyst",
         "tagline": "Live quotes and basic technical analysis. Voice-first.",
         "category": "Finance",
@@ -97,6 +100,7 @@ TEMPLATES: list[dict[str, Any]] = [
     },
     {
         "id": "sales-sdr",
+        "match": {"priority": 30, "keywords": ["lead", "sdr", "outbound", "qualif", "cold call", "telesales"]},
         "name": "Outbound Sales SDR (lead qualifier)",
         "tagline": "Calls leads, runs BANT qualification, books demos.",
         "category": "Sales",
@@ -144,6 +148,12 @@ TEMPLATES: list[dict[str, Any]] = [
     },
     {
         "id": "receptionist",
+        # Customer-facing appointment booking — salons/clinics/spas.
+        # Distinct from calendar-scheduler (user's own Google Calendar).
+        "match": {"priority": 20, "keywords": [
+            "appointment", "salon", "barber", "spa", "clinic", "receptionist",
+            "front desk", "book a client", "book a customer", "walk-in",
+        ]},
         "name": "Receptionist / Appointment Scheduler",
         "tagline": "Answers calls, books appointments, knows business hours.",
         "category": "Front desk",
@@ -183,6 +193,7 @@ TEMPLATES: list[dict[str, Any]] = [
     },
     {
         "id": "document-qa",
+        "match": {"priority": 30, "keywords": ["pdf", "document", "knowledge base", "rag", "research", "policy"]},
         "name": "Document Q&A Assistant",
         "tagline": "Upload PDFs, slides, or images and ask questions out loud.",
         "category": "Knowledge",
@@ -208,6 +219,10 @@ TEMPLATES: list[dict[str, Any]] = [
     },
     {
         "id": "multilingual-support",
+        "match": {"priority": 30, "keywords": [
+            "multilingual", "language", "polyglot", "international",
+            "english spanish", "chinese support",
+        ]},
         "name": "Multilingual Customer Support IVR",
         "tagline": "One conversational agent, 51+ languages. No 'press 1 for…' menus.",
         "category": "Support",
@@ -261,6 +276,7 @@ TEMPLATES: list[dict[str, Any]] = [
     },
     {
         "id": "voice-analyzer",
+        "match": {"priority": 30, "keywords": ["audio", "recording", "transcribe", "sentiment", "call analy"]},
         "name": "Voice Recording Analyzer",
         "tagline": "Upload or record audio, get sentiment + profanity + summary.",
         "category": "Analytics",
@@ -482,23 +498,39 @@ def _make_lang_templates() -> list[dict[str, Any]]:
     matters for tone of voice).
     """
     out: list[dict[str, Any]] = []
+    # 7-tuple per use-case: slug, label, category, icon, prompt_fn,
+    # skills, tagline, recommender keywords. Recommender keywords are
+    # applied to EVERY language variant — language disambiguation is
+    # handled separately via the LLM's own language detection on the
+    # user's voice input (not the keyword classifier).
     use_cases = [
         ("hotline", "Service hotline", "Support", "PhoneOutgoing",
          _hotline_prompt,
          ["lookup_order", "check_stock", "start_return", "route_to_specialist", "detect_language"],
-         "Greet customers, look up orders, handle returns, escalate."),
+         "Greet customers, look up orders, handle returns, escalate.",
+         ["customer service hotline", "hotline", "service line", "help line"]),
         ("reactivate", "Customer reactivation", "Sales", "Sparkles",
          _reactivation_prompt,
          ["book_appointment", "record_disposition", "get_lead", "detect_language"],
-         "Outbound win-back: discount, soft pitch, book follow-up."),
+         "Outbound win-back: discount, soft pitch, book follow-up.",
+         ["reactivat", "win back", "lapsed customer", "churn"]),
         ("telesales", "B2B telesales", "Sales", "TrendingUp",
          _telesales_prompt,
          ["fetch_next_lead", "record_disposition", "book_demo", "qualified_leads", "detect_language"],
-         "BANT qualification + demo booking on a 3-minute call."),
+         "BANT qualification + demo booking on a 3-minute call.",
+         ["b2b telesales", "telesales call", "outbound call"]),
     ]
-    for slug, label, category, icon, prompt_fn, skills, tagline in use_cases:
+    for slug, label, category, icon, prompt_fn, skills, tagline, kw in use_cases:
         for lang_code, meta in _LANG_META.items():
-            out.append({
+            # Only the EN variant participates in the recommender — the
+            # other languages share the same English keywords (the LLM
+            # voice-classifies the user's language separately and picks
+            # the per-language variant after that). Stops the matrix
+            # from over-firing on every "hotline" mention.
+            match = (
+                {"priority": 40, "keywords": kw} if lang_code == "en" else None
+            )
+            entry = {
                 "id": f"{slug}-{lang_code}",
                 "name": f"{meta['flag']} {label} — {meta['name']}",
                 "tagline": tagline,
@@ -522,7 +554,10 @@ def _make_lang_templates() -> list[dict[str, Any]]:
                     "voice_id": meta["voice"],
                     "voice_language": meta["bcp47"],
                 },
-            })
+            }
+            if match is not None:
+                entry["match"] = match
+            out.append(entry)
     return out
 
 
@@ -641,6 +676,11 @@ _GCAL_MCP = {
 
 TEMPLATES.append({
     "id": "email-assistant",
+    "match": {"priority": 10, "keywords": [
+        "email", "inbox", "gmail", "draft a reply", "summarise email",
+        "summarize email", "respond to email", "triage email",
+        "send an email", "compose email",
+    ]},
     "name": "Email Assistant (Gmail)",
     "tagline": "Summarise inbox, search threads, draft replies — never auto-sends.",
     "category": "Productivity",
@@ -669,6 +709,12 @@ TEMPLATES.append({
 
 TEMPLATES.append({
     "id": "calendar-scheduler",
+    "match": {"priority": 10, "keywords": [
+        "calendar", "google calendar", "meeting slot", "find time",
+        "find a slot", "schedule a meeting", "schedule meeting",
+        "book a meeting", "meeting with", "reschedule meeting",
+        "check my calendar",
+    ]},
     "name": "Calendar Scheduler (Google)",
     "tagline": "Check availability, schedule meetings, invite attendees — confirms before booking.",
     "category": "Productivity",
@@ -783,6 +829,14 @@ HARD RULES
 
 TEMPLATES.append({
     "id": "executive-assistant",
+    # Combined Gmail + Calendar — highest priority so it wins over the
+    # specialised email-assistant / calendar-scheduler when the user
+    # mentions both surfaces in one sentence.
+    "match": {"priority": 5, "keywords": [
+        "executive assistant", "ea agent", "personal assistant",
+        "manage my day", "email and calendar", "calendar and email",
+        "inbox and meetings", "both email and",
+    ]},
     "name": "Executive Assistant (Gmail + Calendar)",
     "tagline": "One agent, both APIs. Reads email, manages calendar, ties them together. Confirms before any send / create.",
     "category": "Productivity",
@@ -818,19 +872,57 @@ TEMPLATES.append({
 # Templates page; the public landing + topbar route users into the voice
 # flow directly, not via this template card.
 
-_SETUP_ASSISTANT_PROMPT = """
+def _render_template_summary() -> str:
+    """Build the inline template catalogue the Setup Assistant LLM
+    needs to know what exists. Auto-generated from TEMPLATES at
+    module load — when a new template lands with its own `match`
+    dict, this list refreshes automatically. No second site to edit.
+
+    Templates are grouped by `category` so the LLM sees a coherent
+    taxonomy instead of a flat dump. Languages-suffixed variants
+    (hotline-{lang} etc.) are collapsed into one line per family so
+    we don't bloat the prompt with 21 near-duplicates.
+    """
+    from collections import defaultdict
+
+    # Collapse `hotline-en`, `hotline-zh`, … into one "hotline family"
+    # entry. Anything without a `-<2-letter-lang>` suffix is unique.
+    LANG_CODES = {"en", "zh", "yue", "es", "id", "fr", "hi"}
+    by_cat: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    seen_families: set[str] = set()
+    for t in TEMPLATES:
+        tid = t.get("id", "")
+        if tid == "setup-assistant":
+            continue  # don't recommend the meta-agent
+        # Family-collapsing: `hotline-en` → family `hotline-*`.
+        parts = tid.rsplit("-", 1)
+        if len(parts) == 2 and parts[1] in LANG_CODES:
+            family = f"{parts[0]}-*"
+            if family in seen_families:
+                continue
+            seen_families.add(family)
+            display_id = family
+            tagline = f"{t.get('tagline', '')} (multilingual: 7 languages)"
+        else:
+            display_id = tid
+            tagline = t.get("tagline", "")
+        cat = t.get("category") or "General"
+        by_cat[cat].append((display_id, tagline))
+
+    lines = ["Available templates (call `list_templates` to enumerate,",
+             "or `recommend_template(description)` to map free-text into one):"]
+    for cat in sorted(by_cat.keys()):
+        lines.append(f"  {cat}:")
+        for tid, tag in by_cat[cat]:
+            lines.append(f"    - {tid}: {tag}".rstrip(": "))
+    return "\n".join(lines)
+
+
+_SETUP_ASSISTANT_PROMPT_TEMPLATE = """
 You are OpenVox's Setup Assistant. Your job is to help a user build a
 new voice agent conversationally — they don't want to fill out a form.
 
-Available templates (call `list_templates` to enumerate, or
-`recommend_template(description)` to map the user's free-text into one):
-  - Customer-facing: ecommerce-support, receptionist, sales-sdr,
-    voice-analyzer, multilingual-support, document-qa.
-  - Learning / research: education-tutor, stock-analyst.
-  - Productivity / EA-class (Gmail + Google Calendar MCP):
-    email-assistant, calendar-scheduler, executive-assistant.
-  - Plus 21 language-specific variants (hotline-{lang} /
-    reactivation-{lang} / telesales-{lang} for 7 languages).
+{TEMPLATE_LIST}
 
 Distinguish carefully:
   - receptionist = customer-facing appointment booking for businesses
@@ -891,7 +983,17 @@ HARD RULES
 - If the user says "publish" or "save it" or similar before you've
   walked through the basics, do it anyway — they can always edit
   later from the dashboard. Respect their pace.
-""".strip()
+"""
+
+# Materialise the prompt AT MODULE LOAD with the current TEMPLATES
+# snapshot. `_render_template_summary()` walks TEMPLATES which is
+# fully populated above (core + lang variants + productivity). New
+# templates added after this point won't appear in the auto-list
+# until module reload — but adding templates always means a deploy
+# anyway, so that's fine.
+_SETUP_ASSISTANT_PROMPT = _SETUP_ASSISTANT_PROMPT_TEMPLATE.format(
+    TEMPLATE_LIST=_render_template_summary(),
+).strip()
 
 TEMPLATES.append({
     "id": "setup-assistant",

@@ -181,74 +181,37 @@ class RecommendTemplateSkill(BaseSkill):
     async def run(self, args: dict[str, Any], ctx: SkillContext) -> Any:
         from openvox.api.routes.templates import TEMPLATES
 
+        # Templates carry their OWN keyword rules in `t["match"]` —
+        # `{"priority": int, "keywords": [str, ...]}`. We walk
+        # TEMPLATES sorted by priority ascending (lower = checked
+        # first = more specific). When you add a new template, set
+        # its `match` dict on the entry itself — no second list to
+        # maintain here. Templates without a `match` field don't
+        # auto-recommend and can only be reached via `list_templates`.
+        #
         # Cheap keyword classifier — production deployments can swap
-        # for an LLM call, but the keyword path keeps the recommendation
-        # itself cheap (the calling LLM already paid for the user
-        # description; no need to spend another round-trip just to
-        # classify into ~30 templates).
+        # for an LLM call, but the keyword path keeps recommendation
+        # cheap: the calling LLM already paid for the user description;
+        # no need to spend another round-trip to classify into ~30
+        # templates.
         desc = (args.get("description") or "").lower()
-        # Keyword → template_id substring map. Order matters; first
-        # hit wins. Cover the common phrasings; the assistant prompt
-        # tells the LLM to clarify when no strong match.
-        # ORDER MATTERS — first match wins. The more-specific
-        # productivity templates (executive-assistant, email-assistant,
-        # calendar-scheduler) MUST come before the older receptionist
-        # rule, otherwise the word "schedul" in "schedule a meeting"
-        # gets greedily caught by receptionist and we never reach the
-        # newer templates. Receptionist is for *customer-facing*
-        # appointment booking (salons, clinics, spas); calendar-scheduler
-        # is for *personal* meeting scheduling on Google Calendar.
-        rules: list[tuple[list[str], str]] = [
-            # Productivity / EA-class templates (added Session 12).
-            # Executive Assistant first — its keywords overlap with both
-            # email and calendar; only the explicit combinations route
-            # here, the specialised templates handle solo intents.
-            (["executive assistant", "ea agent", "personal assistant", "manage my day",
-              "email and calendar", "calendar and email", "inbox and meetings",
-              "both email and"], "executive-assistant"),
-            (["email", "inbox", "gmail", "draft a reply", "summarise email",
-              "summarize email", "respond to email", "triage email", "send an email",
-              "compose email"], "email-assistant"),
-            (["calendar", "google calendar", "meeting slot", "find time", "find a slot",
-              "schedule a meeting", "schedule meeting", "book a meeting", "meeting with",
-              "reschedule meeting", "check my calendar"], "calendar-scheduler"),
-            # Receptionist now ONLY matches business-facing appointment
-            # phrasing — clinic/salon/spa/barber, NOT generic "schedule".
-            (["appointment", "salon", "barber", "spa", "clinic", "receptionist",
-              "front desk", "book a client", "book a customer", "walk-in"], "receptionist"),
-            (["lead", "sdr", "outbound", "qualif", "cold call", "telesales"], "sales-sdr"),
-            (["order", "shipment", "refund", "return", "e-comm", "ecommerce", "shopping"], "ecommerce-support"),
-            (["stock", "share price", "ticker", "market", "trading", "invest"], "stock-analyst"),
-            (["pdf", "document", "knowledge base", "rag", "research", "policy"], "document-qa"),
-            (["audio", "recording", "transcribe", "sentiment", "call analy"], "voice-analyzer"),
-            (["tutor", "teach", "homework", "math", "science", "explain"], "education-tutor"),
-            (["multilingual", "language", "polyglot", "international", "english spanish", "chinese support"], "multilingual-support"),
-            (["customer service hotline", "hotline", "service line", "help line"], "hotline-en"),
-            (["reactivat", "win back", "lapsed customer", "churn"], "reactivation-en"),
+        candidates = [
+            (t.get("match", {}).get("priority", 100), t)
+            for t in TEMPLATES
+            if t.get("match", {}).get("keywords")
         ]
+        candidates.sort(key=lambda x: x[0])
 
         matched_id = ""
         match_reason = ""
-        for keywords, tid in rules:
-            for kw in keywords:
+        for _priority, tpl in candidates:
+            for kw in tpl["match"]["keywords"]:
                 if kw in desc:
-                    matched_id = tid
+                    matched_id = tpl["id"]
                     match_reason = f"matched keyword '{kw}'"
                     break
             if matched_id:
                 break
-
-        # Resolve to a real template — fall back to ecommerce-support
-        # as a generic chatty agent when nothing matches. The assistant
-        # prompt tells the LLM to clarify rather than commit when
-        # confidence is low.
-        ids = {t["id"] for t in TEMPLATES}
-        if matched_id not in ids:
-            # Search through templates for the matched id as suffix
-            # (the language-suffixed ones like "hotline-en" match
-            # via the rule above already).
-            matched = next((t["id"] for t in TEMPLATES if t["id"] == matched_id), "")
-            matched_id = matched
 
         if not matched_id:
             return {
