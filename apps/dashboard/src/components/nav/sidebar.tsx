@@ -102,7 +102,7 @@ export function Sidebar() {
 
       <div className="p-3 border-t border-border/60">
         <a
-          href="https://github.com/openvox/openvox"
+          href="https://github.com/amznsri/openvox"
           target="_blank"
           rel="noreferrer"
           className="flex items-center gap-3 px-3 h-9 text-xs text-muted-foreground hover:text-foreground rounded-md hover:bg-muted"

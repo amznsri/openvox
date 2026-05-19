@@ -178,7 +178,7 @@ export default function LandingPage() {
               Providers
             </a>
             <a
-              href="https://github.com/openvox/openvox"
+              href="https://github.com/amznsri/openvox"
               target="_blank"
               rel="noreferrer"
               className="hidden md:inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground"
@@ -350,7 +350,7 @@ export default function LandingPage() {
                 <ArrowRight className="h-4 w-4" />
               </Button>
             </Link>
-            <a href="https://github.com/openvox/openvox" target="_blank" rel="noreferrer">
+            <a href="https://github.com/amznsri/openvox" target="_blank" rel="noreferrer">
               <Button variant="outline" size="lg">
                 <Github className="h-4 w-4" />
                 Read the docs
@@ -364,7 +364,7 @@ export default function LandingPage() {
         <div className="container py-8 flex flex-col md:flex-row items-center justify-between gap-4 text-sm text-muted-foreground">
           <p>OpenVox — Apache-2.0. Built openly.</p>
           <div className="flex items-center gap-4">
-            <a href="https://github.com/openvox/openvox" className="hover:text-foreground" target="_blank" rel="noreferrer">
+            <a href="https://github.com/amznsri/openvox" className="hover:text-foreground" target="_blank" rel="noreferrer">
               GitHub
             </a>
             <Link href="/dashboard" className="hover:text-foreground">Dashboard</Link>
