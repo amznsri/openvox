@@ -13,6 +13,15 @@ import {
   Sparkles,
   PhoneCall,
   Activity,
+  Briefcase,
+  Calendar,
+  FileText,
+  Mail,
+  PhoneOutgoing,
+  Languages,
+  ClipboardCheck,
+  DollarSign,
+  Wand2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -22,13 +31,14 @@ const providers = [
   "BytePlus Seed-2.0",
   "ElevenLabs",
   "Deepgram",
-  "OpenAI GPT-4o",
+  "OpenAI GPT-5",
   "Anthropic Claude",
   "Google Gemini",
   "DeepSeek",
   "Cartesia",
   "AssemblyAI",
   "Twilio",
+  "Telegram",
 ];
 
 const useCases = [
@@ -52,39 +62,93 @@ const useCases = [
     title: "Voice analyzer",
     desc: "Sentiment, profanity, and call-quality QA.",
   },
+  {
+    icon: Briefcase,
+    title: "Receptionist",
+    desc: "Appointment booking with conflict detection — voice or phone.",
+  },
+  {
+    icon: PhoneOutgoing,
+    title: "SDR / outbound sales",
+    desc: "BANT-qualifies leads, books demos, hands off to humans.",
+  },
+  {
+    icon: Languages,
+    title: "Multilingual hotline",
+    desc: "Auto-detects EN, ZH, ES, ID, FR + more — voice swaps per language.",
+  },
+  {
+    icon: FileText,
+    title: "Document Q&A",
+    desc: "RAG over your PDFs + docs. Voice-in, voice-out. BM25 fallback when embeddings 404.",
+  },
+  {
+    icon: Mail,
+    title: "Email Assistant",
+    desc: "Gmail MCP wired — summarise inbox, draft replies by voice.",
+  },
+  {
+    icon: Calendar,
+    title: "Calendar Scheduler",
+    desc: "Google Calendar MCP — book, reschedule, find slots without typing.",
+  },
 ];
 
 const features = [
   {
     icon: Zap,
-    title: "Sub-300ms latency",
-    desc: "Sentence-level streaming pipeline keeps the conversation fluid.",
+    title: "Sub-300ms first audio · <100ms interrupt",
+    desc: "Sentence-level streaming pipeline + Silero VAD. Measured P50=58ms, P95=121ms on interrupt.",
+  },
+  {
+    icon: Wand2,
+    title: "Build by voice",
+    desc: "Talk to the Setup Assistant — it picks a template, fills your prompt, attaches skills, publishes. No form-filling.",
+  },
+  {
+    icon: ClipboardCheck,
+    title: "Eval framework",
+    desc: "Synthetic personas (paranoid, angry, ESL) spar against your agent. Replay real calls. Catch regressions in CI.",
   },
   {
     icon: Plug,
     title: "Pluggable providers",
-    desc: "BytePlus, ElevenLabs, Deepgram, OpenAI, Anthropic — swap any layer at any time.",
+    desc: "14 providers across LLM / STT / TTS / VAD. Swap any layer per-agent — even mid-call.",
   },
   {
     icon: PhoneCall,
-    title: "Web, phone, and chat",
-    desc: "Browser RTC, Twilio voice calls, WhatsApp Business, Telegram. One agent, every channel.",
+    title: "Every channel",
+    desc: "Browser RTC, Twilio (in + out), WhatsApp, Telegram, WeChat Work, Lark. One agent, eight surfaces.",
+  },
+  {
+    icon: Sparkles,
+    title: "Skills, MCP, hot-reload",
+    desc: "30+ built-in skills. 8 MCP catalogue servers (Slack, Gmail, Calendar, GitHub, HubSpot, …). Drop a .py — auto-reloads.",
+  },
+  {
+    icon: DollarSign,
+    title: "Transparent cost calculator",
+    desc: "Cited rate card per provider. Per-session breakdown. What-if matrix shows you the cheapest combo for the call you just made.",
   },
   {
     icon: ShieldCheck,
-    title: "Self-hosted, no cloud in the loop",
-    desc: "Runs on your laptop. SQLite + filesystem. You pick the providers; OpenVox itself never sees your data.",
+    title: "Self-hosted, no cloud middle-man",
+    desc: "Runs on your laptop or your cluster. SQLite + filesystem out of the box. Postgres + S3/TOS when you scale.",
   },
   {
     icon: Globe,
     title: "GDPR-aware",
     desc: "Configurable retention, regional residency, transcript-only mode, PII masking.",
   },
-  {
-    icon: Sparkles,
-    title: "Skills & extensions",
-    desc: "Add tools by dropping a Python file in ~/.openvox/skills, or pip-install third-party packages.",
-  },
+];
+
+const byTheNumbers = [
+  { value: "29", label: "Templates" },
+  { value: "7", label: "Languages" },
+  { value: "41", label: "BytePlus voices" },
+  { value: "30+", label: "Built-in skills" },
+  { value: "14", label: "Providers" },
+  { value: "8", label: "Channels" },
 ];
 
 export default function LandingPage() {
@@ -184,15 +248,30 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/* By the numbers */}
+      <section className="container py-8 md:py-12">
+        <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+          {byTheNumbers.map((n) => (
+            <div
+              key={n.label}
+              className="text-center rounded-xl p-4 border border-border/60 bg-card/40 backdrop-blur-xl"
+            >
+              <div className="text-2xl md:text-3xl font-bold gradient-text tabular-nums">{n.value}</div>
+              <div className="mt-1 text-xs text-muted-foreground uppercase tracking-wider">{n.label}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* Use cases */}
       <section id="templates" className="container py-16 md:py-24">
         <div className="text-center mb-12">
           <h2 className="text-3xl md:text-4xl font-bold">Pre-built templates, ready to launch</h2>
           <p className="mt-3 text-muted-foreground">
-            Four production-quality blueprints. Customise the prompt, plug your skills, ship.
+            29 production blueprints across 7 languages. Customise the prompt, plug your skills, ship.
           </p>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
           {useCases.map((u) => (
             <div key={u.title} className="gradient-border rounded-xl p-5 hover:translate-y-[-2px] transition-transform">
               <u.icon className="h-6 w-6 text-violet-400 mb-3" />
@@ -200,6 +279,12 @@ export default function LandingPage() {
               <p className="text-sm text-muted-foreground mt-1">{u.desc}</p>
             </div>
           ))}
+        </div>
+        <div className="mt-6 text-center">
+          <Link href="/dashboard/templates" className="text-sm text-cyan-300 hover:text-cyan-200 inline-flex items-center gap-1">
+            Browse all 29 templates
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
         </div>
       </section>
 
@@ -238,7 +323,7 @@ export default function LandingPage() {
             {[
               "BytePlus", "OpenAI", "Anthropic", "Gemini", "DeepSeek",
               "ElevenLabs", "Deepgram", "AssemblyAI", "Cartesia", "Whisper",
-              "Twilio", "WhatsApp",
+              "Silero VAD", "Twilio", "WhatsApp", "Telegram", "WeChat Work", "Lark",
             ].map((s) => (
               <div
                 key={s}
