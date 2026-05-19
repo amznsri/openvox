@@ -190,8 +190,32 @@ class RecommendTemplateSkill(BaseSkill):
         # Keyword → template_id substring map. Order matters; first
         # hit wins. Cover the common phrasings; the assistant prompt
         # tells the LLM to clarify when no strong match.
+        # ORDER MATTERS — first match wins. The more-specific
+        # productivity templates (executive-assistant, email-assistant,
+        # calendar-scheduler) MUST come before the older receptionist
+        # rule, otherwise the word "schedul" in "schedule a meeting"
+        # gets greedily caught by receptionist and we never reach the
+        # newer templates. Receptionist is for *customer-facing*
+        # appointment booking (salons, clinics, spas); calendar-scheduler
+        # is for *personal* meeting scheduling on Google Calendar.
         rules: list[tuple[list[str], str]] = [
-            (["appoint", "book", "salon", "barber", "spa", "receptionist", "schedul"], "receptionist"),
+            # Productivity / EA-class templates (added Session 12).
+            # Executive Assistant first — its keywords overlap with both
+            # email and calendar; only the explicit combinations route
+            # here, the specialised templates handle solo intents.
+            (["executive assistant", "ea agent", "personal assistant", "manage my day",
+              "email and calendar", "calendar and email", "inbox and meetings",
+              "both email and"], "executive-assistant"),
+            (["email", "inbox", "gmail", "draft a reply", "summarise email",
+              "summarize email", "respond to email", "triage email", "send an email",
+              "compose email"], "email-assistant"),
+            (["calendar", "google calendar", "meeting slot", "find time", "find a slot",
+              "schedule a meeting", "schedule meeting", "book a meeting", "meeting with",
+              "reschedule meeting", "check my calendar"], "calendar-scheduler"),
+            # Receptionist now ONLY matches business-facing appointment
+            # phrasing — clinic/salon/spa/barber, NOT generic "schedule".
+            (["appointment", "salon", "barber", "spa", "clinic", "receptionist",
+              "front desk", "book a client", "book a customer", "walk-in"], "receptionist"),
             (["lead", "sdr", "outbound", "qualif", "cold call", "telesales"], "sales-sdr"),
             (["order", "shipment", "refund", "return", "e-comm", "ecommerce", "shopping"], "ecommerce-support"),
             (["stock", "share price", "ticker", "market", "trading", "invest"], "stock-analyst"),

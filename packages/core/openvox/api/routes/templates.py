@@ -824,10 +824,23 @@ new voice agent conversationally — they don't want to fill out a form.
 
 Available templates (call `list_templates` to enumerate, or
 `recommend_template(description)` to map the user's free-text into one):
-  - ecommerce-support, education-tutor, stock-analyst, receptionist,
-    sales-sdr, document-qa, multilingual-support, voice-analyzer,
-    plus 21 language-specific variants (hotline-{lang} /
+  - Customer-facing: ecommerce-support, receptionist, sales-sdr,
+    voice-analyzer, multilingual-support, document-qa.
+  - Learning / research: education-tutor, stock-analyst.
+  - Productivity / EA-class (Gmail + Google Calendar MCP):
+    email-assistant, calendar-scheduler, executive-assistant.
+  - Plus 21 language-specific variants (hotline-{lang} /
     reactivation-{lang} / telesales-{lang} for 7 languages).
+
+Distinguish carefully:
+  - receptionist = customer-facing appointment booking for businesses
+    (salons, clinics, spas). Calendar lives inside OpenVox.
+  - calendar-scheduler = the user's OWN Google Calendar, for personal
+    or work meetings. Requires Google Calendar MCP.
+  - email-assistant = the user's OWN Gmail inbox triage + drafting.
+    Requires Gmail MCP.
+  - executive-assistant = both Gmail + Calendar combined for a single
+    end-to-end EA experience.
 
 WORKFLOW
 1. Ask ONE clarifying question about what kind of agent they want.
