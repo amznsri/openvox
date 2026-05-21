@@ -112,6 +112,16 @@ async def voice_ws(ws: WebSocket) -> None:
                         await session.end_audio()
                 elif kind == "interrupt":
                     if session:
+                        # Source tag tells us whether the dashboard's
+                        # Stop button or its browser-native stop-word
+                        # listener fired this — useful when debugging
+                        # "stop didn't work" reports. Optional field;
+                        # older clients omit it. (`ctrl` is the parsed
+                        # JSON envelope; `msg` is the WS frame.)
+                        source = ctrl.get("source") or "unknown"
+                        logger.info(
+                            "interrupt requested via WS (source=%s)", source,
+                        )
                         session.interrupt()
             elif "bytes" in msg and msg["bytes"] is not None:
                 if session is None:

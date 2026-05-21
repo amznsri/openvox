@@ -35,6 +35,7 @@ import {
   Mic,
   MicOff,
   Send,
+  Square,
   Wand2,
 } from "lucide-react";
 
@@ -118,6 +119,104 @@ export function SetupAssistant() {
       .filter((l) => (l.role === "user" || l.role === "assistant") && !l.pending && l.text)
       .map((l) => ({ role: l.role, content: l.text }));
   }
+
+  // ── Voice barge-in: browser-native stop-word listener ────────────
+  // While the assistant is speaking, a SECOND, independent listener
+  // runs in the browser (the page's own webkitSpeechRecognition) and
+  // watches for short stop words. This is deliberately separate from
+  // the WS-backed STT pipeline because:
+  //   * WS STT is paused server-side while the assistant talks
+  //     (turn-based design — see orchestrator._listen_one_turn).
+  //   * Browser AEC isn't perfect, so server-side VAD can fail to
+  //     see a "speech_start" transition when the user joins.
+  //   * Web SpeechRecognition can run continuously and reliably
+  //     match a tiny vocabulary (we only care about ~6 words).
+  //
+  // Caveats:
+  //   * Webkit-prefixed; available in Chrome/Edge/Safari, NOT
+  //     Firefox. We feature-detect and gracefully no-op elsewhere.
+  //   * The recogniser is a SECOND mic claim — the browser merges
+  //     them. Tested fine in Chrome 120+; if it conflicts we can
+  //     fall back to button-only.
+  //   * We use `lang="en-US"` because our default agent is English.
+  //     A future fix: bind to the agent's voice_language.
+  useEffect(() => {
+    // Only active when the assistant is actually talking — no point
+    // burning a mic claim otherwise.
+    if (micState !== "speaking") return;
+    const W = window as unknown as {
+      webkitSpeechRecognition?: new () => any;
+      SpeechRecognition?: new () => any;
+    };
+    const Recog = W.SpeechRecognition || W.webkitSpeechRecognition;
+    if (!Recog) {
+      // Firefox or older browser — fall back to the Stop button alone.
+      return;
+    }
+    // Match short, clear interrupt words plus a couple of natural
+    // phrases. All lowercased + boundary-checked so "stopwatch"
+    // doesn't fire it. CJK variants included so a Mandarin user can
+    // also interrupt: 停 / 停下 / 暂停.
+    const STOP_PATTERNS = [
+      /\bstop\b/i,
+      /\bpause\b/i,
+      /\bwait\b/i,
+      /\bhalt\b/i,
+      /\bcancel\b/i,
+      /\bquiet\b/i,
+      /\bhold on\b/i,
+      /\bbe quiet\b/i,
+      /停下?/,
+      /暂停/,
+    ];
+
+    const r = new Recog();
+    r.lang = "en-US";
+    r.continuous = true;
+    r.interimResults = true;
+    r.maxAlternatives = 1;
+
+    let triggered = false;
+    r.onresult = (ev: any) => {
+      if (triggered) return;
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const transcript: string = ev.results[i][0].transcript || "";
+        for (const pat of STOP_PATTERNS) {
+          if (pat.test(transcript)) {
+            triggered = true;
+            try {
+              r.stop();
+            } catch {
+              /* stopping a half-started recogniser throws; ignore */
+            }
+            sendInterrupt("voice");
+            return;
+          }
+        }
+      }
+    };
+    r.onerror = () => {
+      // Common: "no-speech" timeout, "aborted" when we unmount.
+      // Both benign — we don't surface them.
+    };
+    try {
+      r.start();
+    } catch {
+      // start() can throw if a previous instance is still active or
+      // the user has denied mic permission. Either way, button stays.
+      return;
+    }
+    return () => {
+      try {
+        r.stop();
+      } catch {
+        /* idempotent */
+      }
+    };
+    // sendInterrupt is stable across re-renders (no deps); we only
+    // want to re-run when the speaking state itself changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [micState]);
 
   // ── Aggressive lifecycle cleanup ─────────────────────────────────
   // Without this, an open mic + WS keeps streaming background audio
@@ -209,6 +308,33 @@ export function SetupAssistant() {
       wsRef.current.close();
     }
     setMicState("idle");
+  }
+
+  // ── Barge-in: user-driven interrupt ──────────────────────────────
+  // Three trigger paths feed this:
+  //   1. The "Stop talking" button while micState === "speaking".
+  //   2. The browser-native SpeechRecognition listener (useEffect
+  //      below) when the user says a stop word ("stop", "pause",
+  //      "wait", "halt", "cancel").
+  //   3. (future) server-side VAD speech_start — already handled in
+  //      the orchestrator; no client change needed.
+  //
+  // Both paths do the same two things:
+  //   - Tell the backend to abort the in-flight TTS stream (so it
+  //     doesn't keep sending more audio frames).
+  //   - Drain the local AudioPlaybackQueue so whatever's already in
+  //     flight stops in this browser tab immediately (no waiting
+  //     for the ws round-trip).
+  function sendInterrupt(source: "button" | "voice") {
+    // 1. Server: stop synthesising / streaming.
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "interrupt", source }));
+    }
+    // 2. Client: silence whatever's already queued in the player.
+    playerRef.current?.stopAll?.();
+    // 3. Visible feedback so the user knows it worked.
+    setLines((ls) => [...ls, { role: "system", text: `[stopped — ${source}]` }]);
+    setMicState("listening");
   }
 
   function handleEvent(ev: any) {
@@ -365,19 +491,35 @@ export function SetupAssistant() {
               )}
             </div>
 
-            {/* Composer */}
+            {/* Composer.
+                When the assistant is speaking, the leftmost button
+                turns into a red "Stop" — clicking it (or saying
+                "stop"/"pause"/"wait"/"halt"/"cancel", picked up by
+                the browser-native listener below) cuts the in-flight
+                TTS immediately. */}
             <div className="border-t border-border/60 pt-3 flex items-center gap-2">
-              <Button
-                variant={micState === "listening" ? "danger" : "outline"}
-                size="icon"
-                onClick={toggleMic}
-                disabled={!assistantAgent}
-                title={micState === "listening" ? "Stop microphone" : "Start microphone"}
-              >
-                {micState === "connecting" ? <Loader2 className="h-4 w-4 animate-spin" />
-                  : micState === "listening" ? <MicOff className="h-4 w-4" />
-                  : <Mic className="h-4 w-4" />}
-              </Button>
+              {micState === "speaking" ? (
+                <Button
+                  variant="danger"
+                  size="icon"
+                  onClick={() => sendInterrupt("button")}
+                  title='Stop the assistant — or just say "stop"'
+                >
+                  <Square className="h-4 w-4 fill-current" />
+                </Button>
+              ) : (
+                <Button
+                  variant={micState === "listening" ? "danger" : "outline"}
+                  size="icon"
+                  onClick={toggleMic}
+                  disabled={!assistantAgent}
+                  title={micState === "listening" ? "Stop microphone" : "Start microphone"}
+                >
+                  {micState === "connecting" ? <Loader2 className="h-4 w-4 animate-spin" />
+                    : micState === "listening" ? <MicOff className="h-4 w-4" />
+                    : <Mic className="h-4 w-4" />}
+                </Button>
+              )}
               <input
                 value={textInput}
                 onChange={(e) => setTextInput(e.target.value)}
@@ -392,7 +534,7 @@ export function SetupAssistant() {
             </div>
             <p className="text-xs text-muted-foreground">
               {micState === "listening" && "🎙 Listening — speak naturally."}
-              {micState === "speaking" && "🔊 Assistant is responding."}
+              {micState === "speaking" && '🔊 Assistant is responding — tap ⏹ or say "stop" to interrupt.'}
               {micState === "connecting" && "Connecting…"}
               {micState === "error" && "Mic error — try again or use text."}
               {micState === "idle" && "Mic off — click the mic or type. Voice and text share the same conversation."}
