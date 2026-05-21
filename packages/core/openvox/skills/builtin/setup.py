@@ -179,6 +179,8 @@ class RecommendTemplateSkill(BaseSkill):
     }
 
     async def run(self, args: dict[str, Any], ctx: SkillContext) -> Any:
+        import re
+
         from openvox.api.routes.templates import TEMPLATES
 
         # Templates carry their OWN keyword rules in `t["match"]` —
@@ -189,11 +191,24 @@ class RecommendTemplateSkill(BaseSkill):
         # maintain here. Templates without a `match` field don't
         # auto-recommend and can only be reached via `list_templates`.
         #
+        # ── Score-based matching ──────────────────────────────
+        # The old logic was "first substring hit wins" — which fired
+        # ecommerce-support on the description "search web and RETURN
+        # top 10 news" because `return` is in the ecommerce keyword
+        # list. Now we:
+        #   1. Use \b word-boundary regex so 'return' doesn't match
+        #      inside 'returning' (would still match 'return' alone).
+        #   2. Count DISTINCT keyword hits per template.
+        #   3. Confidence scales with hit count:
+        #        ≥2 hits → 0.85   (high — recommend confidently)
+        #        1 hit   → 0.4    (low  — surface but tell the LLM to
+        #                          double-check or offer custom path)
+        #        0 hits  → 0.0    (none — explicitly recommend
+        #                          create_custom_agent)
         # Cheap keyword classifier — production deployments can swap
-        # for an LLM call, but the keyword path keeps recommendation
-        # cheap: the calling LLM already paid for the user description;
-        # no need to spend another round-trip to classify into ~30
-        # templates.
+        # for an LLM call. The keyword path keeps recommendation cheap
+        # since the calling LLM has already paid for the user
+        # description; no need for another round-trip.
         desc = (args.get("description") or "").lower()
         candidates = [
             (t.get("match", {}).get("priority", 100), t)
@@ -202,31 +217,55 @@ class RecommendTemplateSkill(BaseSkill):
         ]
         candidates.sort(key=lambda x: x[0])
 
-        matched_id = ""
-        match_reason = ""
-        for _priority, tpl in candidates:
+        scored: list[tuple[int, int, dict[str, Any], list[str]]] = []
+        for priority, tpl in candidates:
+            matched_kws: list[str] = []
             for kw in tpl["match"]["keywords"]:
-                if kw in desc:
-                    matched_id = tpl["id"]
-                    match_reason = f"matched keyword '{kw}'"
-                    break
-            if matched_id:
-                break
+                # \b boundaries handle most natural language. For multi-
+                # word keyword phrases ("share price", "cold call") we
+                # still want substring — escape and check phrase form.
+                pattern = r"\b" + re.escape(kw.lower()) + r"\b"
+                if re.search(pattern, desc):
+                    matched_kws.append(kw)
+            if matched_kws:
+                # Sort tuple is (-hits, priority, ...) so MORE hits beat
+                # priority; on ties, lower priority (more specific) wins.
+                scored.append((len(matched_kws), priority, tpl, matched_kws))
 
-        if not matched_id:
+        if not scored:
             return {
                 "template_id": "",
                 "confidence": 0.0,
-                "reasoning": "no strong keyword match — ask the user to clarify the use case",
+                "reasoning": (
+                    "No template matched. The catalogue doesn't cover this "
+                    "use case. Call create_custom_agent instead — ask the "
+                    "user what skills they need and build a blank agent."
+                ),
+                "recommend_custom": True,
             }
 
-        tpl = next((t for t in TEMPLATES if t["id"] == matched_id), {})
+        # Best = most hits, then lowest priority.
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        best_hits, _best_priority, best_tpl, best_kws = scored[0]
+        confidence = 0.85 if best_hits >= 2 else 0.4
+        recommend_custom = best_hits < 2
+
         return {
-            "template_id": matched_id,
-            "name": tpl.get("name") or matched_id,
-            "tagline": tpl.get("tagline") or "",
-            "confidence": 0.7,
-            "reasoning": match_reason,
+            "template_id": best_tpl["id"],
+            "name": best_tpl.get("name") or best_tpl["id"],
+            "tagline": best_tpl.get("tagline") or "",
+            "confidence": confidence,
+            "reasoning": (
+                f"matched {best_hits} keyword{'s' if best_hits != 1 else ''}: "
+                + ", ".join(f"'{k}'" for k in best_kws)
+            ),
+            "recommend_custom": recommend_custom,
+            # Surface up to 2 runners-up so the LLM can offer alternatives
+            # without a second list_templates round-trip.
+            "alternatives": [
+                {"template_id": t["id"], "name": t.get("name") or t["id"], "hits": h}
+                for h, _, t, _ in scored[1:3]
+            ],
         }
 
 
@@ -498,10 +537,140 @@ class DescribeRemainingSetupSkill(BaseSkill):
         }
 
 
+class CreateCustomAgentSkill(BaseSkill):
+    """Build a blank agent without inheriting from any template.
+
+    Use this when `recommend_template` returns `recommend_custom: true`
+    OR `confidence < 0.5` — i.e. the catalogue doesn't cover the user's
+    use case. The most common trigger today is "agent that searches the
+    web for X" (no template ships with a web-search-first behaviour).
+    The LLM should:
+      1. Confirm the user wants a custom build (not a low-confidence
+         template recommendation).
+      2. Ask which skills they need — the prompt lists them. Map the
+         user's phrasing ("web search" → `web_search`, "calculate" →
+         `calculator`).
+      3. Call this skill with a 2-4 word name + skill ids.
+      4. Walk through greeting + system_prompt + voice via
+         update_agent_field.
+      5. Call publish_agent.
+
+    Mirrors InstantiateTemplateSkill's draft-id stashing so the rest
+    of the setup flow (update_agent_field / publish_agent) works
+    unchanged after this call.
+    """
+
+    id = "create_custom_agent"
+    display_name = "Create a custom agent"
+    description = (
+        "Create a blank draft agent when no template fits. Use this "
+        "instead of instantiate_template if recommend_template returns "
+        "low confidence or recommend_custom=true. Caller provides the "
+        "name and a list of skill ids; system_prompt/greeting/voice "
+        "can be set later via update_agent_field."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Short concrete name, 2-4 words (e.g. 'Singapore news reader').",
+            },
+            "description": {
+                "type": "string",
+                "description": "One-line summary of what the agent does. Shown on the Agents card.",
+            },
+            "skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "List of skill ids the agent can call. Must be valid "
+                    "ids from the catalogue listed in the system prompt — "
+                    "e.g. ['web_search', 'get_time']."
+                ),
+            },
+            "system_prompt": {
+                "type": "string",
+                "description": (
+                    "Behaviour instructions for the agent. Keep it focused "
+                    "on the requested use case. Optional — can be set "
+                    "later via update_agent_field."
+                ),
+            },
+            "greeting": {
+                "type": "string",
+                "description": "The agent's first spoken line. Optional.",
+            },
+            "voice_language": {
+                "type": "string",
+                "description": "BCP-47 code like 'en-US'. Defaults to en-US.",
+            },
+        },
+        "required": ["name", "skills"],
+    }
+
+    async def run(self, args: dict[str, Any], ctx: SkillContext) -> Any:
+        from openvox.config import get_settings
+        from openvox.db import db_session
+        from openvox.db.models import Agent
+
+        name = (args.get("name") or "").strip()
+        if not name:
+            return {"error": "name is required"}
+        skills = args.get("skills") or []
+        if not isinstance(skills, list) or not skills:
+            return {"error": "skills must be a non-empty list of skill ids"}
+        # Defensive: reject obviously-bogus skill ids. We don't fail
+        # hard on unknown skills — the runtime will just no-op them —
+        # but truncate to ≤10 to stop the LLM from stuffing in the
+        # entire catalogue "just in case".
+        skills = [str(s).strip() for s in skills if str(s).strip()][:10]
+
+        settings = get_settings()
+        payload = {
+            "name": name,
+            "description": (args.get("description") or "").strip(),
+            "template_id": "",  # explicit: not from a template
+            "system_prompt": (
+                args.get("system_prompt")
+                or "You are a helpful voice assistant. Keep responses under 2 sentences."
+            ),
+            "greeting": args.get("greeting") or f"Hi! I'm {name}. How can I help?",
+            "skills": skills,
+            "voice_id": settings.byteplus_tts_default_voice,
+            "voice_language": args.get("voice_language") or "en-US",
+            "llm_model": settings.byteplus_llm_model,
+            "temperature": 0.7,
+            "max_tokens": 800,
+        }
+
+        async with db_session() as s:
+            a = Agent(**{k: v for k, v in payload.items() if hasattr(Agent, k)})
+            s.add(a)
+            await s.flush()
+            agent_id = a.id
+
+        await _set_draft_id(ctx, agent_id)
+        logger.info(
+            "setup-assistant: created custom draft agent %s name=%r skills=%s",
+            agent_id, name, skills,
+        )
+        return {
+            "agent_id": agent_id,
+            "name": name,
+            "skills": skills,
+            "next": (
+                "Optionally call update_agent_field for greeting / "
+                "system_prompt / voice_id, then publish_agent when ready."
+            ),
+        }
+
+
 SKILLS = [
     ListTemplatesSkill,
     RecommendTemplateSkill,
     InstantiateTemplateSkill,
+    CreateCustomAgentSkill,
     UpdateAgentFieldSkill,
     PublishDraftSkill,
     DescribeRemainingSetupSkill,

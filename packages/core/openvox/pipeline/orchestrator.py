@@ -46,6 +46,28 @@ from openvox.skills import SkillRunner
 
 logger = logging.getLogger(__name__)
 
+# ── STT hallucination defence ────────────────────────────────────────
+# BytePlus Seed-ASR (and most multilingual ASRs) emit very-low-confidence
+# finals during silence, breath sounds, or lip smacks — frequently a
+# Chinese filler like 嗯/啊/哦 because Seed is Chinese-first. These slip
+# through as USER turns and the LLM dutifully replies, which is what
+# users perceive as "the assistant answering on its own".
+#
+# Filter rule: drop user_final when confidence is EXPLICITLY between 0
+# and the threshold below. Confidence of exactly 0.0 means "no value
+# reported" by the provider — we let those pass to avoid silently
+# breaking providers that don't populate the field.
+#
+# Threshold picked from BytePlus's empirical distribution: real speech
+# is typically >0.8, hallucinations <0.3. 0.5 is a comfortable middle
+# ground that catches the bad ones without risking real utterances.
+_MIN_STT_FINAL_CONFIDENCE = 0.5
+
+# The heavy lifting for ASR hallucination defence + filler-affix
+# trimming now lives in openvox.utils.text.sanitize_user_final —
+# centralised so unit-testable in isolation. The orchestrator just
+# applies the result.
+
 
 @dataclass
 class SessionConfig:
@@ -285,9 +307,52 @@ class VoiceSession:
                     if hasattr(self._skills, "_ctx") and self._skills._ctx is not None:
                         self._skills._ctx.metadata["last_language"] = r.language
                         self._skills._ctx.metadata["last_language_confidence"] = r.confidence
+                # ── ASR hallucination + filler-affix defence ─────
+                # Only applied to FINAL transcripts — partials are
+                # cosmetic, flicker, and get replaced before the user
+                # can act on them. Filters `continue` rather than
+                # `return` so the STT stream stays open for the next,
+                # real utterance.
+                final_text = r.text
+                if r.is_final:
+                    # Layer 1: explicit confidence floor. Catches
+                    # providers that report a low score for their own
+                    # hallucinations. confidence==0 means "no value
+                    # reported" — pass through.
+                    if 0.0 < r.confidence < _MIN_STT_FINAL_CONFIDENCE:
+                        logger.info(
+                            "dropping low-confidence STT final: text=%r confidence=%.2f language=%s",
+                            r.text, r.confidence, r.language,
+                        )
+                        continue
+                    # Layer 2: trim leading/trailing filler chars
+                    # ("嗯。create" → "create") AND drop pure-filler
+                    # finals. Centralised in utils.text so the
+                    # behaviour is unit-testable and reused across
+                    # telephony / batch transcription paths.
+                    from openvox.utils.text import sanitize_user_final
+                    cleaned, reason = sanitize_user_final(
+                        r.text, self._cfg.stt.language
+                    )
+                    if cleaned is None:
+                        logger.info(
+                            "dropping ASR hallucination (%s) — text=%r confidence=%.2f detected_language=%s",
+                            reason, r.text, r.confidence, r.language,
+                        )
+                        continue
+                    if cleaned != r.text:
+                        logger.info(
+                            "trimmed ASR filler affix: %r → %r confidence=%.2f",
+                            r.text, cleaned, r.confidence,
+                        )
+                    final_text = cleaned
+                    logger.info(
+                        "STT user_final accepted: text=%r confidence=%.2f language=%s",
+                        final_text, r.confidence, r.language,
+                    )
                 yield TurnEvent(
                     kind="user_final" if r.is_final else "user_partial",
-                    text=r.text,
+                    text=final_text,
                     data={"confidence": r.confidence, "language": r.language},
                 )
                 if r.is_final:
@@ -329,23 +394,39 @@ class VoiceSession:
                 # fragments (one chunk per few chars of JSON). We must
                 # accumulate them by `index` to get well-formed calls.
                 tool_calls_by_idx: dict[int, dict[str, Any]] = {}
+                # Reasoning-tag filter — Seed-2-Pro emits chain-of-
+                # thought inside `<think>…</think_HASH>` blocks (and
+                # the close tag carries a per-session random hash so
+                # naive regex strips don't work across chunks). The
+                # streaming stripper holds back partial tags until
+                # they resolve, so downstream consumers (display,
+                # TTS, history) only ever see clean text. See
+                # openvox.utils.text.ReasoningStripper.
+                from openvox.utils.text import ReasoningStripper
+                stripper = ReasoningStripper()
 
                 async for chunk in self._llm.chat_stream(self._history, cfg):
                     if chunk.tool_calls:
                         _merge_tool_call_deltas(tool_calls_by_idx, chunk.tool_calls)
                     if chunk.delta:
-                        buffer += chunk.delta
-                        yield TurnEvent(kind="assistant_token", text=chunk.delta)
-                        # Flush completed sentences to TTS for low latency.
-                        while True:
-                            m = _SENTENCE_BREAK.search(buffer)
-                            if not m:
-                                break
-                            sentence = buffer[: m.end()].strip()
-                            buffer = buffer[m.end():]
-                            if sentence:
-                                async for ev in self._speak(sentence):
-                                    yield ev
+                        # Filter out reasoning tags + their content.
+                        # Returns "" while inside an open <think>…
+                        # block — we suppress display/TTS/history
+                        # writes until the block closes.
+                        visible = stripper.feed(chunk.delta)
+                        if visible:
+                            buffer += visible
+                            yield TurnEvent(kind="assistant_token", text=visible)
+                            # Flush completed sentences to TTS for low latency.
+                            while True:
+                                m = _SENTENCE_BREAK.search(buffer)
+                                if not m:
+                                    break
+                                sentence = buffer[: m.end()].strip()
+                                buffer = buffer[m.end():]
+                                if sentence:
+                                    async for ev in self._speak(sentence):
+                                        yield ev
                     # Provider-reported usage usually arrives in the
                     # terminal chunk (after we set stream_options.
                     # include_usage on the request). Surface it as its
@@ -356,6 +437,13 @@ class VoiceSession:
                         yield TurnEvent(kind="llm_usage", data=dict(chunk.usage))
                     if chunk.finish_reason:
                         break
+                # End-of-stream: release any clean text the stripper
+                # was holding back. Unclosed reasoning at EOS is
+                # dropped (model was cut off mid-think).
+                tail = stripper.flush()
+                if tail:
+                    buffer += tail
+                    yield TurnEvent(kind="assistant_token", text=tail)
                 # Flush trailing buffer.
                 if buffer.strip():
                     async for ev in self._speak(buffer.strip()):
@@ -483,8 +571,24 @@ class VoiceSession:
             self._speaking = False
 
     def interrupt(self) -> None:
-        """User started speaking again — cut current playback."""
+        """User started speaking again — cut current playback.
+
+        Called from two sites today:
+          - WS receives `{"type":"interrupt"}` (dashboard Stop button
+            or browser-native stop-word listener).
+          - VAD background loop sees `speech_start` while we're
+            mid-TTS (server-side echo / barge-in).
+
+        The flag is checked once per TTS chunk in `_speak()`, so
+        cancellation lands within one chunk (~20-40 ms) of being set.
+        """
+        was_speaking = self._speaking
         self._cancel_tts.set()
+        logger.info(
+            "interrupt() called — speaking=%s (cancel flag set; next "
+            "TTS chunk will yield 'interrupt' event)",
+            was_speaking,
+        )
 
     # ── Observability ────────────────────────────────────────────────
     @property

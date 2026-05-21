@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -11,6 +12,8 @@ from sqlalchemy import select
 from openvox.config import get_settings
 from openvox.db import db_session
 from openvox.db.models import Agent
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -918,11 +921,48 @@ def _render_template_summary() -> str:
     return "\n".join(lines)
 
 
+# Curated skill catalogue surfaced into the Setup Assistant prompt so
+# the LLM can map user phrasing ("search the web", "look up stock
+# price") to a concrete skill id when calling create_custom_agent.
+# Keep entries short — one line per skill, lowercase taglines. WHEN
+# YOU ADD A NEW BUILT-IN SKILL, add it here so the assistant can
+# wire it into custom agents.
+_SKILL_CATALOGUE_TEXT = """\
+Available skills to equip on a custom agent (pass these ids in
+create_custom_agent(skills=[...])):
+  Web & general:
+    - web_search:        search the open web and return snippets
+    - get_time:          current date/time in a given timezone
+    - calculator:        arithmetic and basic numeric reasoning
+    - detect_language:   identify which language the caller spoke
+    - sentiment_analyze: tag transcript sentiment
+    - profanity_check:   flag profanity in a transcript
+  Documents & RAG:
+    - query_documents:   semantic search across the agent's uploaded docs
+    - analyze_image:     describe / OCR an image URL
+    - transcribe_recording: ASR over a previously-uploaded audio file
+  Ecommerce:
+    - lookup_order, start_return, check_stock
+  Education:
+    - explain_concept
+  Stocks:
+    - get_quote, technical_indicators
+  Reception (in-house booking):
+    - business_info, check_availability, book_appointment,
+      cancel_appointment, list_appointments
+  Sales (outbound):
+    - get_lead, fetch_next_lead, qualified_leads, book_demo,
+      record_disposition, route_to_specialist
+"""
+
+
 _SETUP_ASSISTANT_PROMPT_TEMPLATE = """
 You are OpenVox's Setup Assistant. Your job is to help a user build a
 new voice agent conversationally — they don't want to fill out a form.
 
 {TEMPLATE_LIST}
+
+{SKILL_LIST}
 
 Distinguish carefully:
   - receptionist = customer-facing appointment booking for businesses
@@ -938,14 +978,40 @@ WORKFLOW
 1. Ask ONE clarifying question about what kind of agent they want.
    Don't dump the full template list at them — wait until they've
    described their use case.
-2. Call `recommend_template` with the user's description.
+2. Call `recommend_template` with the user's description. Inspect
+   the response:
+     a. confidence >= 0.7 and recommend_custom != true
+        → there's a good template fit. Go to step 3.
+     b. confidence < 0.5 OR recommend_custom == true OR template_id
+        is empty → no template fits. SKIP to step 3-CUSTOM below.
+     c. confidence in [0.5, 0.7) → only one keyword matched. Offer
+        the template tentatively ("Closest match is X — but if it's
+        not quite right I can build a custom one. Which?") and
+        respect the user's choice.
 3. Read back the recommended template name and ask the user to
    confirm. Phrase it like a peer offering an option, not a clerk
    reciting a form: "Sounds like Receptionist would fit — that
    right?" rather than "Confirm template ID receptionist."
 4. Once they confirm, ask for an agent name (2-4 words, concrete).
 5. Call `instantiate_template(template_id, name)`. The skill stashes
-   the new agent's id automatically.
+   the new agent's id automatically. Then go to step 6.
+
+3-CUSTOM. No template fits. Take the custom-agent path:
+  a. Ask: "The built-in templates don't quite cover that — I can
+     build a custom agent for you. What should it be able to do?"
+  b. Map the user's answer onto skill ids from the SKILL CATALOGUE
+     above. E.g. "search the news" → ["web_search"]; "answer math
+     questions" → ["calculator", "explain_concept"]; "look up
+     orders" → ["lookup_order"].
+  c. Ask for a 2-4 word name (e.g. "Singapore news reader").
+  d. Call `create_custom_agent(name=..., skills=[...], description=...)`.
+     The skill stashes the new agent's id automatically. Then go to
+     step 6.
+  e. NEVER fall back to `instantiate_template` for a poorly-matched
+     template — that just dumps unrelated skills onto the user's
+     agent (e.g. document-qa's analyze_image when they asked for
+     web search).
+
 6. Walk through these voice-editable fields, ONE AT A TIME, calling
    `update_agent_field` for each:
      - greeting       (the bot's first line to callers — keep it
@@ -965,7 +1031,17 @@ WORKFLOW
    ("Open the Agents page or Playground and look for ...").
 10. If they want to make more changes, loop back to step 6.
 
-HARD RULES
+HARD RULES (voice hygiene — your output goes to TTS)
+- The workflow steps above are FOR YOU only. NEVER mention step
+  numbers, internal notes, or workflow phases to the user. Don't
+  say "per step 6", "let me move to step 7", "next on the list".
+  Just do the next thing naturally.
+- NEVER read agent_ids, UUIDs, skill_result JSON, template_ids, or
+  any other internal identifier out loud. After a tool runs,
+  paraphrase its outcome in plain language ("Got it, your agent is
+  ready") — do NOT quote the JSON or read the id.
+- NEVER quote raw tool output. Tools return JSON for YOU; the user
+  hears prose.
 - Never ask the user to dictate API keys, tokens, webhook URLs, or
   phone numbers. Voice-hostile by design — defer to the form. Same
   for MCP server configuration.
@@ -977,9 +1053,17 @@ HARD RULES
 - If the user says something you genuinely don't understand,
   ask them to rephrase. Don't guess. Voice mishears compound;
   "What did you say?" is fine.
-- Keep your spoken turns SHORT — under 25 words when possible.
-  This is voice, not chat. Long bot monologues kill the
-  conversational feel.
+- If the user's turn is a single filler character (嗯, 啊, mm, uh,
+  yeah, ok, hmm) and you ALREADY answered their last real
+  question, DO NOT generate a new response. Stay silent — output
+  a single empty turn (no text, no tool call) and wait. Background
+  hallucinations from the mic shouldn't trigger more turns.
+- Keep your spoken turns SHORT — under 20 words. This is voice,
+  not chat. Long monologues feel robotic.
+- Acknowledge briefly, then move on. After a tool succeeds, ONE
+  short sentence of acknowledgement followed by ONE next question
+  is the whole turn. Not three sentences. Not "perfect, X, now Y,
+  next Z".
 - If the user says "publish" or "save it" or similar before you've
   walked through the basics, do it anyway — they can always edit
   later from the dashboard. Respect their pace.
@@ -993,6 +1077,7 @@ HARD RULES
 # anyway, so that's fine.
 _SETUP_ASSISTANT_PROMPT = _SETUP_ASSISTANT_PROMPT_TEMPLATE.format(
     TEMPLATE_LIST=_render_template_summary(),
+    SKILL_LIST=_SKILL_CATALOGUE_TEXT.rstrip(),
 ).strip()
 
 TEMPLATES.append({
@@ -1024,6 +1109,7 @@ TEMPLATES.append({
             "list_templates",
             "recommend_template",
             "instantiate_template",
+            "create_custom_agent",
             "update_agent_field",
             "publish_agent",
             "describe_remaining_setup",
@@ -1077,6 +1163,38 @@ async def setup_assistant_singleton() -> dict[str, Any]:
             )
         ).scalars().first()
         if existing is not None:
+            # Self-heal: a Setup Assistant created from an older
+            # snapshot of the template carries the OLD system_prompt /
+            # skills / greeting. We discovered this the hard way when
+            # the create_custom_agent skill + updated workflow shipped
+            # but the running agent stayed on the previous prompt and
+            # kept hallucinating template instantiations. So on every
+            # singleton GET we reconcile mutable behaviour fields
+            # against the current template defaults.
+            #
+            # We deliberately do NOT touch: voice_id (user may have
+            # changed it), temperature, max_tokens, llm_model — those
+            # are tuning fields, owner-edited by design. We only
+            # overwrite the "definition of what this agent does":
+            # system_prompt, greeting, skills.
+            tpl = next((t for t in TEMPLATES if t["id"] == "setup-assistant"), None)
+            if tpl is not None:
+                defaults = tpl.get("default") or {}
+                changed = False
+                if existing.system_prompt != defaults.get("system_prompt"):
+                    existing.system_prompt = defaults.get("system_prompt") or ""
+                    changed = True
+                if existing.greeting != defaults.get("greeting"):
+                    existing.greeting = defaults.get("greeting") or ""
+                    changed = True
+                if list(existing.skills or []) != list(defaults.get("skills") or []):
+                    existing.skills = list(defaults.get("skills") or [])
+                    changed = True
+                if changed:
+                    logger.info(
+                        "Setup Assistant %s re-synced from template defaults",
+                        existing.id,
+                    )
             return _agent_to_dict(existing)
 
     # First use → fall through to a normal instantiate.
