@@ -4,7 +4,9 @@ import { mutate } from "swr";
 import useSWR from "swr";
 import { useState } from "react";
 import {
+  Calendar,
   Clock,
+  Code2,
   Copy,
   Loader2,
   Play,
@@ -313,6 +315,62 @@ function RunHistory({ jobId }: { jobId: string }) {
   );
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// translateSimpleTrigger — Map the friendly Simple-mode form (date +
+// time + repeat) into the existing backend trigger schema so the
+// scheduler engine stays untouched. Returns `{ trigger_type, trigger_expr }`
+// that drops straight into the JobRecord payload.
+//
+// Translation table:
+//   none    → once,    "<date>T<time>:00"
+//   hourly  → cron,    "MM * * * *"        (fire at MM past every hour)
+//   daily   → cron,    "MM HH * * *"
+//   weekly  → cron,    "MM HH * * DOW"     (DOW derived from chosen date)
+//   monthly → cron,    "MM HH DD * *"      (DD derived from chosen date)
+//
+// Date is parsed in the browser's local zone; backend honours the job
+// `timezone` column (default "UTC"). For Simple mode we send the user's
+// local IANA zone so "08:00" actually means 08:00 wall-clock for them.
+// ────────────────────────────────────────────────────────────────────────
+function translateSimpleTrigger(
+  date: string,
+  time: string,
+  repeat: "none" | "hourly" | "daily" | "weekly" | "monthly",
+): { trigger_type: string; trigger_expr: string } {
+  // date = "YYYY-MM-DD", time = "HH:MM"
+  const [yyyy, mo, dd] = date.split("-").map(Number);
+  const [hh, mm] = time.split(":").map(Number);
+  if (repeat === "none") {
+    // ISO 8601 local datetime — backend parses with datetime.fromisoformat.
+    return {
+      trigger_type: "once",
+      trigger_expr: `${date}T${time}:00`,
+    };
+  }
+  if (repeat === "hourly") {
+    return { trigger_type: "cron", trigger_expr: `${mm} * * * *` };
+  }
+  if (repeat === "daily") {
+    return { trigger_type: "cron", trigger_expr: `${mm} ${hh} * * *` };
+  }
+  if (repeat === "weekly") {
+    // ⚠️ Day-of-week conventions:
+    //   JS Date.getDay():           Sun=0, Mon=1, …, Sat=6
+    //   Unix cron / docs:           Sun=0, Mon=1, …, Sat=6
+    //   APScheduler from_crontab(): Mon=0, Tue=1, …, Sun=6   ← non-standard
+    //
+    // APScheduler.from_crontab just forwards the 5th field straight to
+    // CronTrigger(day_of_week=…), which uses the Mon=0 convention. Verified
+    // 2026-05-21 by POSTing `0 8 * * 6` and getting next_run_at on a Sunday.
+    // So we remap JS dow → APScheduler dow as (js + 6) % 7.
+    const jsDow = new Date(yyyy, mo - 1, dd).getDay();
+    const apsDow = (jsDow + 6) % 7;
+    return { trigger_type: "cron", trigger_expr: `${mm} ${hh} * * ${apsDow}` };
+  }
+  // monthly
+  return { trigger_type: "cron", trigger_expr: `${mm} ${hh} ${dd} * *` };
+}
+
 function JobModal({
   job,
   agents,
@@ -342,6 +400,28 @@ function JobModal({
   const [error, setError] = useState("");
   const [payloadText, setPayloadText] = useState(JSON.stringify(form.payload ?? {}, null, 2));
 
+  // Trigger UI mode. Defaults:
+  //   - new schedule → "simple" (date/time pickers + repeat dropdown)
+  //   - edit         → "advanced" (raw cron / interval / ISO / webhook)
+  // We default edits to advanced because cron → simple is lossy
+  // (e.g. "*/15 9-17 * * MON-FRI" can't round-trip), and a silent
+  // rewrite would surprise the user.
+  const [triggerMode, setTriggerMode] = useState<"simple" | "advanced">(
+    isEdit ? "advanced" : "simple",
+  );
+
+  // Simple-mode state. Initialised to "tomorrow at 08:00, daily" so a
+  // fresh New Schedule modal already has a sensible non-empty default
+  // — the most common non-technical pattern is "every morning".
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const defaultDate = tomorrow.toISOString().slice(0, 10); // YYYY-MM-DD
+  const [simpleDate, setSimpleDate] = useState(defaultDate);
+  const [simpleTime, setSimpleTime] = useState("08:00");
+  const [simpleRepeat, setSimpleRepeat] = useState<
+    "none" | "hourly" | "daily" | "weekly" | "monthly"
+  >("daily");
+
   function set<K extends keyof JobRecord>(k: K, v: JobRecord[K]) {
     setForm((f) => ({ ...f, [k]: v }));
   }
@@ -356,7 +436,23 @@ function JobModal({
       } catch {
         throw new Error("Payload is not valid JSON");
       }
-      const body = { ...form, payload: parsedPayload };
+
+      // In Simple mode, compute the backend trigger fields from the
+      // friendly date/time/repeat selections. Also send the browser's
+      // IANA timezone so wall-clock times match the user's intent.
+      // Advanced mode passes form.trigger_* through verbatim.
+      let triggerFields: Partial<JobRecord> = {};
+      if (triggerMode === "simple") {
+        if (!simpleDate || !simpleTime) {
+          throw new Error("Please pick a date and time.");
+        }
+        const translated = translateSimpleTrigger(simpleDate, simpleTime, simpleRepeat);
+        const localTz =
+          Intl.DateTimeFormat().resolvedOptions().timeZone || form.timezone || "UTC";
+        triggerFields = { ...translated, timezone: localTz };
+      }
+
+      const body = { ...form, ...triggerFields, payload: parsedPayload };
       if (isEdit && job) {
         await api.updateJob(job.id, body);
       } else {
@@ -438,36 +534,126 @@ function JobModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <Label>Trigger</Label>
-              <Select
-                value={form.trigger_type}
-                onChange={(e) => set("trigger_type", e.target.value)}
-              >
-                <option value="cron">cron — &quot;0 20 * * *&quot; for 20:00 daily</option>
-                <option value="interval">interval — e.g. &quot;5m&quot;, &quot;1h&quot;, &quot;1d&quot;</option>
-                <option value="once">once — ISO datetime</option>
-                <option value="webhook">webhook — fires on POST</option>
-              </Select>
+          {/* ──────────────────────────────────────────────────────────
+              Trigger section. Two modes:
+                Simple   — date + time + repeat dropdown (non-technical)
+                Advanced — raw cron / interval / ISO / webhook
+              The mode toggle is non-destructive; switching tabs does
+              not clear the other tab's state so a user can preview
+              the cron Simple would generate, then tweak in Advanced.
+          ────────────────────────────────────────────────────────── */}
+          <div className="rounded-lg border border-border/60 bg-input/20 p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <Label className="!text-xs">Trigger</Label>
+              <div className="flex rounded-md border border-border/60 overflow-hidden text-xs">
+                <button
+                  type="button"
+                  onClick={() => setTriggerMode("simple")}
+                  className={
+                    triggerMode === "simple"
+                      ? "px-3 py-1.5 bg-violet-500/30 text-foreground flex items-center gap-1.5"
+                      : "px-3 py-1.5 text-muted-foreground hover:bg-input/60 flex items-center gap-1.5"
+                  }
+                >
+                  <Calendar className="h-3.5 w-3.5" />
+                  Simple
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTriggerMode("advanced")}
+                  className={
+                    triggerMode === "advanced"
+                      ? "px-3 py-1.5 bg-violet-500/30 text-foreground flex items-center gap-1.5"
+                      : "px-3 py-1.5 text-muted-foreground hover:bg-input/60 flex items-center gap-1.5"
+                  }
+                >
+                  <Code2 className="h-3.5 w-3.5" />
+                  Advanced
+                </button>
+              </div>
             </div>
-            <div className="col-span-2">
-              <Label>Expression</Label>
-              <Input
-                value={form.trigger_expr || ""}
-                onChange={(e) => set("trigger_expr", e.target.value)}
-                placeholder={
-                  form.trigger_type === "cron"
-                    ? "0 20 * * *"
-                    : form.trigger_type === "interval"
-                      ? "1h"
-                      : form.trigger_type === "once"
-                        ? "2026-05-12T20:00:00"
-                        : "(ignored — webhook URL is generated on save)"
-                }
-                disabled={form.trigger_type === "webhook"}
-              />
-            </div>
+
+            {triggerMode === "simple" ? (
+              <>
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <Label>Date</Label>
+                    <Input
+                      type="date"
+                      value={simpleDate}
+                      onChange={(e) => setSimpleDate(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <Label>Time</Label>
+                    <Input
+                      type="time"
+                      value={simpleTime}
+                      onChange={(e) => setSimpleTime(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <Label>Repeat</Label>
+                    <Select
+                      value={simpleRepeat}
+                      onChange={(e) =>
+                        setSimpleRepeat(
+                          e.target.value as
+                            | "none"
+                            | "hourly"
+                            | "daily"
+                            | "weekly"
+                            | "monthly",
+                        )
+                      }
+                    >
+                      <option value="none">Doesn&apos;t repeat — runs once</option>
+                      <option value="hourly">Every hour</option>
+                      <option value="daily">Every day</option>
+                      <option value="weekly">Every week (same weekday)</option>
+                      <option value="monthly">Every month (same day)</option>
+                    </Select>
+                  </div>
+                </div>
+                <SimpleTriggerPreview
+                  date={simpleDate}
+                  time={simpleTime}
+                  repeat={simpleRepeat}
+                />
+              </>
+            ) : (
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <Label>Type</Label>
+                  <Select
+                    value={form.trigger_type}
+                    onChange={(e) => set("trigger_type", e.target.value)}
+                  >
+                    <option value="cron">cron — &quot;0 20 * * *&quot; for 20:00 daily</option>
+                    <option value="interval">interval — e.g. &quot;5m&quot;, &quot;1h&quot;, &quot;1d&quot;</option>
+                    <option value="once">once — ISO datetime</option>
+                    <option value="webhook">webhook — fires on POST</option>
+                  </Select>
+                </div>
+                <div className="col-span-2">
+                  <Label>Expression</Label>
+                  <Input
+                    value={form.trigger_expr || ""}
+                    onChange={(e) => set("trigger_expr", e.target.value)}
+                    placeholder={
+                      form.trigger_type === "cron"
+                        ? "0 20 * * *"
+                        : form.trigger_type === "interval"
+                          ? "1h"
+                          : form.trigger_type === "once"
+                            ? "2026-05-12T20:00:00"
+                            : "(ignored — webhook URL is generated on save)"
+                    }
+                    disabled={form.trigger_type === "webhook"}
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           <div>
@@ -503,6 +689,66 @@ function JobModal({
 // integration without ever hand-constructing it. The URL embeds the
 // per-job random token; treat it like an API key.
 // ────────────────────────────────────────────────────────────────────────
+
+// ────────────────────────────────────────────────────────────────────────
+// SimpleTriggerPreview — live "Translates to:" hint below the Simple
+// trigger pickers. Two-line readout:
+//   1. Human sentence ("Every day at 8:00 AM, starting 21 May 2026")
+//   2. The raw backend expression we'll POST ("cron: 0 8 * * *")
+// Helps power-users sanity-check before hitting Save, and helps
+// debugging when something behaves unexpectedly.
+// ────────────────────────────────────────────────────────────────────────
+function SimpleTriggerPreview({
+  date,
+  time,
+  repeat,
+}: {
+  date: string;
+  time: string;
+  repeat: "none" | "hourly" | "daily" | "weekly" | "monthly";
+}) {
+  if (!date || !time) {
+    return (
+      <div className="text-xs text-muted-foreground">
+        Pick a date and time to preview the schedule.
+      </div>
+    );
+  }
+  const { trigger_type, trigger_expr } = translateSimpleTrigger(date, time, repeat);
+  const [yyyy, mo, dd] = date.split("-").map(Number);
+  const [hh, mm] = time.split(":").map(Number);
+  const friendlyDate = new Date(yyyy, mo - 1, dd).toLocaleDateString(undefined, {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+  const friendlyTime = new Date(2000, 0, 1, hh, mm).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const sentence =
+    repeat === "none"
+      ? `Runs once on ${friendlyDate} at ${friendlyTime}.`
+      : repeat === "hourly"
+        ? `Every hour at :${String(mm).padStart(2, "0")}.`
+        : repeat === "daily"
+          ? `Every day at ${friendlyTime}.`
+          : repeat === "weekly"
+            ? `Every ${new Date(yyyy, mo - 1, dd).toLocaleDateString(undefined, {
+                weekday: "long",
+              })} at ${friendlyTime}, starting ${friendlyDate}.`
+            : `Every month on day ${dd} at ${friendlyTime}.`;
+  return (
+    <div className="rounded-md bg-black/30 border border-border/40 px-3 py-2 text-xs space-y-1">
+      <div className="text-foreground/90">{sentence}</div>
+      <div className="font-mono text-muted-foreground">
+        Backend: <span className="text-violet-300">{trigger_type}</span>{" "}
+        <span className="text-foreground/80">{trigger_expr}</span>
+      </div>
+    </div>
+  );
+}
 
 function WebhookUrlCallout({ url }: { url: string }) {
   const [copied, setCopied] = useState(false);
