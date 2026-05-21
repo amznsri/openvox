@@ -56,19 +56,12 @@ export default function TemplatesPage() {
   const [langFilter, setLangFilter] = useState<string | null>(null);
 
   async function instantiate(t: Template) {
-    const existing = agents.filter((a) => a.template_id === t.id);
-    if (existing.length > 0) {
-      const names = existing.map((a) => `• ${a.name}`).join("\n");
-      const msg =
-        `You already have ${existing.length} agent${existing.length === 1 ? "" : "s"} ` +
-        `from the “${t.name}” template:\n\n${names}\n\n` +
-        `OK = open the existing one. Cancel = create another copy.`;
-      if (confirm(msg)) {
-        router.push(`/dashboard/agents/${existing[0].id}`);
-        return;
-      }
-      // Falls through to create a fresh copy on Cancel.
-    }
+    // "Copy template" semantics: every click produces a fresh agent.
+    // The backend auto-suffixes duplicate names ("Acme Support Voice (2)",
+    // "(3)", …) so the Agents list stays scannable. We deliberately no
+    // longer prompt "OK = open existing, Cancel = make another copy" —
+    // the button label promises a copy, and existing copies are one
+    // click away in the Agents sidebar.
     setBusy(t.id);
     try {
       const a = await api.instantiateTemplate(t.id);
@@ -196,7 +189,7 @@ export default function TemplatesPage() {
                       ) : (
                         <ArrowRight className="h-4 w-4" />
                       )}
-                      Use template
+                      Copy template
                     </Button>
                   </div>
                 </CardContent>

@@ -1103,6 +1103,34 @@ def _agent_to_dict(a: Agent) -> dict[str, Any]:
     }
 
 
+async def _next_available_agent_name(s, base: str) -> str:
+    """Pick a name that doesn't collide with any existing Agent row.
+
+    "Copy template" should always produce a new agent — the user clicks
+    it expecting a fresh copy. To keep names distinguishable in the
+    Agents list, append " (N)" suffixes (N starts at 2) until we find
+    an unused name.
+
+    Examples:
+        existing = {"Acme Support Voice"}                       → "Acme Support Voice (2)"
+        existing = {"Acme Support Voice", "Acme Support Voice (2)"}
+            → "Acme Support Voice (3)"
+        existing = {}                                            → base unchanged
+
+    Single-process AsyncIOScheduler app — no inter-process race to worry
+    about. If we ever scale out, add a unique index on Agent.name and
+    catch IntegrityError to retry.
+    """
+    result = await s.execute(select(Agent.name))
+    taken = {row[0] for row in result.all()}
+    if base not in taken:
+        return base
+    n = 2
+    while f"{base} ({n})" in taken:
+        n += 1
+    return f"{base} ({n})"
+
+
 @router.post("/{template_id}/instantiate", status_code=201)
 async def instantiate_template(template_id: str, body: InstantiateRequest) -> dict[str, Any]:
     tpl = next((t for t in TEMPLATES if t["id"] == template_id), None)
@@ -1111,8 +1139,13 @@ async def instantiate_template(template_id: str, body: InstantiateRequest) -> di
     defaults = tpl["default"]
     settings = get_settings()
     async with db_session() as s:
+        # Auto-suffix duplicate names ("Acme Support Voice (2)", etc.) so
+        # repeated Copy-template clicks produce distinct, scannable entries
+        # in the Agents list rather than 5 rows all called the same thing.
+        desired_name = body.name or defaults["name"]
+        unique_name = await _next_available_agent_name(s, desired_name)
         a = Agent(
-            name=body.name or defaults["name"],
+            name=unique_name,
             description=tpl["tagline"],
             template_id=template_id,
             system_prompt=defaults["system_prompt"],
