@@ -5,14 +5,18 @@ lightweight, single-process install for personal / development use. For
 the heavier Docker compose stack with Postgres + per-service isolation
 (production / multi-tenant), see [`install-docker.md`](./install-docker.md).
 
-> **Status (Session 15):** the CLI is functional today via the source-
-> checkout path below. Public PyPI distribution (`pip install openvox-core`)
-> + native installers (Homebrew formula, curl-bash, WinGet) ship in
-> Phase 4 per [`PLANNING_SESSION15.md`](./PLANNING_SESSION15.md). The
-> dashboard is currently served by a separate Next.js process — single-
-> process serving via FastAPI static-export needs a small dashboard
-> refactor (the `agents/[id]` route → query params) that's queued for
-> a follow-up PR.
+> **For end-users**: prefer the four packaged install paths in
+> [`docs/install.md`](./install.md) (pip / curl-bash / brew / winget).
+> This page covers the source-checkout / contributor flow + the
+> internals of how daemon mode works on each OS.
+>
+> **Status (Session 16):** daemon mode (`openvox start / stop / status /
+> restart / logs`) shipped in Phase 4 PR-1 with per-OS backends
+> (launchd / systemd --user / Windows Service via nssm). PyPI +
+> Homebrew + WinGet packaging metadata shipped in PR-2/PR-4. The
+> release pipeline that publishes to all four channels on tag-push
+> shipped in PR-5; a one-time PyPI Trusted Publisher / tap-repo /
+> winget-fork setup gates the first real release.
 
 ## Quick install (source checkout, today)
 
@@ -60,27 +64,43 @@ $ openvox --help
 | `openvox run --no-browser` | Skip the auto-browser-open (headless / SSH). |
 | `openvox run --host 127.0.0.1` | Local-only binding (default `0.0.0.0` allows LAN access). |
 
-## Coming in Phase 4
+## Daemon mode (Phase 4 PR-1, shipped)
 
-Daemon mode (always-running, survives terminal close, auto-starts at boot):
+Always-running, survives terminal close, auto-starts at user login:
 
 ```bash
-openvox start          # background service (launchd/systemd/Windows Service)
+openvox start          # install (if needed) + start the daemon
 openvox stop
-openvox status
+openvox status         # running / stopped / unknown + PID
 openvox restart
-openvox logs           # tail the service log
-openvox onboard        # first-run interactive setup (API keys, template, channel)
+openvox logs -f        # tail ~/.openvox/logs/openvox.log
 ```
 
-Plus four free install paths (no source checkout needed):
+Backed by the per-OS native service manager. Implementation lives in
+`packages/core/openvox/cli/daemon/`:
+
+| OS | Backend | Service file | Stops on logout? |
+|---|---|---|---|
+| macOS | `LaunchdBackend` (launchctl) | `~/Library/LaunchAgents/com.openvox.daemon.plist` | No (LaunchAgent persists across sessions). |
+| Linux | `SystemdBackend` (systemctl --user) | `~/.config/systemd/user/openvox.service` | Yes by default. `loginctl enable-linger $USER` to keep running. |
+| Windows | `WindowsServiceBackend` (nssm.exe) | Service: `OpenVoxDaemon` | No (runs as a true Windows Service). |
+
+`openvox onboard` (terminal-only first-run wizard) is the remaining
+Phase 4 follow-up — the dashboard wizard from Phase 3 covers non-
+headless onboarding today.
+
+## Four install paths (no source checkout)
 
 ```bash
-pip install openvox-core           # path A: Python users
-curl -fsSL openvox.ai/install.sh | bash   # path B: one-line anyone
-brew install openvox               # path C: macOS Homebrew
-winget install OpenVox.OpenVox     # path D: Windows
+pip install openvox-core                       # path A: Python users
+curl -fsSL https://github.com/amznsri/openvox/releases/latest/download/install.sh | bash   # path B: macOS / Linux
+brew install amznsri/openvox/openvox           # path C: macOS / Linux via Homebrew
+winget install OpenVox.OpenVox                 # path D: Windows
 ```
+
+Detail per path in [`docs/install.md`](./install.md). The release
+pipeline that builds + publishes to all four channels on tag push
+lives at `.github/workflows/release.yml`.
 
 ## CLI mode vs Docker mode — when to use which
 

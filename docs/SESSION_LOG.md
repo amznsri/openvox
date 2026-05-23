@@ -1111,6 +1111,101 @@ docker-stop/rm step in upgrade notes).
 
 ---
 
+## Session 16 — 2026-05-23 (Phase 4: native install + daemon mode)
+
+**Goal**: Execute Phase 4 of `PLANNING_SESSION15.md` — install via any
+of four free channels (pip / curl-bash / brew / winget) and run as a
+background daemon. Shipped in a five-PR sequence on the
+`phase4-native-install` branch.
+
+### Commits landed (chronological, all on phase4-native-install)
+
+| SHA | What |
+|---|---|
+| `31858d0` | PR-1: Daemon backends (launchd / systemd / nssm) + lifecycle commands (start/stop/status/restart/logs). 13 files, +1087 / −13. |
+| `e85575f` | PR-2: PyPI packaging metadata — URLs, classifiers, postgres/whatsapp extras, sdist whitelist. Twine-passing wheel + sdist. |
+| `783291b` | PR-3: `scripts/install.sh` — curl-bash installer; pipx-or-venv backend, Python ≥ 3.11 detect, PATH check. shellcheck-clean. |
+| `e024841` | PR-4: Homebrew formula scaffold + WinGet manifest templates (installer / locale / version YAMLs). Both with documented release-pipeline substitution. |
+| `9d41ffc` | PR-5: GitHub Actions release pipeline. Tag push → PyPI Trusted Publishing → GitHub Release with install.sh + checksum → Homebrew tap bump → WinGet PR. |
+| `(this commit)` | PR-6: README quick-install table + `docs/install.md` consolidated guide + Session 16 entry. |
+
+### What's now possible after Phase 4
+
+```bash
+# Any one of the four — pick by platform / taste
+pip install openvox-core
+curl -fsSL https://github.com/amznsri/openvox/releases/latest/download/install.sh | bash
+brew install amznsri/openvox/openvox
+winget install OpenVox.OpenVox
+
+# Then
+openvox start          # launchd on macOS / systemd --user on Linux / Windows Service on Windows
+openvox status         # running as PID 12345
+openvox logs -f        # ~/.openvox/logs/openvox.log
+```
+
+The release pipeline (PR-5) does PyPI + GitHub Release + Homebrew + WinGet
+substitutions in a single `git push origin v0.x.y`.
+
+### Daemon backend design notes
+
+The `openvox/cli/daemon/` package picks a backend at runtime via
+`platform.system()`. All three implement the same `DaemonBackend`
+ABC so the five lifecycle commands stay platform-agnostic. Notable
+per-OS gotchas captured in code comments:
+
+1. **launchd**: `KeepAlive: {SuccessfulExit: false}` — restart on crash
+   but NOT on clean `launchctl stop`. ThrottleInterval=10 prevents
+   crash-restart spin loops.
+2. **systemd --user**: services stop on logout unless
+   `loginctl enable-linger` is set; documented in install-cli.md.
+   Native `restart` verb override (cleaner than base-class stop+start).
+3. **Windows / nssm**: Windows Service names can't contain `.`, so
+   `SERVICE_NAME` is overridden to `OpenVoxDaemon`. nssm.exe bundling
+   is wired in `pyproject.toml` but commented-out until the binary
+   lands (release pipeline can fetch + verify checksum on first
+   tag-publish).
+
+### Tests
+
+`packages/core/tests/test_daemon_backends.py` — 11 unit tests
+covering: factory OS dispatch, plist & unit-text generation, launchd
++ systemd status parsing, Windows service-name invariants. All
+subprocess calls mocked so the tests run on any OS.
+
+### Lazy-import refactor (side benefit)
+
+`openvox/cli/__init__.py` previously eager-imported `main.py` which
+pulled in FastAPI / uvicorn / SQLAlchemy on every `import openvox.cli.*`.
+Switched to PEP 562 `__getattr__` so `import openvox.cli.daemon`
+(used by the unit tests + by external integrations) no longer pays
+that cost. Console-script entry-point unchanged.
+
+### Open at end of Session 16
+
+- **First real PyPI publish** — needs the PyPI Trusted Publisher
+  configuration done (one-time, manual, https://pypi.org/manage/
+  account/publishing/), then bump version + `git tag`.
+- **Tap repo creation** — `amznsri/homebrew-openvox` doesn't exist
+  yet. Create empty repo + HOMEBREW_TAP_TOKEN PAT, then flip
+  `ENABLE_HOMEBREW_PUBLISH=true` on the actions variable.
+- **WinGet fork** — `amznsri/winget-pkgs` likewise, then
+  `ENABLE_WINGET_PUBLISH=true`.
+- **End-to-end macOS smoke** of `openvox start` → daemon registers in
+  launchctl → dashboard reachable → `openvox stop` cleans up. Code-
+  path verified via unit tests + plist generator output; needs a
+  real `pip install -e .` + `openvox start` cycle on a Mac to close
+  Phase 4's verification matrix.
+- **`openvox onboard`** terminal wizard — only Phase 4 deliverable
+  not in this branch. Dashboard wizard from Phase 3 covers the
+  non-headless flow; terminal-only is a follow-up driven by demand.
+- **nssm.exe bundling decision** — auto-download on first
+  `openvox start` on Windows, or commit the binary + checksum to
+  the repo + enable the force-include in pyproject.toml. Either
+  works; needs a Windows test run to decide.
+
+---
+
 ## Open follow-ups (carried forward)
 
 Updated end of Session 14. Items shipped through Session 14 removed;

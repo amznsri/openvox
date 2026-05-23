@@ -52,25 +52,38 @@ agents, skills, templates, and dashboard.
 
 ### Personal install (CLI mode)
 
+Pick whichever path fits your machine — all four ship the same
+`openvox` binary:
+
 ```bash
-git clone https://github.com/amznsri/openvox.git
-cd openvox/packages/core
-pip install -e .
+# A) PyPI — works on macOS, Linux, Windows
+pip install openvox-core
 
-cp ../../.env.example ../../.env
-$EDITOR ../../.env       # paste BYTEPLUS_LLM_API_KEY or OPENAI_API_KEY
+# B) Curl-bash — macOS / Linux (auto-picks pipx or venv)
+curl -fsSL https://github.com/amznsri/openvox/releases/latest/download/install.sh | bash
 
-openvox run              # foreground server + auto-opens browser
+# C) Homebrew — macOS / Linux
+brew install amznsri/openvox/openvox
+
+# D) WinGet — Windows
+winget install OpenVox.OpenVox
 ```
 
-`openvox run` starts a single Python process and opens the dashboard
-in your browser. See [`docs/install-cli.md`](./docs/install-cli.md) for
-the `version` / `info` / `--port` / `--no-browser` options.
+Then pick foreground or daemon mode:
 
-> **Coming in Phase 4**: `pip install openvox-core` from PyPI,
-> `brew install openvox`, `winget install OpenVox.OpenVox`, plus daemon
-> mode (`openvox start` — always-running background service). Roadmap:
-> [`docs/PLANNING_SESSION15.md`](./docs/PLANNING_SESSION15.md).
+```bash
+openvox run              # foreground; Ctrl-C to stop. Auto-opens dashboard.
+openvox start            # background daemon (launchd / systemd / Windows Service).
+                         # Starts at login. Stop with `openvox stop`.
+openvox status           # is it running?
+openvox logs -f          # tail ~/.openvox/logs/openvox.log
+```
+
+`openvox info` shows resolved config (with secrets redacted) — the
+fastest way to debug "is this thing configured?". See
+[`docs/install.md`](./docs/install.md) for per-path details and
+[`docs/install-cli.md`](./docs/install-cli.md) for the source-checkout /
+contributor flow.
 
 ### Production install (Docker mode)
 

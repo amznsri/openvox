@@ -5,12 +5,30 @@ build-backend = "hatchling.build"
 [project]
 name = "openvox-core"
 version = "0.1.0"
-description = "OpenVox — local-first voice agent platform core"
+description = "Local-first, open-source voice agent platform — install with pip, run as a daemon, no Docker required."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 authors = [{ name = "OpenVox Contributors" }]
-keywords = ["voice", "agent", "ai", "tts", "stt", "rtc", "byteplus"]
+keywords = ["voice", "agent", "ai", "tts", "stt", "rtc", "telegram", "whatsapp", "twilio"]
+classifiers = [
+  # Maturity — bump to "5 - Production/Stable" after the v1 PyPI release.
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: Apache Software License",
+  # OS support: CLI mode works on all three; Docker mode is Linux-only.
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Communications :: Telephony",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
 dependencies = [
   # Web
@@ -90,6 +108,27 @@ local-stt = [
   # Optional: local Whisper inference. Heavy — opt-in.
   "openai-whisper>=20240930",
 ]
+# Postgres / production-database operators. Today asyncpg ships in the
+# base install so the production path "just works", but reserving the
+# extras name now means `pip install openvox-core[postgres]` is a
+# stable command across future deps-shuffles (e.g. if we move
+# asyncpg/alembic out of the base install in a slim-down).
+postgres = []
+# WhatsApp Personal channel. The QR-scan adapter is a Node sidecar
+# (whatsapp-web.js), launched via Docker compose profile=whatsapp; no
+# Python deps to add today. The extras key is reserved here so
+# `pip install openvox-core[whatsapp]` is the documented install path
+# once the Node sidecar gets wrapped in a Python launcher.
+whatsapp = []
+
+[project.urls]
+# Surfaced on the PyPI listing sidebar. Keep these stable — PyPI doesn't
+# rewrite history, so old releases that point at dead URLs stay dead.
+Homepage = "https://github.com/amznsri/openvox"
+Documentation = "https://github.com/amznsri/openvox/tree/main/docs"
+Repository = "https://github.com/amznsri/openvox"
+Issues = "https://github.com/amznsri/openvox/issues"
+Changelog = "https://github.com/amznsri/openvox/blob/main/docs/SESSION_LOG.md"
 
 [project.scripts]
 # Phase 1 PR-2: renamed openvox-core → openvox. This is the user-facing
@@ -100,6 +139,34 @@ openvox = "openvox.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["openvox"]
+
+# Force-include of Windows daemon helper. nssm.exe is a tiny (~310 KB)
+# BSD-licensed Windows service wrapper that openvox/cli/daemon/
+# windows_service.py shells out to. It's not committed to the repo yet
+# (the binary lands in Phase 4 PR-3 release-pipeline work along with the
+# checksum verification step). When that PR lands, drop the .exe at
+# `openvox/cli/daemon/_bin/nssm.exe` and uncomment the include block
+# below — hatch will then ship it inside the wheel so a Windows user
+# never has to `choco install nssm` separately.
+#
+# [tool.hatch.build.targets.wheel.force-include]
+# "openvox/cli/daemon/_bin/nssm.exe" = "openvox/cli/daemon/_bin/nssm.exe"
+
+[tool.hatch.build.targets.sdist]
+# Whitelist the things we need in the source distribution and exclude
+# transient build artefacts. Without this, hatch picks everything up.
+include = [
+  "/openvox",
+  "/tests",
+  "/README.md",
+  "/pyproject.toml",
+]
+exclude = [
+  "__pycache__",
+  "*.pyc",
+  ".pytest_cache",
+  "/tests/.openvox",  # tmp test data dir if it ever leaks
+]
 
 [tool.ruff]
 line-length = 100
