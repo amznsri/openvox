@@ -1,0 +1,228 @@
+# OpenVox release pipeline.
+#
+# Triggered by a tag push that matches `v*` (e.g. `v0.2.0`). Fans out
+# into the four publish paths in PLANNING_SESSION15.md Phase 4:
+#
+#   Path A — PyPI:       build + upload openvox_core-<v>.tar.gz / .whl
+#                        via PyPI Trusted Publishing (no API token needed).
+#   Path B — install.sh: upload scripts/install.sh + SHA256 to the
+#                        GitHub Release for the curl-bash one-liner.
+#   Path C — Homebrew:   regenerate resource blocks (poet), substitute
+#                        url + sha256, push to amznsri/homebrew-openvox.
+#   Path D — WinGet:     substitute version/url/sha256 into the manifest
+#                        templates and PR to microsoft/winget-pkgs via
+#                        wingetcreate.
+#
+# Cutting a release:
+#   1. Bump version in packages/core/pyproject.toml.
+#   2. Commit + tag: `git tag v0.2.0 && git push origin v0.2.0`.
+#   3. This workflow does the rest.
+#
+# Prerequisites (one-time setup; not on the critical path of this PR):
+#   - PyPI: configure Trusted Publishing for openvox-core pointing at
+#     this workflow's environment `pypi` (https://docs.pypi.org/trusted-publishers/).
+#   - Homebrew tap: create amznsri/homebrew-openvox; add a PAT with
+#     `repo` scope as the HOMEBREW_TAP_TOKEN secret here.
+#   - WinGet: add a PAT for amznsri/winget-pkgs (a fork of
+#     microsoft/winget-pkgs) as the WINGET_PAT secret.
+#
+# Until those secrets exist the corresponding jobs are skipped via
+# `continue-on-error: true` + secret-presence guards so a tag push
+# without one of them still publishes the rest.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.2.0). Tag must already exist."
+        required: true
+
+permissions:
+  contents: write   # upload GitHub Release assets
+  id-token: write   # PyPI Trusted Publishing (OIDC)
+
+jobs:
+
+  # ── Build wheel + sdist once, share across jobs via an artefact ────
+  build:
+    name: Build wheel + sdist
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      wheel_name: ${{ steps.artefact.outputs.wheel }}
+      wheel_sha256: ${{ steps.artefact.outputs.wheel_sha256 }}
+      sdist_name: ${{ steps.artefact.outputs.sdist }}
+      sdist_sha256: ${{ steps.artefact.outputs.sdist_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            v="${{ inputs.version }}"
+          else
+            v="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+          echo "Releasing OpenVox v$v"
+      - name: Install build tools
+        run: pip install --upgrade build twine
+      - name: Build
+        working-directory: packages/core
+        run: python -m build
+      - name: Twine check
+        working-directory: packages/core
+        run: twine check dist/*
+      - name: Capture artefact names + SHA256s
+        id: artefact
+        working-directory: packages/core/dist
+        run: |
+          wheel=$(ls *.whl)
+          sdist=$(ls *.tar.gz)
+          echo "wheel=$wheel" >> "$GITHUB_OUTPUT"
+          echo "sdist=$sdist" >> "$GITHUB_OUTPUT"
+          echo "wheel_sha256=$(sha256sum "$wheel" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "sdist_sha256=$(sha256sum "$sdist" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: packages/core/dist/
+
+  # ── Path A: PyPI via Trusted Publishing (no token) ─────────────────
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/openvox-core
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # ── GitHub Release: attach wheel + sdist + install.sh + checksums ──
+  publish-github-release:
+    name: Attach assets to GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Compute install.sh checksum
+        run: |
+          sha256sum scripts/install.sh > install.sh.sha256
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "v${{ needs.build.outputs.version }}"
+          body: |
+            ## Install OpenVox v${{ needs.build.outputs.version }}
+
+            ```bash
+            # Path A: PyPI
+            pip install openvox-core==${{ needs.build.outputs.version }}
+
+            # Path B: curl-bash (macOS / Linux)
+            curl -fsSL https://github.com/amznsri/openvox/releases/download/v${{ needs.build.outputs.version }}/install.sh | bash
+
+            # Path C: Homebrew (after Phase 4 PR-5 tap setup)
+            brew install amznsri/openvox/openvox
+
+            # Path D: WinGet (after Phase 4 PR-5 WinGet PR is accepted)
+            winget install OpenVox.OpenVox
+            ```
+
+            ### Artefact checksums (SHA256)
+            - `${{ needs.build.outputs.wheel_name }}`: `${{ needs.build.outputs.wheel_sha256 }}`
+            - `${{ needs.build.outputs.sdist_name }}`: `${{ needs.build.outputs.sdist_sha256 }}`
+
+            See [docs/SESSION_LOG.md](https://github.com/amznsri/openvox/blob/main/docs/SESSION_LOG.md) for what's new.
+          files: |
+            dist/*
+            scripts/install.sh
+            install.sh.sha256
+
+  # ── Path C: Homebrew tap bump ──────────────────────────────────────
+  publish-homebrew:
+    name: Update Homebrew tap
+    needs: [build, publish-pypi]
+    runs-on: ubuntu-latest
+    if: ${{ vars.ENABLE_HOMEBREW_PUBLISH == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install poet (generates resource blocks)
+        run: pip install homebrew-pypi-poet "openvox-core==${{ needs.build.outputs.version }}"
+      - name: Generate formula
+        run: |
+          mkdir -p out
+          poet -f openvox-core > out/resources.rb
+          # Substitute version + sha256 into the template, then inject
+          # the freshly-generated resource list between the BEGIN/END
+          # markers.
+          python - <<'PY'
+          import pathlib, re
+          tmpl = pathlib.Path("packaging/homebrew/openvox.rb").read_text()
+          resources = pathlib.Path("out/resources.rb").read_text().strip()
+          version = "${{ needs.build.outputs.version }}"
+          sha = "${{ needs.build.outputs.sdist_sha256 }}"
+          tmpl = tmpl.replace("0.0.0", version)
+          tmpl = re.sub(r'sha256 "0+"', f'sha256 "{sha}"', tmpl)
+          tmpl = re.sub(
+              r"# ─── BEGIN GENERATED RESOURCES.*?# ─── END GENERATED RESOURCES ───",
+              "# ─── BEGIN GENERATED RESOURCES ───\n" + resources + "\n  # ─── END GENERATED RESOURCES ───",
+              tmpl,
+              flags=re.DOTALL,
+          )
+          pathlib.Path("out/openvox.rb").write_text(tmpl)
+          PY
+      - name: Push formula to tap repo
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/amznsri/homebrew-openvox.git" tap
+          mkdir -p tap/Formula
+          cp out/openvox.rb tap/Formula/openvox.rb
+          cd tap
+          git config user.email "actions@github.com"
+          git config user.name "openvox-release-bot"
+          git add Formula/openvox.rb
+          git commit -m "openvox ${{ needs.build.outputs.version }}" || echo "no changes"
+          git push
+
+  # ── Path D: WinGet manifest submission ─────────────────────────────
+  publish-winget:
+    name: Submit to winget-pkgs
+    needs: [build, publish-github-release]
+    runs-on: windows-latest
+    if: ${{ vars.ENABLE_WINGET_PUBLISH == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Submit via wingetcreate
+        env:
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+        run: |
+          $version = "${{ needs.build.outputs.version }}"
+          $wheelUrl = "https://github.com/amznsri/openvox/releases/download/v$version/${{ needs.build.outputs.wheel_name }}"
+          # wingetcreate.exe is preinstalled on windows-latest images.
+          wingetcreate.exe update OpenVox.OpenVox `
+            --version $version `
+            --urls $wheelUrl `
+            --token $env:WINGET_PAT `
+            --submit
