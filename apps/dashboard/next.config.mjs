@@ -13,6 +13,15 @@ const nextConfig = {
   //                  can't enumerate). Once refactored, FastAPI can
   //                  serve the dashboard alongside the API in CLI mode.
   output: process.env.BUILD_OUTPUT || undefined,
+  // trailingSlash: true makes Next.js's static export produce
+  // `<route>/index.html` instead of flat `<route>.html` files. We
+  // serve the export via FastAPI's StaticFiles which expects the
+  // index.html convention — without this, hitting /dashboard/
+  // returns 404 because there's no dashboard/index.html, only
+  // dashboard.html sitting alongside dashboard/ as a sibling.
+  // Affects only static-export builds; standalone / dev modes
+  // are unaffected because they don't write to out/.
+  trailingSlash: process.env.BUILD_OUTPUT === "export" || undefined,
   env: {
     // Defaults match docker-compose.yml NEXT_PUBLIC_API_URL / WS_URL.
     // Phase 1 PR-1 deleted the Node gateway at :3001; the FastAPI core

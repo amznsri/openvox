@@ -72,13 +72,104 @@ async def _seed_builtin_personas() -> None:
                 existing.builtin = True
 
 
+async def _hydrate_secrets_into_env() -> None:
+    """Copy keys from the encrypted secrets store into os.environ.
+
+    Bridges Phase 3 (the first-run wizard at /api/v1/admin/setup/keys
+    that writes provider keys into the SQLite-backed encrypted store)
+    with the rest of the codebase (provider modules that still read
+    `settings.<provider>_<key>_api_key`, which is a pydantic-settings
+    field hydrated from env vars / .env at process start).
+
+    Without this bridge, every key entered via the wizard is invisible
+    to providers — the TTS / LLM / STT modules report "API key not set"
+    even though the user just typed one in. Surfaced by an actual
+    end-user smoke test on 2026-05-24 after the v0.1.7 release.
+
+    Resolution order is env-first (so Docker / .env workflows are
+    unaffected) then store. After injection we bust `get_settings`'s
+    lru_cache so subsequent calls re-read os.environ and pick up the
+    just-injected values.
+
+    Keep the (provider, key_name, env_var) mapping in sync with the
+    fields declared in `packages/core/openvox/config.py` and the keys
+    the wizard accepts in `api/routes/admin.py`.
+    """
+    import os
+
+    from openvox import secrets as secret_store
+    from openvox.config import get_settings as _get_settings
+
+    # (provider, key_name) → ENV_VAR_NAME. provider+key_name is what
+    # the wizard uses; ENV_VAR_NAME is what Settings reads via
+    # pydantic-settings (case-insensitive, but we use the canonical
+    # form here for greppability).
+    mapping = [
+        # BytePlus — LLM + voice (TTS/STT) keys
+        (("byteplus", "llm_api_key"), "BYTEPLUS_LLM_API_KEY"),
+        (("byteplus", "voice_api_key"), "BYTEPLUS_VOICE_API_KEY"),
+        (("byteplus", "rtc_app_id"), "BYTEPLUS_RTC_APP_ID"),
+        (("byteplus", "rtc_app_key"), "BYTEPLUS_RTC_APP_KEY"),
+        # OpenAI — single key serves LLM + TTS
+        (("openai", "api_key"), "OPENAI_API_KEY"),
+        # Anthropic / Gemini / DeepSeek — LLM
+        (("anthropic", "api_key"), "ANTHROPIC_API_KEY"),
+        (("gemini", "api_key"), "GEMINI_API_KEY"),
+        (("deepseek", "api_key"), "DEEPSEEK_API_KEY"),
+        # Voice providers
+        (("elevenlabs", "api_key"), "ELEVENLABS_API_KEY"),
+        (("cartesia", "api_key"), "CARTESIA_API_KEY"),
+        (("deepgram", "api_key"), "DEEPGRAM_API_KEY"),
+        (("assemblyai", "api_key"), "ASSEMBLYAI_API_KEY"),
+        # Telephony / channels
+        (("twilio", "account_sid"), "TWILIO_ACCOUNT_SID"),
+        (("twilio", "auth_token"), "TWILIO_AUTH_TOKEN"),
+    ]
+
+    hydrated: list[str] = []
+    for (provider, key_name), env_var in mapping:
+        if os.environ.get(env_var, "").strip():
+            continue  # env wins; user explicitly set this
+        try:
+            stored = await secret_store.get_provider_key(provider, key_name)
+        except Exception as e:
+            # Don't let a missing table / decryption failure block startup.
+            logger.warning("hydrate_secrets: %s.%s lookup failed: %s", provider, key_name, e)
+            continue
+        if stored:
+            os.environ[env_var] = stored
+            hydrated.append(env_var)
+
+    if hydrated:
+        # Critical: bust the settings cache so any subsequent
+        # get_settings() call re-reads os.environ. Without this, the
+        # already-cached Settings instance keeps the empty values it
+        # was constructed with.
+        _get_settings.cache_clear()
+        # print() in addition to logger.info() because uvicorn's
+        # logging-config dictConfig() at startup can suppress module-
+        # level INFO loggers — we want this confirmation visible no
+        # matter what.
+        print(f"openvox: hydrated {len(hydrated)} secrets from encrypted store: {', '.join(hydrated)}", flush=True)
+        logger.info("hydrated %d secrets from encrypted store: %s",
+                    len(hydrated), ", ".join(hydrated))
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     settings = get_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
+    # CRITICAL ORDER: init_db → hydrate_secrets → register_builtins.
+    # register_builtins() instantiates each provider, and the providers
+    # cache settings.<provider>_api_key in their __init__ — so the env
+    # MUST be hydrated before that runs. Otherwise the wizard-entered
+    # keys are invisible to providers until the next process restart.
+    # (This bit us in v0.1.7: wizard saved keys, daemon started,
+    # /api/v1/playground/synthesize returned 400 "API_KEY not set".)
+    await init_db()
+    await _hydrate_secrets_into_env()
     register_builtins()
     get_skill_registry()  # discover
-    await init_db()
     await _seed_builtin_personas()
     await start_scheduler()
     await start_watcher()  # hot-reload skills dropped in ~/.openvox/skills/
@@ -201,12 +292,55 @@ def _maybe_mount_dashboard_static(app: FastAPI) -> None:
 
     for path in candidates:
         if path.is_dir() and (path / "index.html").exists():
-            app.mount(
-                "/dashboard",
-                StaticFiles(directory=str(path), html=True),
-                name="dashboard",
-            )
-            logger.info("dashboard static files mounted at /dashboard from %s", path)
+            # Two separate mounts to get URL routing right with a
+            # default-config Next.js static export:
+            #
+            # 1. /_next/* → out/_next/*
+            #    Next.js's static export hard-codes asset URLs as
+            #    `/_next/static/...` (root-relative). Without this
+            #    mount, every CSS/JS file 404s and the dashboard
+            #    renders as unstyled HTML.
+            #
+            # 2. /dashboard/* → out/dashboard/*
+            #    The Next.js route `/dashboard` lives at
+            #    out/dashboard/index.html, NOT out/index.html (which
+            #    is the marketing landing page from app/page.tsx).
+            #    Mounting at out/ directly would serve the landing
+            #    page when the user hits /dashboard. Pointing the
+            #    mount at out/dashboard/ instead serves the actual
+            #    dashboard.
+            nextjs_assets = path / "_next"
+            if nextjs_assets.is_dir():
+                app.mount(
+                    "/_next",
+                    StaticFiles(directory=str(nextjs_assets)),
+                    name="dashboard-assets",
+                )
+
+            dashboard_pages = path / "dashboard"
+            if dashboard_pages.is_dir():
+                app.mount(
+                    "/dashboard",
+                    StaticFiles(directory=str(dashboard_pages), html=True),
+                    name="dashboard",
+                )
+
+            # Landing page at /. Serves the marketing-style
+            # apps/dashboard/src/app/page.tsx export so a user who
+            # types `localhost:8000/` sees a real page (with the
+            # "Open dashboard" button) instead of a JSON blob or 404.
+            # Assets resolve via the /_next mount above; nav links
+            # in the page (which point at /dashboard/...) resolve
+            # via the /dashboard mount.
+            landing = path / "index.html"
+            if landing.exists():
+                from fastapi.responses import FileResponse
+
+                @app.get("/", include_in_schema=False)
+                async def _root_landing() -> FileResponse:
+                    return FileResponse(str(landing))
+
+            logger.info("dashboard mounted: /dashboard/* + /_next/* from %s", path)
             return
 
     # Not found — that's fine in Docker mode where the separate

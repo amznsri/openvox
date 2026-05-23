@@ -1521,6 +1521,121 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     LTS shim packages as conditional deps. The PyPI ecosystem has
     `audioop-lts`, `legacy-cgi`, etc. for most of them.
 
+77. **Phase 3 wizard saved keys; providers never read them.** The
+    first-run wizard (`/api/v1/admin/setup/keys`) persists provider
+    API keys into the encrypted SQLite-backed store
+    (`packages/core/openvox/secrets.py`). Every provider module
+    (BytePlus TTS/STT/LLM, OpenAI, ElevenLabs, etc.) reads its key
+    from `get_settings().<provider>_api_key`, which pydantic-settings
+    hydrates from env vars / `.env`. The encrypted store and the
+    settings layer were never bridged. Symptom: a user enters keys
+    via the wizard, clicks "Save", sees success, then every feature
+    that uses those keys errors with "API_KEY not set" — including
+    the Test-voice button, the Build-by-voice setup chat, every
+    agent's actual conversation flow. The hybrid resolver at
+    `secrets.py:223` (`resolve_provider_key()`) was scaffolded for
+    this but never called.
+    *Fix*: at app startup, copy stored keys into `os.environ` (env
+    wins, falls back to store), then bust `get_settings()`'s
+    lru_cache so providers re-read fresh. Helper:
+    `_hydrate_secrets_into_env()` in `api/app.py`.
+    **Lesson**: an encrypted-store feature that doesn't wire into
+    the actual consumers is worse than no feature — it presents a
+    UX of "your keys are saved" while actually being a no-op.
+    Any "secrets feature" change needs an end-user smoke test
+    that verifies a provider call works AFTER wizard-only key
+    entry, NOT just that the keys appear in SQLite.
+
+78. **Provider registration runs BEFORE secret hydration.** Even
+    after wiring the encrypted store to env vars at startup, the
+    providers had cached the empty values. Reason:
+    `register_builtins()` in lifespan calls `BytePlusTTS()` which
+    does `self._api_key = get_settings().byteplus_voice_api_key`
+    in `__init__` — a one-shot snapshot. If hydration runs AFTER
+    register_builtins, the cached `_api_key` stays empty forever.
+    *Fix*: reorder lifespan so the order is `init_db()` →
+    `_hydrate_secrets_into_env()` → `register_builtins()`. Comment
+    the ordering explicitly so a future refactor doesn't break it.
+    **Lesson**: any startup-time configuration that providers cache
+    in `__init__` is a load-bearing ordering constraint. Either
+    have providers re-read on each call (slower, but immune) or
+    document the ordering loudly in the lifespan function.
+
+79. **Next.js static export needs `trailingSlash: true` to be
+    served by plain static-file mounts.** Default `output: 'export'`
+    produces flat files: `dashboard.html` lives at the SAME level
+    as the `dashboard/` directory holding sub-pages. FastAPI's
+    StaticFiles (and most static-file servers) look for
+    `dashboard/index.html` when serving `/dashboard/` — that file
+    doesn't exist in the default export, so the request 404s.
+    *Fix*: `trailingSlash: process.env.BUILD_OUTPUT === "export"`
+    in `next.config.mjs`. With this, Next.js writes
+    `dashboard/index.html`, `dashboard/agents/index.html`, etc. —
+    the index.html-per-directory convention.
+    **Lesson**: anytime you point a static-file server at a
+    Next.js export, set `trailingSlash: true`. The default mode
+    is for SPAs that have their own routing layer.
+
+80. **Mounting StaticFiles at the wrong level produces "shows
+    wrong page" + "no CSS" simultaneously.** First instinct was
+    `app.mount("/dashboard", StaticFiles(directory=out/))`. That
+    produces two compounding problems:
+      a. /dashboard/ falls back to `out/index.html` (the marketing
+         landing page from app/page.tsx), not the dashboard
+         (which lives at `out/dashboard.html` or
+         `out/dashboard/index.html`).
+      b. Next.js's asset URLs are `/_next/static/...` — root-
+         relative. The StaticFiles mount at `/dashboard` only
+         serves paths under `/dashboard/_next/...`, so every CSS
+         and JS file 404s and the page renders as unstyled HTML.
+    *Fix*: two separate mounts —
+      `app.mount("/_next", StaticFiles(directory=out/_next/))` for assets
+      `app.mount("/dashboard", StaticFiles(directory=out/dashboard/, html=True))` for pages
+    Plus an explicit `@app.get("/")` that returns
+    `FileResponse(out/index.html)` so the landing page is served
+    at the root.
+    **Lesson**: a Next.js static export expects to be served at a
+    URL prefix that matches its `basePath`/`assetPrefix` config.
+    When serving it via a backend's static-file mount, model the
+    URL-prefix-to-directory-prefix relationship carefully — one
+    mount usually isn't enough.
+
+81. **Conflicting root handlers silently shadow each other.**
+    `packages/core/openvox/api/routes/health.py:13` had a
+    `@router.get("/")` returning hardcoded service-info JSON. Any
+    later `@app.get("/")` (e.g. the landing-page route from #80)
+    is shadowed because FastAPI's router matches in registration
+    order. The user typed `localhost:8000/` expecting the dashboard
+    landing page and got the JSON blob instead, even though the
+    new handler was correctly registered.
+    *Fix*: deleted the redundant root handler from health.py.
+    `/health` already covers health-check use cases; `/docs` is
+    auto-served by FastAPI; the service-info field was unused by
+    anything in the codebase.
+    **Lesson**: never register `@router.get("/")` in a sub-router
+    "just for niceness". The root path is shared real estate; any
+    feature that wants to mount something there will silently
+    fail. If you really need service-info, put it at
+    `/api/v1/info` or similar.
+
+82. **"Phase done" requires a human click-through, not a
+    `curl /health`.** I marked Phase 4 (the entire "OpenVox
+    without Docker" effort) as complete when the daemon
+    successfully stayed running. The user's actual end-user
+    smoke test surfaced bugs #77–81 within five minutes — none of
+    which would have been caught by any API-level test.
+    *Lesson*: for any feature whose value is "a user can open the
+    dashboard and use it", validation MUST include a real browser
+    click-through of the most-common flow before claiming done.
+    Specifically for the install-via-pipx path: install on a
+    clean machine, start the daemon, open the dashboard in a
+    browser, walk the first-run wizard, then USE the configured
+    agent at least once. If any step errors or shows a broken
+    UI, the phase isn't done. The cost of running the smoke
+    test is 5 minutes; the cost of skipping it and shipping a
+    broken release is multiple version-burnt PyPI uploads and
+    a frustrated user.
+
 ---
 
 ## 9. Known constraints / environment quirks

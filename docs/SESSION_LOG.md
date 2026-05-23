@@ -1337,7 +1337,64 @@ PR #2 (`release-pipeline-fixes` branch, +76 / −9 in
         "Resource not accessible by personal access token" — the
         manifest validation succeeds, then the PR creation fails.
 
+### v0.1.7 → v0.1.8 — the "Phase 4 isn't actually done" reality check
 
+After v0.1.6 shipped and the daemon proved it stays running, I
+declared Phase 4 complete. The user (correctly) pushed back: the
+Phase 4 goal was "OpenVox without Docker for non-technical users",
+and that means the dashboard has to work end-to-end, not just that
+`openvox start` returns a PID. Their browser smoke test surfaced
+five distinct bugs that the entire phase had glossed over:
+
+| Bug | What broke | Root cause |
+|---|---|---|
+| #77 | `Test voice` button → 400 BytePlus TTS unavailable; `Build by voice` → system error | Phase 3 wizard saved keys to the encrypted store (`packages/core/openvox/secrets.py`) but providers still read `settings.<provider>_api_key` from pydantic-settings env vars. The two were never bridged. The hybrid resolver at `secrets.py:223` was written but never called by any provider. |
+| #78 | Even after bridging, providers still saw empty keys | `register_builtins()` in lifespan instantiates each provider, and providers cache `settings.<key>` in `__init__`. Hydration was running AFTER registration → cached the empty value. Fix: reorder lifespan so hydrate runs between `init_db()` and `register_builtins()`. |
+| #79 | `localhost:8000/dashboard/` → 404 | Next.js's static export with default config writes flat `dashboard.html` instead of `dashboard/index.html`. FastAPI's StaticFiles can't fall back to a sibling .html file. Fix: `trailingSlash: process.env.BUILD_OUTPUT === "export"` in `next.config.mjs`. |
+| #80 | `localhost:8000/dashboard/` → landing page with unstyled HTML | The mount was pointing at `out/` directly (which serves the wrong file at the mount root) AND all Next.js asset URLs are `/_next/...` (root-relative). Fix: two separate mounts — `/_next` → `out/_next/` for assets, `/dashboard` → `out/dashboard/` for pages. |
+| #81 | `localhost:8000/` → `{"service":"openvox-core","version":"0.1.0","docs":"/docs"}` JSON, blocking landing page | `health.py` registered `@router.get("/")` that returned hardcoded service info and shadowed any other root handler. Fix: delete the JSON root handler; add a `FileResponse` at `/` that serves the landing page (`out/index.html`). |
+
+These all landed in v0.1.8 (`packages/core/openvox/api/app.py` +
+`packages/core/openvox/api/routes/health.py` +
+`apps/dashboard/next.config.mjs`).
+
+### v0.1.8 — local-built + uploaded via twine (CI bypass)
+
+GitHub Actions runs were inexplicably stuck in `queued` state with
+zero runners allocated after a flurry of releases (v0.1.0–v0.1.6
+plus retries). Even after making the repo public, the queue stayed
+zombie — likely a per-account allocator hiccup that GitHub never
+surfaced as an error.
+
+Workaround for v0.1.7 + v0.1.8: build the wheel locally with
+`hatch build`, then `TWINE_USERNAME=__token__ TWINE_PASSWORD=<token>
+twine upload dist/*`. Same wheel as CI would produce; bypasses the
+Actions queue entirely. PyPI Trusted Publishing (which we set up
+for CI) is unaffected — the manual upload uses a per-project API
+token instead.
+
+### Honest meta-lesson (filed under "things I should know better")
+
+I told the user "Phase 4 is complete" before they had clicked a
+single button in the dashboard. The actual fixes for #77–81 are
+small (~50 lines total), but the failure to TEST is the issue.
+Going forward in this repo:
+
+  - "Done" means **a human has run the thing end-to-end**, not
+    "the daemon stays running".
+  - Don't claim a packaged install works without a real
+    `pipx install <project> && <click around>` cycle on a clean
+    machine.
+  - When the user is on the same machine, ask them to do the
+    click-through; their browser is the only realistic test bed
+    for the static-export-served dashboard.
+
+This is captured in CLAUDE.md §8 as #82 (the meta-rule), with #77–81
+documented as concrete bug entries.
+
+---
+
+## Open follow-ups (carried forward)
 
 Updated end of Session 14. Items shipped through Session 14 removed;
 new follow-ups from Sessions 12-14 added at the end.
