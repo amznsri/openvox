@@ -947,10 +947,13 @@ new follow-ups from Sessions 12-14 added at the end.
 
 ### New from Sessions 12-14
 
-17. **Reserved ngrok domain** — the free tunnel URL changes on every
-    `docker compose restart ngrok`, which breaks Telegram's webhook
-    until a manual reconnect. If the user has a reserved subdomain
-    on ngrok dashboard, wire `--domain=...` into `docker-compose.yml:210`.
+17. ~~**Reserved ngrok domain**~~ — **SUPERSEDED in Session 15** by
+    Telegram polling mode (commit `805be51` on phase2 branch).
+    Telegram no longer needs a public URL when in polling mode (the
+    new default). The ngrok sidecar stays available behind
+    `--profile tunnel` for production WhatsApp Business / Twilio
+    paths that still need inbound webhooks, but is no longer a
+    non-tech setup requirement.
 18. **Schedule trigger language hint per-agent** — `sanitize_user_final`
     branches on `agent_language.startswith("zh")` to know whether
     嗯/啊 are real or hallucinations. For zh-* agents the filter

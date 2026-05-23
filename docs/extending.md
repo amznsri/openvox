@@ -120,3 +120,40 @@ The catalogue lives in
 ```
 
 Templates immediately appear in the dashboard at `/dashboard/templates`.
+
+## Channels (telephony)
+
+OpenVox ships first-class support for **Telegram**, **WhatsApp Business**,
+**WeChat Work (WeCom)**, **Lark**, and **Twilio**. Telegram supports
+both polling mode (default — no public URL needed) and webhook mode
+(production — needs public HTTPS URL).
+
+### WeChat — Work vs Personal
+
+OpenVox supports **WeChat Work (企业微信 / WeCom)** via its official
+API. We deliberately do **not** bundle a WeChat **Personal** account
+adapter, despite open-source libraries (Wechaty + PadLocal /
+Wechat4U / itchat) being available. Reasons:
+
+1. **Account ban risk.** As of 2026, WeChat actively cracks down on
+   personal accounts that use unofficial APIs. Bans are commonly
+   permanent and there's no appeal path. For Chinese users in
+   particular, personal WeChat is tied to identity, payments, and
+   social graph — the cost of losing it is severe.
+2. **No stable free option.** The only reliable WeChat personal
+   protocol (PadLocal) is a paid commercial service (~$25/month),
+   which conflicts with OpenVox's local-first / no-recurring-cost
+   ethos. Free libraries (Wechat4U, itchat) break monthly as WeChat
+   changes their unofficial protocol.
+3. **WeChat Work covers the legitimate bot use case.** If you want
+   a customer-facing WeChat bot for your business, the official
+   WeChat Work API (already supported in OpenVox) is the right
+   path: free, official, sanctioned, and won't get the operator's
+   account banned.
+
+If you specifically want personal-account WeChat automation, you
+can self-integrate Wechaty + PadLocal as a custom channel adapter —
+follow the WhatsApp Personal pattern in
+`packages/core/openvox/telephony/whatsapp_personal.py` as a reference
+once that lands. We don't ship it as a first-class option to keep
+new users out of the ban-risk path by default.
