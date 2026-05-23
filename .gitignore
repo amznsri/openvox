@@ -50,3 +50,9 @@ pnpm-debug.log*
 
 # OpenVox local state directory
 .openvox/
+/packages/core/openvox/_dashboard/*
+!/packages/core/openvox/_dashboard/.gitkeep
+
+# Next.js / npm — auto-generated, not source
+apps/dashboard/next-env.d.ts
+apps/dashboard/package-lock.json

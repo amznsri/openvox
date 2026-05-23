@@ -585,7 +585,7 @@ export function SetupAssistant() {
                       <CheckCircle2 className="h-4 w-4 shrink-0" />
                       Live — open the agent to test it.
                     </div>
-                    <Link href={`/dashboard/agents/${draftAgent.id}`}>
+                    <Link href={`/dashboard/agents/edit?id=${draftAgent.id}`}>
                       <Button variant="gradient" size="sm" className="mt-2 w-full">
                         Open {draftAgent.name}
                       </Button>
@@ -593,7 +593,7 @@ export function SetupAssistant() {
                   </div>
                 ) : (
                   <div className="pt-3 border-t border-border/60 flex gap-2">
-                    <Link href={`/dashboard/agents/${draftAgent.id}`} className="flex-1">
+                    <Link href={`/dashboard/agents/edit?id=${draftAgent.id}`} className="flex-1">
                       <Button variant="outline" size="sm" className="w-full">
                         Open in form editor
                       </Button>

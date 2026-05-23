@@ -180,7 +180,7 @@ function FormFlow() {
     setBusy(true);
     try {
       const a = await api.createAgent(form as any);
-      router.push(`/dashboard/agents/${a.id}`);
+      router.push(`/dashboard/agents/edit?id=${a.id}`);
     } catch (e) {
       alert((e as Error).message);
     } finally {

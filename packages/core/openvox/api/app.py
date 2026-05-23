@@ -188,7 +188,14 @@ def _maybe_mount_dashboard_static(app: FastAPI) -> None:
     if explicit:
         candidates.append(Path(explicit))
     candidates.append(Path("/app/dashboard_static"))
-    # Repo-relative — works in `openvox run` invoked from the repo root.
+    # Wheel-bundled — `pip install openvox-core` ships the dashboard at
+    # openvox/_dashboard/ via [tool.hatch.build.targets.wheel.force-
+    # include] in pyproject.toml. This is the path that makes
+    # `pipx install openvox-core && openvox start && open
+    # localhost:8000/dashboard` actually serve the UI.
+    candidates.append(Path(__file__).resolve().parent.parent / "_dashboard")
+    # Repo-relative — works in `openvox run` invoked from the repo root
+    # (editable install / contributor workflow).
     candidates.append(Path(__file__).resolve().parent.parent.parent.parent.parent
                       / "apps" / "dashboard" / "out")
 

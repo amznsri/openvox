@@ -58,7 +58,7 @@ export function Topbar({ title }: { title?: string }) {
       if (s > 0)
         out.push({
           s,
-          hit: { kind: "agent", id: a.id, title: a.name, subtitle: a.description || a.llm_provider, href: `/dashboard/agents/${a.id}` },
+          hit: { kind: "agent", id: a.id, title: a.name, subtitle: a.description || a.llm_provider, href: `/dashboard/agents/edit?id=${a.id}` },
         });
     }
     for (const t of templates) {

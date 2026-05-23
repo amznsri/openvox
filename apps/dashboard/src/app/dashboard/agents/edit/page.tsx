@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import useSWR, { mutate } from "swr";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import {
   ArrowLeft,
   Bot,
@@ -30,8 +30,24 @@ import { Input, Label, Select, Textarea } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-export default function AgentDetailPage() {
-  const { id } = useParams<{ id: string }>();
+// Default export must be wrapped in Suspense for useSearchParams to work
+// in Next.js's static-export mode (Suspense boundary lets the hook resolve
+// at hydration time rather than at build time).
+export default function AgentEditPageWrapper() {
+  return (
+    <Suspense fallback={<div className="container py-12 text-muted-foreground">Loading…</div>}>
+      <AgentEditPage />
+    </Suspense>
+  );
+}
+
+function AgentEditPage() {
+  // Switched from useParams (dynamic route) to useSearchParams (query
+  // param `?id=...`) so Next.js static export can build a single
+  // `agents/edit/index.html` instead of erroring on the unknowable
+  // set of runtime agent IDs.
+  const searchParams = useSearchParams();
+  const id = searchParams.get("id") ?? "";
   const router = useRouter();
   const { data: agent } = useSWR<Agent>(id ? `agent-${id}` : null, () => api.getAgent(id));
   const { data: skills = [] } = useSWR<Skill[]>("skills", () => api.listSkills());

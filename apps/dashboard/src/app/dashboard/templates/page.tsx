@@ -65,7 +65,7 @@ export default function TemplatesPage() {
     setBusy(t.id);
     try {
       const a = await api.instantiateTemplate(t.id);
-      router.push(`/dashboard/agents/${a.id}`);
+      router.push(`/dashboard/agents/edit?id=${a.id}`);
     } finally {
       setBusy(null);
     }

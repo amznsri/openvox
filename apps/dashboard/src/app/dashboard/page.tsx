@@ -145,7 +145,7 @@ export default function DashboardOverview() {
               agents.slice(0, 6).map((a) => (
                 <Link
                   key={a.id}
-                  href={`/dashboard/agents/${a.id}`}
+                  href={`/dashboard/agents/edit?id=${a.id}`}
                   className="flex items-center justify-between py-2 px-2 rounded-md hover:bg-muted transition-colors"
                 >
                   <div className="min-w-0">

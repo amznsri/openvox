@@ -88,6 +88,30 @@ jobs:
             exit 1
           fi
           echo "✓ tag v$tag_ver matches pyproject.toml version $file_ver"
+      - name: Set up Node (for dashboard static build)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build dashboard for static-export bundling
+        # Pre-build step: turn apps/dashboard/ into a static export
+        # (out/) and copy it into packages/core/openvox/_dashboard/
+        # so the wheel ships the dashboard alongside the API. Without
+        # this, `pipx install openvox-core && openvox start` serves
+        # API at :8000 but /dashboard returns 404.
+        #
+        # The pyproject.toml [tool.hatch.build.targets.wheel.force-
+        # include] block expects this exact path. The FastAPI mount
+        # in packages/core/openvox/api/app.py picks it up at runtime.
+        run: |
+          cd apps/dashboard
+          npm install --include=dev --ignore-scripts --no-audit --no-fund
+          BUILD_OUTPUT=export npm run build
+          cd ../..
+          mkdir -p packages/core/openvox/_dashboard
+          cp -r apps/dashboard/out/. packages/core/openvox/_dashboard/
+          # Sanity — fail fast if the expected entry file is missing.
+          test -f packages/core/openvox/_dashboard/index.html
+          echo "✓ dashboard built; $(find packages/core/openvox/_dashboard -type f | wc -l) files staged for wheel"
       - name: Install build tools
         run: pip install --upgrade build twine
       - name: Build

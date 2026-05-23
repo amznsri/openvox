@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openvox-core"
-version = "0.1.6"
+version = "0.1.7"
 description = "Local-first, open-source voice agent platform — install with pip, run as a daemon, no Docker required."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -148,17 +148,25 @@ openvox = "openvox.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["openvox"]
 
-# Force-include of Windows daemon helper. nssm.exe is a tiny (~310 KB)
-# BSD-licensed Windows service wrapper that openvox/cli/daemon/
-# windows_service.py shells out to. It's not committed to the repo yet
-# (the binary lands in Phase 4 PR-3 release-pipeline work along with the
-# checksum verification step). When that PR lands, drop the .exe at
-# `openvox/cli/daemon/_bin/nssm.exe` and uncomment the include block
-# below — hatch will then ship it inside the wheel so a Windows user
-# never has to `choco install nssm` separately.
+# Note on dashboard bundling: the `openvox/_dashboard/` directory is
+# included automatically via the `packages = ["openvox"]` setting
+# above (hatchling defaults pick up ALL files under listed packages,
+# not just .py). No force-include block needed — adding one would
+# duplicate the entries and trip "Duplicate name" warnings during
+# wheel build.
 #
-# [tool.hatch.build.targets.wheel.force-include]
-# "openvox/cli/daemon/_bin/nssm.exe" = "openvox/cli/daemon/_bin/nssm.exe"
+# The directory is populated at release time by
+# .github/workflows/release.yml's "Build dashboard for static-export
+# bundling" step (BUILD_OUTPUT=export npm run build → copy
+# apps/dashboard/out/ into packages/core/openvox/_dashboard/). In a
+# fresh checkout it contains only .gitkeep; the actual static files
+# are gitignored. The FastAPI mount at api/app.py picks the directory
+# up at runtime so a wheel-installed openvox serves the dashboard at
+# /dashboard with no separate Node process.
+#
+# Windows nssm.exe bundling is still pending (see openvox/cli/daemon/
+# windows_service.py); will be added in its own force-include block
+# below once the binary lands.
 
 [tool.hatch.build.targets.sdist]
 # Whitelist the things we need in the source distribution and exclude
