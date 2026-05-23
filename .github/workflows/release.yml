@@ -182,6 +182,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Wait for PyPI to index the new version
+        # PyPI's upload endpoint and the install index are eventually-
+        # consistent; propagation usually takes 30 s - 2 min. Without
+        # this, the next step's `pip install openvox-core==<new>` races
+        # the index and fails with "Could not find a version that
+        # satisfies the requirement". Poll up to 5 min then give up.
+        run: |
+          for i in $(seq 1 30); do
+            if pip index versions openvox-core 2>/dev/null | grep -q "${{ needs.build.outputs.version }}"; then
+              echo "✓ openvox-core ${{ needs.build.outputs.version }} is on PyPI"
+              exit 0
+            fi
+            echo "PyPI index doesn't show ${{ needs.build.outputs.version }} yet (attempt $i/30)"
+            sleep 10
+          done
+          echo "::error::PyPI never indexed ${{ needs.build.outputs.version }} within 5 min"
+          exit 1
       - name: Install poet (generates resource blocks)
         run: pip install homebrew-pypi-poet "openvox-core==${{ needs.build.outputs.version }}"
       - name: Generate formula
@@ -229,20 +246,70 @@ jobs:
     if: ${{ vars.ENABLE_WINGET_PUBLISH == 'true' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Submit via wingetcreate
+      - name: Install wingetcreate
+        # wingetcreate isn't preinstalled on windows-latest and isn't on
+        # NuGet either. Canonical install per https://github.com/
+        # microsoft/winget-create#installation is the standalone .exe
+        # via Microsoft's pinned redirect URL.
+        run: |
+          $wc = "$env:RUNNER_TEMP\wingetcreate.exe"
+          Invoke-WebRequest -Uri https://aka.ms/wingetcreate/latest -OutFile $wc
+          echo "WINGETCREATE=$wc" >> $env:GITHUB_ENV
+      - name: Decide submission mode
+        # `wingetcreate update` only works for packages that already
+        # exist in microsoft/winget-pkgs. For the FIRST submission of
+        # OpenVox we have to use `submit` against our local manifest
+        # templates instead. Probe the upstream catalog to decide which
+        # path to take. Future releases (after the first PR merges)
+        # will fall into the `update` branch.
+        id: mode
+        run: |
+          $exists = $false
+          try {
+            $resp = Invoke-WebRequest -Uri "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/o/OpenVox/OpenVox" -UseBasicParsing
+            if ($resp.StatusCode -eq 200) { $exists = $true }
+          } catch {
+            # 404 = package doesn't exist yet → first submission
+          }
+          if ($exists) {
+            echo "mode=update" >> $env:GITHUB_OUTPUT
+            echo "Package exists upstream; will use 'wingetcreate update'"
+          } else {
+            echo "mode=submit" >> $env:GITHUB_OUTPUT
+            echo "Package does NOT exist upstream; will use 'wingetcreate submit' (first publish)"
+          }
+      - name: Submit (first publish) — render local manifests, then wingetcreate submit
+        if: steps.mode.outputs.mode == 'submit'
         env:
           WINGET_PAT: ${{ secrets.WINGET_PAT }}
         run: |
           $version = "${{ needs.build.outputs.version }}"
           $wheelUrl = "https://github.com/amznsri/openvox/releases/download/v$version/${{ needs.build.outputs.wheel_name }}"
-          # wingetcreate isn't preinstalled on windows-latest and isn't
-          # published as a dotnet tool either (despite some older docs).
-          # The canonical install per https://github.com/microsoft/
-          # winget-create#installation is to grab the latest standalone
-          # .exe from Microsoft's pinned redirect URL.
-          $wc = "$env:RUNNER_TEMP\wingetcreate.exe"
-          Invoke-WebRequest -Uri https://aka.ms/wingetcreate/latest -OutFile $wc
-          & $wc update OpenVox.OpenVox `
+          $wheelSha = "${{ needs.build.outputs.wheel_sha256 }}".ToUpper()
+          # Render the templates in packaging/winget/ with real values
+          # into a new folder layout that wingetcreate expects.
+          $out = "$env:RUNNER_TEMP\manifests"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Get-ChildItem packaging/winget/*.yaml | ForEach-Object {
+            $content = Get-Content $_.FullName -Raw
+            $content = $content -replace 'PackageVersion: 0\.0\.0', "PackageVersion: $version"
+            $content = $content -replace 'InstallerSha256: 0+', "InstallerSha256: $wheelSha"
+            $content = $content -replace 'InstallerUrl: https://github.com/amznsri/openvox/releases/download/v0\.0\.0/openvox_core-0\.0\.0-py3-none-any\.whl', "InstallerUrl: $wheelUrl"
+            $content = $content -replace 'ReleaseNotesUrl: https://github.com/amznsri/openvox/releases/tag/v0\.0\.0', "ReleaseNotesUrl: https://github.com/amznsri/openvox/releases/tag/v$version"
+            Set-Content -Path "$out\$($_.Name)" -Value $content
+          }
+          & $env:WINGETCREATE submit `
+            --token $env:WINGET_PAT `
+            --prtitle "New package: OpenVox.OpenVox $version" `
+            $out
+      - name: Update (subsequent releases)
+        if: steps.mode.outputs.mode == 'update'
+        env:
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+        run: |
+          $version = "${{ needs.build.outputs.version }}"
+          $wheelUrl = "https://github.com/amznsri/openvox/releases/download/v$version/${{ needs.build.outputs.wheel_name }}"
+          & $env:WINGETCREATE update OpenVox.OpenVox `
             --version $version `
             --urls $wheelUrl `
             --token $env:WINGET_PAT `
