@@ -191,10 +191,26 @@ export const api = {
       "/api/v1/telephony/telegram/verify",
       { method: "POST", body: JSON.stringify({ bot_token: botToken }) },
     ),
-  telegramConnect: (agentId: string, botToken: string, replyMode: "text" | "voice" | "both") =>
-    http<{ connected: boolean; bot_username: string; webhook_url: string; reply_mode: string }>(
+  // Connect a bot to an agent. `mode` defaults to "polling" — no public
+  // URL needed. Pass "webhook" only for production deployments that
+  // have ngrok / a real public HTTPS URL configured.
+  telegramConnect: (
+    agentId: string,
+    botToken: string,
+    replyMode: "text" | "voice" | "both",
+    mode: "polling" | "webhook" = "polling",
+  ) =>
+    http<{ connected: boolean; mode: string; bot_username: string; webhook_url: string | null; reply_mode: string }>(
       "/api/v1/telephony/telegram/connect",
-      { method: "POST", body: JSON.stringify({ agent_id: agentId, bot_token: botToken, reply_mode: replyMode }) },
+      {
+        method: "POST",
+        body: JSON.stringify({
+          agent_id: agentId,
+          bot_token: botToken,
+          reply_mode: replyMode,
+          mode,
+        }),
+      },
     ),
   telegramDisconnect: (agentId: string) =>
     http<{ disconnected: boolean }>(`/api/v1/telephony/telegram/connect/${agentId}`, { method: "DELETE" }),

@@ -873,7 +873,12 @@ function McpPanel({
 function ChannelsPanel({ agent, onChange }: { agent: Agent; onChange: () => void }) {
   const [tgOpen, setTgOpen] = useState(false);
   const tg = ((agent.channels as any) || {}).telegram as
-    | { bot_username?: string; reply_mode?: string; webhook_url?: string }
+    | {
+        bot_username?: string;
+        reply_mode?: string;
+        webhook_url?: string;
+        mode?: "polling" | "webhook";
+      }
     | undefined;
 
   async function disconnect(channel: "telegram") {
@@ -903,7 +908,8 @@ function ChannelsPanel({ agent, onChange }: { agent: Agent; onChange: () => void
               {tg?.bot_username ? (
                 <div className="text-xs text-muted-foreground truncate">
                   Connected to <span className="font-mono text-emerald-300">@{tg.bot_username}</span>{" "}
-                  · reply mode: <span className="font-mono">{tg.reply_mode || "voice"}</span>
+                  · mode: <span className="font-mono">{tg.mode || "webhook"}</span>{" "}
+                  · reply: <span className="font-mono">{tg.reply_mode || "voice"}</span>
                 </div>
               ) : (
                 <div className="text-xs text-muted-foreground">
@@ -984,12 +990,16 @@ function TelegramWizard({
     { username: string; first_name: string } | null
   >(null);
   const [replyMode, setReplyMode] = useState<"text" | "voice" | "both">("voice");
+  // NEW: ingestion mode. Polling is the default — no public URL needed,
+  // bot polls Telegram from inside OpenVox. Webhook is the legacy path
+  // requiring ngrok / a real domain (kept for production deployments).
+  const [ingestionMode, setIngestionMode] = useState<"polling" | "webhook">("polling");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  // Pre-fetch the public URL once so we can warn the user up-front if
-  // ngrok / the static override isn't reachable — saves them pasting
-  // the token only to hit a 502 at the end.
+  // Pre-fetch the public URL — only meaningful in webhook mode. In
+  // polling mode the bot reaches Telegram outbound and needs no
+  // inbound URL, so the "no tunnel detected" warning is irrelevant.
   const { data: pu } = useSWR("public_url", () => api.publicUrl(), { revalidateOnFocus: false });
 
   async function verify() {
@@ -1010,7 +1020,7 @@ function TelegramWizard({
     setBusy(true);
     setError("");
     try {
-      await api.telegramConnect(agent.id, token.trim(), replyMode);
+      await api.telegramConnect(agent.id, token.trim(), replyMode, ingestionMode);
       onConnected();
     } catch (e: any) {
       setError(e?.message || "connect failed");
@@ -1039,16 +1049,24 @@ function TelegramWizard({
         </div>
 
         <div className="p-5 space-y-4">
-          {/* Public-URL status banner */}
-          {pu && !pu.available && (
+          {/* Public-URL status banner — only relevant in webhook mode.
+              Polling mode reaches Telegram outbound, so no inbound URL
+              is needed at all. */}
+          {ingestionMode === "webhook" && pu && !pu.available && (
             <div className="rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-200 text-sm px-3 py-2">
               ⚠️ {pu.hint || "No public URL detected — Telegram won't be able to reach your webhook."}
+              {" "}Switch to <strong>Polling mode</strong> below to skip this requirement.
             </div>
           )}
-          {pu && pu.available && (
+          {ingestionMode === "webhook" && pu && pu.available && (
             <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-200 text-xs px-3 py-2 font-mono">
               ✓ tunnel via <span className="uppercase">{pu.source}</span>:{" "}
               <span className="text-emerald-100">{pu.url}</span>
+            </div>
+          )}
+          {ingestionMode === "polling" && (
+            <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-200 text-xs px-3 py-2">
+              ✓ Polling mode — no public URL needed. OpenVox polls Telegram from your machine.
             </div>
           )}
 
@@ -1142,6 +1160,21 @@ function TelegramWizard({
                   ({verifyResult.first_name})
                 </div>
                 <div>
+                  <Label>Ingestion mode</Label>
+                  <Select
+                    value={ingestionMode}
+                    onChange={(e) => setIngestionMode(e.target.value as "polling" | "webhook")}
+                  >
+                    <option value="polling">Polling — recommended. No public URL needed.</option>
+                    <option value="webhook">Webhook — production. Requires public HTTPS URL.</option>
+                  </Select>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {ingestionMode === "polling"
+                      ? "OpenVox polls Telegram for new messages from your machine. Works behind NAT, no ngrok needed."
+                      : "Telegram POSTs new messages to your public URL. Lower latency but requires inbound HTTPS."}
+                  </p>
+                </div>
+                <div>
                   <Label>Reply mode</Label>
                   <Select
                     value={replyMode}
@@ -1155,14 +1188,18 @@ function TelegramWizard({
                 <Button
                   variant="gradient"
                   onClick={connect}
-                  disabled={busy || !pu?.available}
+                  disabled={
+                    busy ||
+                    // Webhook mode requires public URL; polling doesn't.
+                    (ingestionMode === "webhook" && !pu?.available)
+                  }
                 >
                   {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />}
                   Connect
                 </Button>
-                {!pu?.available && (
+                {ingestionMode === "webhook" && !pu?.available && (
                   <p className="text-xs text-amber-200">
-                    Public URL not available — bring up the tunnel first (see banner above).
+                    Public URL not available — bring up the tunnel first, or switch to Polling mode above.
                   </p>
                 )}
               </div>

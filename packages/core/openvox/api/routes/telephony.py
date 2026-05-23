@@ -194,72 +194,125 @@ class TelegramConnectRequest(BaseModel):
     agent_id: str
     bot_token: str
     reply_mode: str = "voice"  # "text" | "voice" | "both"
+    # NEW: ingestion mode. "polling" (default) = no public URL needed,
+    # bot polls getUpdates from inside OpenVox. "webhook" = the legacy
+    # path that requires ngrok / a public HTTPS URL.
+    mode: str = "polling"
 
 
 @router.post("/telegram/connect")
 async def telegram_connect(req: TelegramConnectRequest, request: Request) -> dict[str, Any]:
     """Wire a bot to an agent.
 
-    Steps:
-      1. Verify the token (getMe) — bail with the bot username so the
-         dashboard can show the green check.
+    Two ingestion modes are supported, selected by ``req.mode``:
+
+    **polling** (default — no public URL needed)
+      1. Verify the token (getMe).
+      2. Persist ``Agent.channels.telegram = {mode: "polling", ...}``.
+      3. Start a background poller via ``telegram_polling.start_polling``.
+
+    **webhook** (production / opt-in)
+      1. Verify the token.
       2. Discover our public URL (env override → ngrok → 502 if neither).
-      3. Mint a webhook secret, call setWebhook with it.
-      4. Persist `Agent.channels.telegram = {...}` so the webhook
-         handler can resolve the agent from the bot username later.
+      3. Mint a webhook secret, call ``setWebhook`` with it.
+      4. Persist config with ``mode: "webhook"``.
+
+    Both modes share the same downstream ``_handle_telegram_update``
+    handler — only the ingestion path differs.
     """
     from openvox.db import db_session
     from openvox.db.models import Agent
     from openvox.telephony import telegram as tg
+    from openvox.telephony import telegram_polling as tg_poll
 
     bot_token = req.bot_token.strip()
-    me = await tg.verify_bot(bot_token)
+    mode = req.mode if req.mode in {"polling", "webhook"} else "polling"
 
-    # Public URL — call our own /public_url handler logic inline so we
-    # don't HTTP-loopback to ourselves.
-    pu = await public_url()
-    if not pu.get("available"):
-        raise HTTPException(
-            502,
-            "No public webhook URL — start the ngrok sidecar "
-            "(`docker compose --profile tunnel up`) or set OPENVOX_PUBLIC_URL.",
-        )
-    webhook_url = f"{pu['url']}/api/v1/telephony/telegram/webhook"
-    secret = tg.generate_webhook_secret()
+    # Both modes verify the token first — fast fail if it's invalid.
+    # Wrap so an invalid token returns 400 (client error) rather than
+    # 500. verify_bot itself raises RuntimeError on Telegram-side
+    # rejection (e.g., revoked token, wrong format).
     try:
-        await tg.set_webhook(bot_token, url=webhook_url, secret_token=secret)
+        me = await tg.verify_bot(bot_token)
     except Exception as e:
-        raise HTTPException(400, f"setWebhook failed: {e}") from e
+        raise HTTPException(400, f"invalid bot token: {e}") from e
+    reply_mode = req.reply_mode if req.reply_mode in {"text", "voice", "both"} else "voice"
+
+    # Common config fragment for the Agent.channels.telegram dict.
+    base_cfg: dict[str, Any] = {
+        "mode": mode,
+        "bot_token": bot_token,
+        "bot_username": me.get("username"),
+        "bot_id": me.get("id"),
+        "reply_mode": reply_mode,
+    }
+
+    if mode == "webhook":
+        # Legacy production path — requires a public URL.
+        pu = await public_url()
+        if not pu.get("available"):
+            raise HTTPException(
+                502,
+                "No public webhook URL — start the ngrok sidecar "
+                "(`docker compose --profile tunnel up`) or set "
+                "OPENVOX_PUBLIC_URL. Or use polling mode (no URL needed).",
+            )
+        webhook_url = f"{pu['url']}/api/v1/telephony/telegram/webhook"
+        secret = tg.generate_webhook_secret()
+        try:
+            await tg.set_webhook(bot_token, url=webhook_url, secret_token=secret)
+        except Exception as e:
+            raise HTTPException(400, f"setWebhook failed: {e}") from e
+        base_cfg["webhook_secret"] = secret
+        base_cfg["webhook_url"] = webhook_url
+
+    # If the agent was previously in webhook mode, clear that registration
+    # so Telegram stops POSTing to a stale URL. Safe no-op if no webhook
+    # was ever set.
+    if mode == "polling":
+        try:
+            await tg.delete_webhook(bot_token)
+        except Exception as e:
+            # Don't fail connect if Telegram is unreachable; the polling
+            # loop will retry anyway.
+            logger.warning("delete_webhook (during polling-connect) failed: %s", e)
 
     async with db_session() as s:
         a = await s.get(Agent, req.agent_id)
         if a is None:
             raise HTTPException(404, "agent not found")
         channels = dict(a.channels or {})
-        channels["telegram"] = {
-            "bot_token": bot_token,
-            "bot_username": me.get("username"),
-            "bot_id": me.get("id"),
-            "webhook_secret": secret,
-            "webhook_url": webhook_url,
-            "reply_mode": req.reply_mode if req.reply_mode in {"text", "voice", "both"} else "voice",
-        }
+        channels["telegram"] = base_cfg
         a.channels = channels
+
+    # Polling mode: kick off the background loop. Idempotent — if the
+    # user reconnects with a new token, this stops + restarts the task.
+    if mode == "polling":
+        try:
+            await tg_poll.start_polling(req.agent_id, bot_token)
+        except Exception:
+            logger.exception("could not start telegram polling for %s", req.agent_id)
 
     return {
         "connected": True,
+        "mode": mode,
         "bot_username": me.get("username"),
-        "webhook_url": webhook_url,
-        "reply_mode": req.reply_mode,
+        "webhook_url": base_cfg.get("webhook_url"),
+        "reply_mode": reply_mode,
     }
 
 
 @router.delete("/telegram/connect/{agent_id}")
 async def telegram_disconnect(agent_id: str) -> dict[str, Any]:
-    """Tear down: call deleteWebhook + clear the per-agent config."""
+    """Tear down: stop polling task (if any) + call deleteWebhook +
+    clear the per-agent config. Idempotent."""
     from openvox.db import db_session
     from openvox.db.models import Agent
     from openvox.telephony import telegram as tg
+    from openvox.telephony import telegram_polling as tg_poll
+
+    # Always try to stop any polling task — safe no-op if there isn't one.
+    await tg_poll.stop_polling(agent_id)
 
     async with db_session() as s:
         a = await s.get(Agent, agent_id)
@@ -270,6 +323,8 @@ async def telegram_disconnect(agent_id: str) -> dict[str, Any]:
         a.channels = channels
         if tg_cfg and tg_cfg.get("bot_token"):
             try:
+                # deleteWebhook is a no-op if the bot is in polling mode
+                # (no webhook was ever set), so it's safe to call always.
                 await tg.delete_webhook(tg_cfg["bot_token"])
             except Exception as e:
                 # Don't fail the disconnect if Telegram is unreachable —

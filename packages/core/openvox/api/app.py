@@ -80,8 +80,14 @@ async def _lifespan(app: FastAPI):
     await _seed_builtin_personas()
     await start_scheduler()
     await start_watcher()  # hot-reload skills dropped in ~/.openvox/skills/
+    # Phase 2: start telegram polling tasks for any agent connected
+    # in polling mode. Webhook-mode agents bootstrap themselves on the
+    # next incoming Telegram POST — no startup action needed.
+    from openvox.telephony.telegram_polling import start_all_pollers, stop_all_pollers
+    await start_all_pollers()
     logger.info("OpenVox core started — auth=%s storage=%s", settings.openvox_auth, settings.storage_backend)
     yield
+    await stop_all_pollers()
     await stop_watcher()
     await stop_scheduler()
     logger.info("OpenVox core shutting down")
