@@ -73,6 +73,21 @@ jobs:
           fi
           echo "value=$v" >> "$GITHUB_OUTPUT"
           echo "Releasing OpenVox v$v"
+      - name: Verify tag matches pyproject.toml version
+        # PyPI is immutable: once 0.x.y uploads, that version number is
+        # burnt forever. If we tag v0.2.0 but forget to bump the version
+        # in pyproject.toml, the wheel still says 0.1.0 → PyPI rejects
+        # as a duplicate. Fail fast here so the mistake is obvious in
+        # the workflow log rather than in the upload step.
+        run: |
+          tag_ver="${{ steps.version.outputs.value }}"
+          file_ver=$(grep -E '^version = ' packages/core/pyproject.toml | head -1 | sed -E 's/version = "(.+)"/\1/')
+          if [ "$tag_ver" != "$file_ver" ]; then
+            echo "::error::Tag v$tag_ver does not match pyproject.toml version $file_ver."
+            echo "Bump packages/core/pyproject.toml's version field to $tag_ver, commit, then re-tag."
+            exit 1
+          fi
+          echo "✓ tag v$tag_ver matches pyproject.toml version $file_ver"
       - name: Install build tools
         run: pip install --upgrade build twine
       - name: Build
