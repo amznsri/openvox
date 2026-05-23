@@ -1409,6 +1409,96 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     Consider a `scripts/upgrade.sh` that automates the cleanup for
     operators.
 
+71. **`wingetcreate.exe` is NOT preinstalled on `windows-latest`.**
+    Older docs (and the original v0.1.2 Phase 4 PR-5 workflow
+    comment) claim it ships with the GitHub Actions Windows runner
+    image. It doesn't. The job fails with
+        `The term 'wingetcreate.exe' is not recognized as a name of
+         a cmdlet, function, script file, or executable program.`
+    *Fix*: install via Microsoft's pinned redirect URL — this is
+    also the canonical install path in their own README:
+        `$wc = "$env:RUNNER_TEMP\wingetcreate.exe"`
+        `Invoke-WebRequest -Uri https://aka.ms/wingetcreate/latest -OutFile $wc`
+    **Lesson**: never trust "preinstalled on X runner" claims
+    without verifying — runner images get pruned regularly.
+    For wingetcreate specifically: don't use `dotnet tool install`
+    either; see bug #72.
+
+72. **`wingetcreate` is NOT a NuGet package.** Some Stack Overflow
+    answers from 2022 suggest `dotnet tool install --global
+    Microsoft.WingetCreate.CLI`. That fails with:
+        `microsoft.wingetcreate.cli is not found in NuGet feeds
+         https://api.nuget.org/v3/index.json, ...`
+    *Fix*: use the .exe download from `aka.ms/wingetcreate/latest`
+    (see bug #71). It's a standalone single-file binary, no
+    runtime dependency.
+    **Lesson**: distrust StackOverflow answers about Microsoft
+    tooling that are >18 months old — Microsoft frequently changes
+    distribution channels (NuGet → standalone, .NET → portable,
+    etc.). Check the upstream repo's README before trusting tribal
+    knowledge.
+
+73. **`wingetcreate update` vs `submit`.** The `update` subcommand
+    only works for packages that ALREADY exist in
+    microsoft/winget-pkgs. For the FIRST submission of a new
+    package, it fails with:
+        `ERROR: repos/microsoft/winget-pkgs/contents/manifests/o/
+         <Pkg>/<Name> was not found.`
+    *Fix*: probe `https://api.github.com/repos/microsoft/winget-pkgs/
+    contents/manifests/<letter>/<Owner>/<Name>` first. 404 → use
+    `wingetcreate submit` against locally-rendered manifest templates
+    (we keep these in `packaging/winget/*.yaml` with
+    placeholders that PowerShell `-replace` substitutes at job
+    runtime). 200 → use `update` as normal. The Phase 4 PR-5
+    workflow now branches on this probe (PR #2 fix).
+    **Lesson**: any release pipeline submitting to an upstream
+    catalogue needs to handle the "first publish" case differently
+    from "version bump". Treating them as a single code path is
+    a latent bug that manifests only on the very first release.
+
+74. **PyPI propagation race in chained release jobs.** When a
+    later job in the same workflow does
+        `pip install <package>==<just-uploaded-version>`,
+    it loses a race against PyPI's index propagation ~80% of the
+    time and fails with:
+        `ERROR: Could not find a version that satisfies the
+         requirement <pkg>==<ver> (from versions: <older versions>)`
+    PyPI's upload endpoint and install index are
+    eventually-consistent; sync takes 30 s — 2 min.
+    *Fix*: poll `pip index versions <pkg>` until the new version
+    appears before the install step. Pseudocode:
+        `for i in $(seq 1 30); do`
+        `  if pip index versions $pkg | grep -q $ver; then break; fi`
+        `  sleep 10`
+        `done`
+    Hit this in the `publish-homebrew` job (which does
+    `pip install openvox-core==<new>` to feed homebrew-pypi-poet).
+    **Lesson**: never assume "upload succeeded" means
+    "install will succeed" on PyPI. Build a wait-for-propagation
+    step into any job that pip-installs from a freshly-uploaded
+    version.
+
+75. **Fine-grained PATs can't open cross-repo PRs.** GitHub
+    fine-grained personal access tokens have a hard limitation:
+    they cannot open pull requests from a fork to a repository
+    OUTSIDE the resource owner's account. For wingetcreate's
+    submission flow (PR from `<you>/winget-pkgs` to
+    `microsoft/winget-pkgs`), the PAT is treated as not having
+    permission on the destination repo, even if you'd give it
+    every scope possible. The symptom: wingetcreate gets all the
+    way through `Manifest validation succeeded: True` and
+    `Submitting pull request for manifest...`, then dies with:
+        `ERROR: Resource not accessible by personal access token`
+    *Fix*: use a CLASSIC PAT with `public_repo` scope instead.
+    Classic tokens don't have the cross-org PR restriction.
+    Documented in microsoft/winget-create issues repeatedly.
+    **Lesson**: fine-grained PATs are excellent for
+    single-repo automation but blunt for cross-org PR submission
+    flows. When a workflow targets a repo you don't own (e.g.
+    upstream registries: winget-pkgs, homebrew-core, npm
+    registry mirrors), reach for a classic PAT scoped to
+    `public_repo`.
+
 ---
 
 ## 9. Known constraints / environment quirks
