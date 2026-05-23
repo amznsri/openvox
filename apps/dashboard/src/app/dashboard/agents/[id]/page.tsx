@@ -1217,28 +1217,23 @@ function VoiceSelector({
     setTesting(true);
     setTestMsg(null);
     try {
-      // Use the existing /playground/synthesize endpoint — returns
-      // PCM bytes + an X-Sample-Rate header. We decode + play via the
-      // Web Audio API rather than wiring a full PcmPlayer dependency.
-      const res = await fetch("/api/v1/playground/synthesize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: "Hello! This is a quick voice test.",
-          voice_id: value,
-          tts_provider: provider,
-        }),
-      });
-      if (!res.ok) {
-        // Surface the TTS error message verbatim — most useful when
-        // the user picked a voice their key doesn't have activated
-        // (BytePlus error 55000000).
-        const txt = await res.text();
-        throw new Error(txt.slice(0, 400) || `HTTP ${res.status}`);
-      }
-      const sampleRate = parseInt(res.headers.get("X-Sample-Rate") || "24000", 10);
-      const buf = await res.arrayBuffer();
-      const i16 = new Int16Array(buf, 0, Math.floor(buf.byteLength / 2));
+      // Route through the api client so we hit the gateway at
+      // NEXT_PUBLIC_API_URL — previously this used a relative
+      // /api/v1/... URL which Next.js (the dashboard on :3000)
+      // resolved against itself, returning the 404 HTML shell.
+      // The api.synthesize helper already builds the correct URL,
+      // includes the X-Sample-Rate header, and parses the body as
+      // an ArrayBuffer.
+      //
+      // The previous code also passed `tts_provider`, but the
+      // backend's SynthesizeRequest model doesn't have that field —
+      // it always uses BytePlus TTS (see api/routes/playground.py).
+      // Dropped silently so we don't pretend it does anything.
+      const { audio, sampleRate } = await api.synthesize(
+        "Hello! This is a quick voice test.",
+        { voice_id: value },
+      );
+      const i16 = new Int16Array(audio, 0, Math.floor(audio.byteLength / 2));
       const f32 = new Float32Array(i16.length);
       for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
       const ctx = new AudioContext({ sampleRate });
@@ -1250,6 +1245,9 @@ function VoiceSelector({
       src.start();
       setTestMsg({ kind: "ok", msg: "Played sample — voice works." });
     } catch (e: any) {
+      // api.synthesize throws Error("<status> <reason>: <body>") on
+      // non-2xx — most useful when the user picked a voice their
+      // key doesn't have activated (BytePlus error 55000000 in body).
       setTestMsg({ kind: "err", msg: e.message || "voice test failed" });
     } finally {
       setTesting(false);
