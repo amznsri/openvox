@@ -1,0 +1,19 @@
+{
+  "name": "openvox-whatsapp-personal-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WhatsApp Web protocol bridge for OpenVox personal-mode WhatsApp channels. Wraps whatsapp-web.js behind a tiny HTTP API the Python core talks to.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "whatsapp-web.js": "^1.26.0",
+    "qrcode": "^1.5.4",
+    "node-fetch": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

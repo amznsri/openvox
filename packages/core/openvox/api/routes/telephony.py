@@ -158,6 +158,182 @@ async def whatsapp_event(request: Request) -> dict:
     return {"received": True, "object": body.get("object")}
 
 
+# ── WhatsApp Personal (unofficial QR-scan via whatsapp-web.js) ──────
+# Separate from WhatsApp Business above. Personal mode uses the
+# whatsapp-web.js library running in a sibling Docker service (the
+# `whatsapp-bridge` profile). No public URL needed. Account ban risk
+# is real — surfaced prominently in the dashboard UI.
+
+
+class WhatsappPersonalConnectRequest(BaseModel):
+    agent_id: str
+
+
+@router.post("/whatsapp_personal/connect")
+async def whatsapp_personal_connect(
+    req: WhatsappPersonalConnectRequest,
+) -> dict[str, Any]:
+    """Spin up the whatsapp client for this agent and mark it enabled.
+
+    The actual QR code arrives a few seconds later — dashboard polls
+    ``/whatsapp_personal/status`` until ``status == "qr"`` or ``ready``.
+    """
+    from openvox.db import db_session
+    from openvox.db.models import Agent
+    from openvox.telephony import whatsapp_personal as wpp
+
+    if not await wpp.is_bridge_reachable():
+        raise HTTPException(
+            502,
+            "WhatsApp bridge container is not running. Run "
+            "`docker compose --profile whatsapp up -d whatsapp-bridge` "
+            "to enable WhatsApp Personal mode.",
+        )
+
+    # Persist the enabled flag BEFORE telling the bridge to connect, so
+    # a crash mid-connect leaves a consistent record we can resume from.
+    async with db_session() as s:
+        a = await s.get(Agent, req.agent_id)
+        if a is None:
+            raise HTTPException(404, "agent not found")
+        channels = dict(a.channels or {})
+        channels["whatsapp_personal"] = {"enabled": True}
+        a.channels = channels
+
+    try:
+        result = await wpp.connect(req.agent_id)
+    except Exception as e:
+        raise HTTPException(502, f"bridge /start failed: {e}") from e
+
+    return {"connected": True, **result}
+
+
+@router.get("/whatsapp_personal/status/{agent_id}")
+async def whatsapp_personal_status(agent_id: str) -> dict[str, Any]:
+    """Polled by the dashboard QR view (every ~2s) until ready."""
+    from openvox.telephony import whatsapp_personal as wpp
+
+    if not await wpp.is_bridge_reachable():
+        return {
+            "status": "bridge_offline",
+            "hint": "Run `docker compose --profile whatsapp up -d whatsapp-bridge`.",
+        }
+    try:
+        return await wpp.status(agent_id)
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@router.delete("/whatsapp_personal/connect/{agent_id}")
+async def whatsapp_personal_disconnect(agent_id: str) -> dict[str, Any]:
+    """Tear down + wipe persisted auth. Next connect needs a fresh QR scan."""
+    from openvox.db import db_session
+    from openvox.db.models import Agent
+    from openvox.telephony import whatsapp_personal as wpp
+
+    # Best-effort bridge cleanup — proceed with DB clear even if the
+    # bridge is unreachable (operator may have already killed the
+    # bridge container; we still want to clear our local record).
+    try:
+        await wpp.disconnect(agent_id)
+    except Exception as e:
+        logger.warning("whatsapp_personal bridge disconnect failed: %s", e)
+
+    async with db_session() as s:
+        a = await s.get(Agent, agent_id)
+        if a is None:
+            raise HTTPException(404, "agent not found")
+        channels = dict(a.channels or {})
+        channels.pop("whatsapp_personal", None)
+        a.channels = channels
+
+    return {"disconnected": True}
+
+
+@router.post("/whatsapp_personal/inbound")
+async def whatsapp_personal_inbound(request: Request) -> dict[str, Any]:
+    """Webhook called by the Node bridge when a message arrives.
+
+    Payload shape (from bridge index.js):
+        {
+            "agent_id": "<uuid>",
+            "from":     "15551234567@c.us",
+            "body":     "Hello there",
+            "type":     "chat" | "audio" | "image" | ...,
+            "timestamp": <unix-seconds>,
+            "has_media": true | false
+        }
+
+    We dispatch in a background task so the bridge gets a fast ack
+    and isn't held by long LLM turns.
+    """
+    body = await request.json()
+    agent_id = body.get("agent_id")
+    if not agent_id:
+        return {"ok": True, "ignored": True, "reason": "no agent_id"}
+
+    asyncio.create_task(_handle_whatsapp_personal_update(agent_id, body))
+    return {"ok": True}
+
+
+async def _handle_whatsapp_personal_update(
+    agent_id: str, msg: dict[str, Any]
+) -> None:
+    """Run an inbound WhatsApp message through the agent's LLM + reply.
+
+    Text-only for v1: media handling (voice notes / images) deferred
+    to a follow-up. Most WhatsApp Personal traffic is text anyway.
+    """
+    from openvox.db import db_session
+    from openvox.db.models import Agent
+    from openvox.telephony import whatsapp_personal as wpp
+
+    body_text = (msg.get("body") or "").strip()
+    sender = msg.get("from") or ""
+    if not body_text:
+        logger.info(
+            "whatsapp_personal: empty body from %s (type=%s) — ignoring",
+            sender, msg.get("type"),
+        )
+        return
+
+    # Look up the agent for its system_prompt + model + skills.
+    async with db_session() as s:
+        a = await s.get(Agent, agent_id)
+        if a is None:
+            logger.warning(
+                "whatsapp_personal: inbound for unknown agent=%s", agent_id
+            )
+            return
+        # Snapshot fields we need outside the session.
+        system_prompt = a.system_prompt
+        greeting = a.greeting
+        llm_model = a.llm_model
+
+    # Run the same text-turn path the dashboard playground uses, so we
+    # get the full skill loop (web_search, lookup_order, etc.) for free.
+    from openvox.api.routes.agents import TurnRequest, agent_text_turn
+
+    try:
+        result = await agent_text_turn(
+            agent_id, TurnRequest(user_text=body_text, history=[])
+        )
+        reply_text = (result.get("text") or "").strip()
+    except Exception:
+        logger.exception("whatsapp_personal: agent turn failed")
+        reply_text = "Sorry, something went wrong on my end. Please try again."
+
+    if not reply_text:
+        # Some agent turns end with no text (pure skill calls, etc.).
+        # Don't spam an empty message back; just no-op.
+        return
+
+    try:
+        await wpp.send_text(agent_id, sender, reply_text)
+    except Exception:
+        logger.exception("whatsapp_personal: send_text failed")
+
+
 # ── Telegram ────────────────────────────────────────────────────────
 # Full pipeline: verify token / set webhook on connect, then handle
 # inbound text + voice Updates by feeding them through a VoiceSession
@@ -194,72 +370,125 @@ class TelegramConnectRequest(BaseModel):
     agent_id: str
     bot_token: str
     reply_mode: str = "voice"  # "text" | "voice" | "both"
+    # NEW: ingestion mode. "polling" (default) = no public URL needed,
+    # bot polls getUpdates from inside OpenVox. "webhook" = the legacy
+    # path that requires ngrok / a public HTTPS URL.
+    mode: str = "polling"
 
 
 @router.post("/telegram/connect")
 async def telegram_connect(req: TelegramConnectRequest, request: Request) -> dict[str, Any]:
     """Wire a bot to an agent.
 
-    Steps:
-      1. Verify the token (getMe) — bail with the bot username so the
-         dashboard can show the green check.
+    Two ingestion modes are supported, selected by ``req.mode``:
+
+    **polling** (default — no public URL needed)
+      1. Verify the token (getMe).
+      2. Persist ``Agent.channels.telegram = {mode: "polling", ...}``.
+      3. Start a background poller via ``telegram_polling.start_polling``.
+
+    **webhook** (production / opt-in)
+      1. Verify the token.
       2. Discover our public URL (env override → ngrok → 502 if neither).
-      3. Mint a webhook secret, call setWebhook with it.
-      4. Persist `Agent.channels.telegram = {...}` so the webhook
-         handler can resolve the agent from the bot username later.
+      3. Mint a webhook secret, call ``setWebhook`` with it.
+      4. Persist config with ``mode: "webhook"``.
+
+    Both modes share the same downstream ``_handle_telegram_update``
+    handler — only the ingestion path differs.
     """
     from openvox.db import db_session
     from openvox.db.models import Agent
     from openvox.telephony import telegram as tg
+    from openvox.telephony import telegram_polling as tg_poll
 
     bot_token = req.bot_token.strip()
-    me = await tg.verify_bot(bot_token)
+    mode = req.mode if req.mode in {"polling", "webhook"} else "polling"
 
-    # Public URL — call our own /public_url handler logic inline so we
-    # don't HTTP-loopback to ourselves.
-    pu = await public_url()
-    if not pu.get("available"):
-        raise HTTPException(
-            502,
-            "No public webhook URL — start the ngrok sidecar "
-            "(`docker compose --profile tunnel up`) or set OPENVOX_PUBLIC_URL.",
-        )
-    webhook_url = f"{pu['url']}/api/v1/telephony/telegram/webhook"
-    secret = tg.generate_webhook_secret()
+    # Both modes verify the token first — fast fail if it's invalid.
+    # Wrap so an invalid token returns 400 (client error) rather than
+    # 500. verify_bot itself raises RuntimeError on Telegram-side
+    # rejection (e.g., revoked token, wrong format).
     try:
-        await tg.set_webhook(bot_token, url=webhook_url, secret_token=secret)
+        me = await tg.verify_bot(bot_token)
     except Exception as e:
-        raise HTTPException(400, f"setWebhook failed: {e}") from e
+        raise HTTPException(400, f"invalid bot token: {e}") from e
+    reply_mode = req.reply_mode if req.reply_mode in {"text", "voice", "both"} else "voice"
+
+    # Common config fragment for the Agent.channels.telegram dict.
+    base_cfg: dict[str, Any] = {
+        "mode": mode,
+        "bot_token": bot_token,
+        "bot_username": me.get("username"),
+        "bot_id": me.get("id"),
+        "reply_mode": reply_mode,
+    }
+
+    if mode == "webhook":
+        # Legacy production path — requires a public URL.
+        pu = await public_url()
+        if not pu.get("available"):
+            raise HTTPException(
+                502,
+                "No public webhook URL — start the ngrok sidecar "
+                "(`docker compose --profile tunnel up`) or set "
+                "OPENVOX_PUBLIC_URL. Or use polling mode (no URL needed).",
+            )
+        webhook_url = f"{pu['url']}/api/v1/telephony/telegram/webhook"
+        secret = tg.generate_webhook_secret()
+        try:
+            await tg.set_webhook(bot_token, url=webhook_url, secret_token=secret)
+        except Exception as e:
+            raise HTTPException(400, f"setWebhook failed: {e}") from e
+        base_cfg["webhook_secret"] = secret
+        base_cfg["webhook_url"] = webhook_url
+
+    # If the agent was previously in webhook mode, clear that registration
+    # so Telegram stops POSTing to a stale URL. Safe no-op if no webhook
+    # was ever set.
+    if mode == "polling":
+        try:
+            await tg.delete_webhook(bot_token)
+        except Exception as e:
+            # Don't fail connect if Telegram is unreachable; the polling
+            # loop will retry anyway.
+            logger.warning("delete_webhook (during polling-connect) failed: %s", e)
 
     async with db_session() as s:
         a = await s.get(Agent, req.agent_id)
         if a is None:
             raise HTTPException(404, "agent not found")
         channels = dict(a.channels or {})
-        channels["telegram"] = {
-            "bot_token": bot_token,
-            "bot_username": me.get("username"),
-            "bot_id": me.get("id"),
-            "webhook_secret": secret,
-            "webhook_url": webhook_url,
-            "reply_mode": req.reply_mode if req.reply_mode in {"text", "voice", "both"} else "voice",
-        }
+        channels["telegram"] = base_cfg
         a.channels = channels
+
+    # Polling mode: kick off the background loop. Idempotent — if the
+    # user reconnects with a new token, this stops + restarts the task.
+    if mode == "polling":
+        try:
+            await tg_poll.start_polling(req.agent_id, bot_token)
+        except Exception:
+            logger.exception("could not start telegram polling for %s", req.agent_id)
 
     return {
         "connected": True,
+        "mode": mode,
         "bot_username": me.get("username"),
-        "webhook_url": webhook_url,
-        "reply_mode": req.reply_mode,
+        "webhook_url": base_cfg.get("webhook_url"),
+        "reply_mode": reply_mode,
     }
 
 
 @router.delete("/telegram/connect/{agent_id}")
 async def telegram_disconnect(agent_id: str) -> dict[str, Any]:
-    """Tear down: call deleteWebhook + clear the per-agent config."""
+    """Tear down: stop polling task (if any) + call deleteWebhook +
+    clear the per-agent config. Idempotent."""
     from openvox.db import db_session
     from openvox.db.models import Agent
     from openvox.telephony import telegram as tg
+    from openvox.telephony import telegram_polling as tg_poll
+
+    # Always try to stop any polling task — safe no-op if there isn't one.
+    await tg_poll.stop_polling(agent_id)
 
     async with db_session() as s:
         a = await s.get(Agent, agent_id)
@@ -270,6 +499,8 @@ async def telegram_disconnect(agent_id: str) -> dict[str, Any]:
         a.channels = channels
         if tg_cfg and tg_cfg.get("bot_token"):
             try:
+                # deleteWebhook is a no-op if the bot is in polling mode
+                # (no webhook was ever set), so it's safe to call always.
                 await tg.delete_webhook(tg_cfg["bot_token"])
             except Exception as e:
                 # Don't fail the disconnect if Telegram is unreachable —

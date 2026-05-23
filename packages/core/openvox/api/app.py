@@ -80,8 +80,23 @@ async def _lifespan(app: FastAPI):
     await _seed_builtin_personas()
     await start_scheduler()
     await start_watcher()  # hot-reload skills dropped in ~/.openvox/skills/
+    # Phase 2: start telegram polling tasks for any agent connected
+    # in polling mode. Webhook-mode agents bootstrap themselves on the
+    # next incoming Telegram POST — no startup action needed.
+    from openvox.telephony.telegram_polling import start_all_pollers, stop_all_pollers
+    await start_all_pollers()
+    # WhatsApp Personal: reconnect bridge sessions for any agent whose
+    # channels.whatsapp_personal.enabled == true. No-op if the bridge
+    # container isn't running (opt-in via --profile whatsapp).
+    from openvox.telephony.whatsapp_personal import (
+        start_all_sessions as wpp_start_all,
+        stop_all_sessions as wpp_stop_all,
+    )
+    await wpp_start_all()
     logger.info("OpenVox core started — auth=%s storage=%s", settings.openvox_auth, settings.storage_backend)
     yield
+    await wpp_stop_all()
+    await stop_all_pollers()
     await stop_watcher()
     await stop_scheduler()
     logger.info("OpenVox core shutting down")

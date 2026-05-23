@@ -872,14 +872,24 @@ function McpPanel({
 
 function ChannelsPanel({ agent, onChange }: { agent: Agent; onChange: () => void }) {
   const [tgOpen, setTgOpen] = useState(false);
+  const [wppOpen, setWppOpen] = useState(false);
   const tg = ((agent.channels as any) || {}).telegram as
-    | { bot_username?: string; reply_mode?: string; webhook_url?: string }
+    | {
+        bot_username?: string;
+        reply_mode?: string;
+        webhook_url?: string;
+        mode?: "polling" | "webhook";
+      }
+    | undefined;
+  const wpp = ((agent.channels as any) || {}).whatsapp_personal as
+    | { enabled?: boolean }
     | undefined;
 
-  async function disconnect(channel: "telegram") {
+  async function disconnect(channel: "telegram" | "whatsapp_personal") {
     if (!confirm(`Disconnect ${channel} from this agent?`)) return;
     try {
       if (channel === "telegram") await api.telegramDisconnect(agent.id);
+      if (channel === "whatsapp_personal") await api.whatsappPersonalDisconnect(agent.id);
       onChange();
     } catch (e: any) {
       alert(`Disconnect failed: ${e?.message || e}`);
@@ -903,7 +913,8 @@ function ChannelsPanel({ agent, onChange }: { agent: Agent; onChange: () => void
               {tg?.bot_username ? (
                 <div className="text-xs text-muted-foreground truncate">
                   Connected to <span className="font-mono text-emerald-300">@{tg.bot_username}</span>{" "}
-                  · reply mode: <span className="font-mono">{tg.reply_mode || "voice"}</span>
+                  · mode: <span className="font-mono">{tg.mode || "webhook"}</span>{" "}
+                  · reply: <span className="font-mono">{tg.reply_mode || "voice"}</span>
                 </div>
               ) : (
                 <div className="text-xs text-muted-foreground">
@@ -927,10 +938,47 @@ function ChannelsPanel({ agent, onChange }: { agent: Agent; onChange: () => void
           )}
         </div>
 
+        {/* WhatsApp Personal — QR-scan via whatsapp-web.js. No public URL needed.
+            Real-channel (not placeholder), but gated by the opt-in --profile whatsapp
+            Docker service. The wizard surfaces a prominent ban-risk warning. */}
+        <div className="px-4 py-3 rounded-md border border-border/60 flex items-center justify-between">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="text-2xl shrink-0">🟢</span>
+            <div className="min-w-0">
+              <div className="text-sm font-medium">
+                WhatsApp Personal{" "}
+                <span className="text-xs text-amber-300 font-normal">⚠️ test number only</span>
+              </div>
+              {wpp?.enabled ? (
+                <div className="text-xs text-muted-foreground truncate">
+                  Linked. Send a message to your WhatsApp number to test.
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground">
+                  QR-scan from your phone. No public URL needed. Account ban risk — see warning.
+                </div>
+              )}
+            </div>
+          </div>
+          {wpp?.enabled ? (
+            <div className="flex items-center gap-2">
+              <Badge variant="success">connected</Badge>
+              <Button variant="ghost" size="sm" onClick={() => disconnect("whatsapp_personal")}>
+                Disconnect
+              </Button>
+            </div>
+          ) : (
+            <Button variant="gradient" size="sm" onClick={() => setWppOpen(true)}>
+              <Send className="h-3.5 w-3.5" />
+              Connect
+            </Button>
+          )}
+        </div>
+
         {/* Placeholders for channels not yet wired up. */}
         {[
           { id: "phone", icon: "📞", name: "Phone (Twilio inbound)", note: "Add a phone number under Agent.channels.twilio.phone_numbers via the API." },
-          { id: "whatsapp", icon: "🟢", name: "WhatsApp Business", note: "Inbound handler is stubbed — Meta credentials read from .env." },
+          { id: "whatsapp_business", icon: "💼", name: "WhatsApp Business API", note: "Official Meta API — webhook-based, needs public URL. Inbound handler is stubbed." },
           { id: "wechat_work", icon: "🟢", name: "WeChat Work", note: "Webhook URL verification works; audio bridge pending." },
           { id: "lark", icon: "🚀", name: "Lark", note: "Webhook URL verification works; audio bridge pending." },
         ].map((c) => (
@@ -960,6 +1008,16 @@ function ChannelsPanel({ agent, onChange }: { agent: Agent; onChange: () => void
           }}
         />
       )}
+      {wppOpen && (
+        <WhatsappPersonalWizard
+          agent={agent}
+          onClose={() => setWppOpen(false)}
+          onConnected={() => {
+            setWppOpen(false);
+            onChange();
+          }}
+        />
+      )}
     </Card>
   );
 }
@@ -984,12 +1042,16 @@ function TelegramWizard({
     { username: string; first_name: string } | null
   >(null);
   const [replyMode, setReplyMode] = useState<"text" | "voice" | "both">("voice");
+  // NEW: ingestion mode. Polling is the default — no public URL needed,
+  // bot polls Telegram from inside OpenVox. Webhook is the legacy path
+  // requiring ngrok / a real domain (kept for production deployments).
+  const [ingestionMode, setIngestionMode] = useState<"polling" | "webhook">("polling");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  // Pre-fetch the public URL once so we can warn the user up-front if
-  // ngrok / the static override isn't reachable — saves them pasting
-  // the token only to hit a 502 at the end.
+  // Pre-fetch the public URL — only meaningful in webhook mode. In
+  // polling mode the bot reaches Telegram outbound and needs no
+  // inbound URL, so the "no tunnel detected" warning is irrelevant.
   const { data: pu } = useSWR("public_url", () => api.publicUrl(), { revalidateOnFocus: false });
 
   async function verify() {
@@ -1010,7 +1072,7 @@ function TelegramWizard({
     setBusy(true);
     setError("");
     try {
-      await api.telegramConnect(agent.id, token.trim(), replyMode);
+      await api.telegramConnect(agent.id, token.trim(), replyMode, ingestionMode);
       onConnected();
     } catch (e: any) {
       setError(e?.message || "connect failed");
@@ -1039,16 +1101,24 @@ function TelegramWizard({
         </div>
 
         <div className="p-5 space-y-4">
-          {/* Public-URL status banner */}
-          {pu && !pu.available && (
+          {/* Public-URL status banner — only relevant in webhook mode.
+              Polling mode reaches Telegram outbound, so no inbound URL
+              is needed at all. */}
+          {ingestionMode === "webhook" && pu && !pu.available && (
             <div className="rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-200 text-sm px-3 py-2">
               ⚠️ {pu.hint || "No public URL detected — Telegram won't be able to reach your webhook."}
+              {" "}Switch to <strong>Polling mode</strong> below to skip this requirement.
             </div>
           )}
-          {pu && pu.available && (
+          {ingestionMode === "webhook" && pu && pu.available && (
             <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-200 text-xs px-3 py-2 font-mono">
               ✓ tunnel via <span className="uppercase">{pu.source}</span>:{" "}
               <span className="text-emerald-100">{pu.url}</span>
+            </div>
+          )}
+          {ingestionMode === "polling" && (
+            <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-200 text-xs px-3 py-2">
+              ✓ Polling mode — no public URL needed. OpenVox polls Telegram from your machine.
             </div>
           )}
 
@@ -1142,6 +1212,21 @@ function TelegramWizard({
                   ({verifyResult.first_name})
                 </div>
                 <div>
+                  <Label>Ingestion mode</Label>
+                  <Select
+                    value={ingestionMode}
+                    onChange={(e) => setIngestionMode(e.target.value as "polling" | "webhook")}
+                  >
+                    <option value="polling">Polling — recommended. No public URL needed.</option>
+                    <option value="webhook">Webhook — production. Requires public HTTPS URL.</option>
+                  </Select>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {ingestionMode === "polling"
+                      ? "OpenVox polls Telegram for new messages from your machine. Works behind NAT, no ngrok needed."
+                      : "Telegram POSTs new messages to your public URL. Lower latency but requires inbound HTTPS."}
+                  </p>
+                </div>
+                <div>
                   <Label>Reply mode</Label>
                   <Select
                     value={replyMode}
@@ -1155,17 +1240,256 @@ function TelegramWizard({
                 <Button
                   variant="gradient"
                   onClick={connect}
-                  disabled={busy || !pu?.available}
+                  disabled={
+                    busy ||
+                    // Webhook mode requires public URL; polling doesn't.
+                    (ingestionMode === "webhook" && !pu?.available)
+                  }
                 >
                   {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />}
                   Connect
                 </Button>
-                {!pu?.available && (
+                {ingestionMode === "webhook" && !pu?.available && (
                   <p className="text-xs text-amber-200">
-                    Public URL not available — bring up the tunnel first (see banner above).
+                    Public URL not available — bring up the tunnel first, or switch to Polling mode above.
                   </p>
                 )}
               </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="rounded-md border border-rose-500/40 bg-rose-500/10 text-rose-200 text-sm px-3 py-2">
+              {error}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// WhatsappPersonalWizard — QR-scan modal for WhatsApp Personal mode.
+//
+// Flow:
+//   1. POST /whatsapp_personal/connect to spin up the bridge session.
+//   2. Poll /status every 2s. While status === "qr", render the QR
+//      data-URL as an <img>. Once status === "ready", show the
+//      connected info and auto-close after 2s.
+//   3. If status === "bridge_offline", show a hint to bring the
+//      whatsapp-bridge container up.
+//
+// IMPORTANT — every render of this modal surfaces the Meta TOS / ban
+// risk warning BEFORE the user clicks Start. They must opt in
+// explicitly. Don't make it dismissible.
+// ──────────────────────────────────────────────────────────────────────
+
+function WhatsappPersonalWizard({
+  agent,
+  onClose,
+  onConnected,
+}: {
+  agent: Agent;
+  onClose: () => void;
+  onConnected: () => void;
+}) {
+  const [started, setStarted] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [statusResp, setStatusResp] = useState<{
+    status: string;
+    qr?: string | null;
+    info?: { wid: string | null; pushname: string | null } | null;
+    last_error?: string | null;
+    hint?: string;
+  } | null>(null);
+
+  // Poll status while the wizard is open AND we've kicked off a connect.
+  // Stop polling once status === "ready" (caller dismisses), or "error".
+  useEffect(() => {
+    if (!started) return;
+    let cancelled = false;
+    let timer: any = null;
+
+    async function tick() {
+      try {
+        const s = await api.whatsappPersonalStatus(agent.id);
+        if (cancelled) return;
+        setStatusResp(s);
+        if (s.status === "ready") {
+          // Auto-close after letting the user see the "connected" state for a sec.
+          setTimeout(() => {
+            if (!cancelled) onConnected();
+          }, 1500);
+          return;
+        }
+        if (s.status === "error" || s.status === "bridge_offline") {
+          // Stop polling on hard errors; the message stays visible.
+          return;
+        }
+        timer = setTimeout(tick, 2000);
+      } catch (e: any) {
+        if (!cancelled) {
+          setError(e?.message || "status poll failed");
+        }
+      }
+    }
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [started, agent.id]);
+
+  async function startConnect() {
+    setBusy(true);
+    setError("");
+    try {
+      await api.whatsappPersonalConnect(agent.id);
+      setStarted(true);
+    } catch (e: any) {
+      setError(e?.message || "connect failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const s = statusResp?.status;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-6"
+      onClick={onClose}
+    >
+      <div
+        className="bg-background border border-border/60 rounded-lg max-w-xl w-full"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-5 border-b border-border/60 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-2xl">🟢</span>
+            <h3 className="text-lg font-semibold">Connect WhatsApp Personal</h3>
+          </div>
+          <Button variant="ghost" size="icon" onClick={onClose}>
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {/* Mandatory ban-risk warning — always visible, can't be dismissed. */}
+          <div className="rounded-md border border-amber-500/60 bg-amber-500/10 text-amber-100 text-sm px-4 py-3 space-y-1">
+            <div className="font-semibold flex items-center gap-2">
+              ⚠️ WhatsApp may ban your account
+            </div>
+            <p className="text-xs leading-relaxed">
+              This uses the <strong>WhatsApp Web protocol</strong> via{" "}
+              <code>whatsapp-web.js</code> — the same library that powers
+              third-party WhatsApp clients. Meta does <strong>not</strong>{" "}
+              sanction this. Personal accounts using it can be banned with
+              no warning and no appeal.
+            </p>
+            <p className="text-xs leading-relaxed">
+              <strong>Use a test phone number only.</strong> Never link
+              your primary WhatsApp. For production use, switch to the
+              official WhatsApp Business API channel.
+            </p>
+          </div>
+
+          {!started && (
+            <>
+              <p className="text-sm text-muted-foreground">
+                Click <strong>Start</strong> below. We'll spin up the bridge
+                and show you a QR code to scan from your phone (WhatsApp →
+                Settings → Linked Devices → Link a Device).
+              </p>
+              <Button variant="gradient" onClick={startConnect} disabled={busy}>
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />}
+                Start — show me the QR
+              </Button>
+            </>
+          )}
+
+          {/* Live status pane */}
+          {started && (
+            <div className="space-y-3">
+              {s === "bridge_offline" && (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-200 text-sm px-3 py-3 space-y-2">
+                  <div className="font-medium">Bridge container not running.</div>
+                  <p className="text-xs">
+                    The WhatsApp Personal feature requires an opt-in Docker
+                    service. Bring it up with:
+                  </p>
+                  <code className="block text-xs font-mono bg-black/30 px-2 py-1.5 rounded">
+                    docker compose --profile whatsapp up -d whatsapp-bridge
+                  </code>
+                  <p className="text-xs">
+                    First start downloads + builds ~600 MB (includes a
+                    bundled Chromium runtime). Subsequent starts are fast.
+                  </p>
+                </div>
+              )}
+
+              {(s === "initializing" || s === "not_started") && (
+                <div className="rounded-md border border-border/60 bg-input/20 px-3 py-3 text-sm flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                  Initialising browser engine — this can take 10-20 seconds
+                  the first time…
+                </div>
+              )}
+
+              {s === "qr" && statusResp?.qr && (
+                <div className="text-center space-y-2">
+                  <div className="text-sm">
+                    Open WhatsApp on your phone → <strong>Settings → Linked
+                    Devices → Link a Device</strong> → scan this:
+                  </div>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={statusResp.qr}
+                    alt="WhatsApp QR code"
+                    className="mx-auto rounded-lg border border-border/60"
+                    width={256}
+                    height={256}
+                  />
+                  <div className="text-xs text-muted-foreground">
+                    The code refreshes every minute; we'll auto-pick up the new one.
+                  </div>
+                </div>
+              )}
+
+              {s === "authenticated" && (
+                <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-200 text-sm px-3 py-3 flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                  Authenticated — finalising connection…
+                </div>
+              )}
+
+              {s === "ready" && (
+                <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-200 text-sm px-3 py-3 flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  Connected{statusResp?.info?.pushname ? (
+                    <>
+                      {" "}as{" "}
+                      <span className="font-mono text-emerald-100">
+                        {statusResp.info.pushname}
+                      </span>
+                    </>
+                  ) : null}.
+                </div>
+              )}
+
+              {(s === "error" || s === "disconnected") && (
+                <div className="rounded-md border border-rose-500/40 bg-rose-500/10 text-rose-200 text-sm px-3 py-3">
+                  <div className="font-medium">Bridge reported: {s}</div>
+                  {statusResp?.last_error && (
+                    <code className="block text-xs font-mono break-all mt-1">
+                      {statusResp.last_error}
+                    </code>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

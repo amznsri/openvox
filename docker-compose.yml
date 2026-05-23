@@ -219,7 +219,47 @@ services:
     profiles:
       - tunnel
 
+  # ── WhatsApp Personal bridge (optional, opt-in via --profile whatsapp) ────
+  # Node service wrapping whatsapp-web.js for personal-account WhatsApp.
+  # Heavy (~600 MB image due to bundled Chromium + Puppeteer), which is why
+  # it's opt-in. The core service talks to it over HTTP at
+  # http://whatsapp-bridge:4100.
+  #
+  # IMPORTANT — Meta TOS:
+  #   whatsapp-web.js uses the unofficial WhatsApp Web protocol. Accounts
+  #   using it can be banned without warning. Use a TEST WhatsApp number,
+  #   never a primary account. For production WhatsApp, use the official
+  #   Business API (already supported via /api/v1/telephony/whatsapp/*).
+  #
+  # Setup:
+  #   1. `docker compose --profile whatsapp up -d whatsapp-bridge`
+  #   2. In the dashboard, open an agent → Channels → WhatsApp Personal → Connect.
+  #   3. Scan the QR code from your test phone (Linked Devices in WhatsApp).
+  whatsapp-bridge:
+    build:
+      context: ./packages/whatsapp_personal_bridge
+    image: openvox-whatsapp-personal-bridge
+    container_name: openvox-whatsapp-bridge
+    environment:
+      PORT: "4100"
+      PYTHON_WEBHOOK: "http://core:8000/api/v1/telephony/whatsapp_personal/inbound"
+      SESSIONS_DIR: "/data/sessions"
+      # Inherit the same insecure-TLS toggle the Python core uses. On
+      # corporate networks with TLS interception (Zscaler etc.) this is
+      # required for Chromium to reach web.whatsapp.com; on normal
+      # networks it should stay unset.
+      OPENVOX_INSECURE_TLS: ${OPENVOX_INSECURE_TLS:-}
+    volumes:
+      - whatsapp-sessions:/data/sessions
+    depends_on:
+      core:
+        condition: service_started
+    restart: unless-stopped
+    profiles:
+      - whatsapp
+
 volumes:
   postgres-data:
   redis-data:
   openvox-data:
+  whatsapp-sessions:
