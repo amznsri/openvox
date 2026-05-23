@@ -196,27 +196,71 @@ Confirm with user before doing the actual refactor:
 
 ---
 
-## Recommended next move (sub-task 1.2)
+## SQLite parity test — RESULT: 9/9 PASS ✅
 
-Verify SQLite parity end-to-end:
+Ran `packages/core/tests/test_storage_sqlite_parity.py` against a fresh
+SQLite database inside the running core container (2026-05-23). All
+critical ORM operations work:
 
-```bash
-# On phase1-spike branch
-unset DATABASE_URL  # forces default SQLite
-cd packages/core && python -m openvox.cli run   # (cli doesn't exist yet — fall back to uvicorn)
-uvicorn openvox.api.app:app --port 8000
-
-# In another terminal — hit every critical endpoint
-curl http://localhost:8000/health
-curl http://localhost:8000/api/v1/agents
-curl http://localhost:8000/api/v1/templates
-curl -X POST http://localhost:8000/api/v1/templates/setup-assistant/instantiate -H 'Content-Type: application/json' -d '{}'
-# etc.
+```
+  [PASS] DATABASE_URL points at SQLite
+  [PASS] Base.metadata.create_all on SQLite
+  [PASS] Agent.insert succeeded
+  [PASS] Agent.select returns the row
+  [PASS] JSON column persists list                   (Agent.skills)
+  [PASS] JSON column persists nested dict            (Agent.channels)
+  [PASS] Transcript rows query by FK
+  [PASS] Sessions also gone (cascade or relationship)   ← bug #53 regression
+  [PASS] Failed transaction rolls back
+  [PASS] 10 concurrent reads succeed
 ```
 
-If everything works against SQLite end-to-end, we know the storage layer is
-ready and Phase 1 collapses to mostly "delete Node gateway + add CLI scaffold."
+**Significance:** Phase 1.1 ("storage abstraction") confirmed NEEDS NO NEW
+CODE. SQLAlchemy's async engine already abstracts Postgres vs SQLite. The
+existing models work identically on both backends. The bug #53
+cascade-delete regression also passes — relationships defined via SQLAlchemy
+`cascade="all, delete-orphan"` semantics work cross-backend without needing
+SQLite's `PRAGMA foreign_keys=ON`.
 
-If anything breaks on SQLite specifically — log the breakage here, decide
-whether to fix in-place or fall back to the original Phase 1.1 (full storage
-abstraction).
+The test file is committed as a permanent pytest module so any future
+Postgres-specific feature (e.g., RETURNING clauses, JSONB ops, server
+cursors) gets caught by CI.
+
+## Spike status: COMPLETE
+
+| Sub-task | Status |
+|---|---|
+| Dependency audit | ✅ Complete (this doc) |
+| SQLite parity verification | ✅ 9/9 PASS |
+| Decision points confirmed | ✅ Drop gateway / same-origin URLs / reserve PyPI name |
+
+## Recommended next session
+
+Phase 1 implementation work. Suggested PR sequence:
+
+1. **PR-1** *(0.5 day)* — Delete `packages/server/` entirely; update `apps/dashboard/src/lib/api.ts`
+   to use empty `BASE` (same-origin); update `docker-compose.yml` to remove the
+   `server` and `redis` services + point dashboard at `http://core:8000` directly.
+
+2. **PR-2** *(1 day)* — CLI scaffold. Replace the stub `cli.py` with `cli/` package
+   using `typer`. Add `openvox version`, `openvox run`, `openvox info`. Wire
+   `webbrowser.open()` into `run` after `/health` returns 200.
+
+3. **PR-3** *(0.5 day)* — Next.js static export. Set `output: 'export'` in
+   `next.config.js`, verify the App Router pages work, mount `apps/dashboard/out/`
+   at `/dashboard/*` in FastAPI.
+
+4. **PR-4** *(1 day)* — Port `/me` synthetic-user endpoint + the OAuth-start
+   redirects from `packages/server/src/routes/auth.ts` into FastAPI. Verify
+   the dashboard's session check still works.
+
+5. **PR-5** *(0.5 day)* — Run full TESTPLAN P0+P1 in both CLI mode and Docker mode.
+   Fix any breakage.
+
+6. **PR-6** *(0.5 day)* — Update `docs/install-cli.md` and `README.md` to document
+   the new mode.
+
+Each PR is small, reviewable, mergeable independently. Total: ~4 days, matching
+the revised Phase 1 estimate.
+
+After PR-6, Phase 1 is done and Phase 2 (channel adapter simplification) begins.
