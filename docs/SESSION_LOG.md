@@ -798,27 +798,179 @@ the Doc Assistant agent.
 
 ---
 
+## Session 12 — 2026-05-21 (UX polish: Schedules + Templates for non-technical users)
+
+**Goal**: smooth two friction points reported during a fresh-laptop
+spin-up of the dashboard. Both are user-facing UX issues, no
+provider/backend bugs.
+
+### What was broken vs. what landed
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| Schedules → "New schedule" exposed `cron / interval / once / webhook` directly — opaque to non-technical users (cron syntax, ISO datetime hand-edit) | UI passed raw trigger schema fields straight through | Added **Simple ↔ Advanced** mode toggle inside the JobModal. Simple = Date picker + Time picker + Repeat dropdown (Doesn't repeat / Hourly / Daily / Weekly / Monthly) with a live "Translates to:" cron preview. Selections translated client-side into the existing trigger schema so APScheduler engine + DB schema are untouched. Editing existing schedules defaults to Advanced to avoid lossy reverse-translation. ([dba8200](https://github.com/amznsri/openvox/commit/dba8200)) |
+| "Weekly Saturday" Simple-mode trigger fired on Sunday | **APScheduler quirk**: `CronTrigger.from_crontab()` forwards the 5th field straight to `CronTrigger(day_of_week=…)` which uses Mon=0..Sun=6 — NOT Unix cron's Sun=0..Sat=6. JS `getDay()` Sun=0..Sat=6 sent dow=6 expecting Saturday; APScheduler interpreted 6 as Sunday | Remap JS dow → APS dow via `(jsDow + 6) % 7` in the Simple-mode translation table. Same commit. |
+| Templates → "Use template" button: ambiguous (opens existing? copies?) + repeated clicks accumulated identical names (`Acme Support Voice`, `Acme Support Voice`, …) | Frontend `instantiate()` had an OK/Cancel confirm dialog that contradicted the button label; backend `instantiate_template` didn't dedupe names | Renamed button → **"Copy template"** (honest action label). Removed the confirm dialog. Backend `_next_available_agent_name()` appends ` (N)` suffix on collisions: `Acme Support Voice` → `(2)` → `(3)`. ([cf6734e](https://github.com/amznsri/openvox/commit/cf6734e)) |
+
+### Lessons logged to CLAUDE.md §8
+
+Bug #60 (APScheduler from_crontab DOW mismatch — must remap JS
+getDay).
+
+### Verification
+
+Five POSTs to `/api/v1/templates/ecommerce-support/instantiate` — got
+`Acme Support Voice`, `(2)`, `(3)`, `(4)`, then fresh `Science Tutor`
+on first education-tutor copy. Weekly trigger with Saturday-picked
+date now correctly resolves `next_run_at` to a Saturday.
+
+---
+
+## Session 13 — 2026-05-22 (voice-pipeline quality overhaul + user-driven barge-in)
+
+**Goal**: address a torrent of user-reported voice-setup bugs in one
+deep pass. The "build by voice" flow was leaking reasoning tokens,
+hallucinating Chinese fillers, cutting users off mid-thought, and
+ignoring "stop". Five distinct defects, three of them latent for
+multiple sessions. Two commits shipped.
+
+### What was broken vs. what landed
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| Chinese fillers (`嗯。`, `啊。`) appeared as USER turns even in English sessions; assistant kept responding | BytePlus Seed-ASR streaming request omitted `audio.language` → model ran in auto-detect mode and defaulted to **Chinese** on silence / breath / lip smack. Confidence floor (<0.5) never fired because Seed reports either `confidence=0.0` (no value) or `>=0.5` for its own hallucinations | (1) `byteplus/stt.py` streaming `start` payload now sets `audio.language = config.language` (mirrors batch endpoint convention). (2) New `sanitize_user_final()` in `utils/text.py`: trims leading/trailing filler chars + CJK punctuation so `嗯。create` → `create`; drops pure-filler / ≤3-char pure-CJK on non-zh agents. (3) Logs every accepted user_final at INFO. ([a2f4823](https://github.com/amznsri/openvox/commit/a2f4823)) |
+| Visible `</think_never_used_51bce0c785ca2f68081bfa7d91973934>` and step-number narration (`"per step 6"`) leaking into chat + TTS | Seed-2-Pro emits chain-of-thought inside `<think>…</think_HASH>` blocks; close tag carries a per-session **random hash** so naïve regex strips can't catch it across streaming chunks. No filter existed. | New streaming `ReasoningStripper` state machine in `utils/text.py`: holds back tag-boundary text until resolved, drops the entire `<think>` block. Wired into `orchestrator._llm_turn()` — display tokens, TTS buffer, and LLM history all see only clean text. `clean_for_tts` defensively re-strips as a last-line safety net. |
+| Users cut off mid-sentence during natural pauses | BytePlus `end_window_size: 800ms` — too aggressive for thinking pauses | Bumped to **1500ms**. Matches Twilio/Vapi/LiveKit Agents' industry default range. |
+| `recommend_template` matched `ecommerce-support` for "search web and **return** top 10 news" | Substring `if kw in desc` matcher: single keyword `return` hit despite being unrelated context | Rewrote as score-based with `\b`-anchored regex. ≥2 hits → 0.85 confidence; 1 hit → 0.4 + `recommend_custom=true`; 0 hits → 0 + explicit "build custom" hint. Surfaces up to 2 runners-up. |
+| Even when user asked for "custom agent with web search", LLM instantiated `document-qa` template (skills: query_documents, analyze_image) | No `create_custom_agent` skill existed — `instantiate_template` was the only "create" tool the LLM had | New `CreateCustomAgentSkill` builds a blank Agent (template_id="") from name + skills list + optional system_prompt/greeting. Wired into setup-assistant's `skills` list and the system prompt's 3-CUSTOM workflow branch. |
+| Setup Assistant didn't pick up template/prompt updates after deploys | Existing Setup Assistant Agent row carried the prompt **snapshot** from its first instantiation; template changes never propagated to running agents | `setup_assistant_singleton` now reconciles `system_prompt`, `greeting`, `skills` against current template defaults on every GET. Voice_id / temperature / max_tokens / llm_model are owner-tunable and stay untouched. |
+| Assistant narrated workflow steps (`"now ask for greeting first, per step 6"`); read agent_ids and skill_result JSON out loud | Setup Assistant system prompt lacked output-hygiene rules | New HARD RULES: NEVER mention step numbers; NEVER read agent_ids / UUIDs / JSON; cap turns <20 words. Added curated `_SKILL_CATALOGUE_TEXT` so LLM can map user phrasing ("web search" → `web_search`) when picking skills. |
+| User said "you can stop" — assistant kept talking | Server-side Silero VAD is loaded + wired but never fires `speech_start` during TTS playback. Hypothesis: browser AEC isn't perfect, TTS bleed-through keeps VAD in continuous `in_speech` state (no silence→speech transition to detect) | Two complementary **client-side** trigger paths, both feeding the existing `session.interrupt()` backend. (1) Visible **Stop button** appears in the composer while micState=speaking; sends `{"type":"interrupt","source":"button"}` + drains AudioPlaybackQueue locally. (2) **Browser-native stop-word listener** — second `webkitSpeechRecognition` instance runs in parallel with TTS, matches `stop|pause|wait|halt|cancel|quiet|hold on|be quiet` (+ 停/停下/暂停 for zh-*), fires the same interrupt path with `source="voice"`. (3) Backend logs interrupts with source tag for debuggability. ([193ff79](https://github.com/amznsri/openvox/commit/193ff79)) |
+
+### Lessons logged to CLAUDE.md §8
+
+Bug #61 (BytePlus Seed-ASR auto-detect defaults to Chinese — pin
+language on every streaming start payload), #62 (reasoning-model
+hash-suffixed close tags `</think_HASH>` need streaming-aware regex,
+not `re.sub`), #63 (singleton endpoints must self-heal against
+current template snapshots — DB rows are point-in-time copies),
+#64 (server-side VAD interrupt unreliable when AEC isn't perfect —
+client-side stop-word listener is the pragmatic complement).
+
+### Architecture notes
+
+The new helpers in `openvox/utils/text.py` (`ReasoningStripper`,
+`strip_reasoning_tags`, `sanitize_user_final`) are central — any new
+TTS-emitting path or STT-consuming path should reuse them rather
+than reimplement. `clean_for_tts` now strips reasoning tags as the
+last line of defence; future model families that emit
+`<thinking>…</thinking>` or `<reasoning>` variants are covered by
+the same regex.
+
+### Verification
+
+27/27 truth-table tests pass inside the running core (ReasoningStripper
+across split chunks / orphan tags / unclosed-at-EOS; sanitize_user_final
+on filler prefixes, pure-filler drops, CJK floor, language gating;
+recommend_template scoring; create_custom_agent registration).
+
+Live LLM round-trip: the user's exact "create a news agent" prompt
+produces a 10-word reply, calls `create_custom_agent(skills=["web_search"])`,
+shows NO reasoning tags / UUIDs / step-number narration.
+
+Direct WS test of barge-in: `{"type":"interrupt","source":"button"}`
+landed cleanly; `interrupt()` orchestrator method logs the speaking
+state at the moment cancel was set.
+
+---
+
+## Session 14 — 2026-05-23 (Test-voice regression + Telegram tunnel rehome)
+
+**Goal**: shake out two follow-ups from a fresh-laptop spin-up.
+Small session, two commits + one config change.
+
+### What was broken vs. what landed
+
+| Symptom | Root cause | Fix |
+|---|---|---|
+| Agents → Voice & model → "Test voice" rendered the raw HTML of the dashboard's own 404 shell in the error toast | `testVoice()` in `apps/dashboard/src/app/dashboard/agents/[id]/page.tsx` used `fetch("/api/v1/playground/synthesize", …)` — a **relative URL**. Dashboard runs on :3000 (Next.js); API gateway is on :3001. Relative URL resolved against the page origin, so the request never left Next.js, which served its 404 HTML body. The `tts_provider` field it passed was also silently ignored — the backend's `SynthesizeRequest` model never had that field. | Replaced the hand-rolled `fetch` with the existing `api.synthesize()` helper from `lib/api.ts` (already imported, already builds `${BASE}/api/v1/...`, already parses `X-Sample-Rate`). Net diff: −22 / +20. Dropped the unused `tts_provider` clutter. ([6997af7](https://github.com/amznsri/openvox/commit/6997af7)) |
+| Channels → Telegram showed "No public tunnel detected" — prior laptop had ngrok set up | Fresh laptop migration: `NGROK_AUTHTOKEN` in `.env` had been preserved from the old laptop's `.env` import, but the tunnel container wasn't running (it's `profile: tunnel` in docker-compose — opt-in) | `docker compose --profile tunnel up -d ngrok`. Tunnel registers at `https://<random>.ngrok-free.dev` → routes to `server:3001`. Confirmed via `/api/v1/telephony/public_url` returning `{"available": true, "source": "ngrok"}`. User then pasted BotFather token and bot went live. No code change. |
+
+### Lessons logged to CLAUDE.md §8
+
+Bug #65 (relative `/api/v1/...` URL in dashboard fetch lands at
+Next.js 404, not the API gateway — all dashboard fetches must go
+through `lib/api.ts` or include `${BASE}`).
+
+### Verification
+
+Backend curl: HTTP 200, 133 KB PCM, `X-Sample-Rate=24000`. Grepped
+the whole `apps/dashboard/src` for sibling bugs — zero other
+relative-`/api/v1` fetches. Telegram bot replied to a test message.
+
+---
+
 ## Open follow-ups (carried forward)
 
-Updated end of Session 8 (post-deploy-fixups). Items shipped this
-session removed; items still pending below.
+Updated end of Session 14. Items shipped through Session 14 removed;
+new follow-ups from Sessions 12-14 added at the end.
 
 1. **Scheduler webhook trigger** (event-driven jobs).
 2. **Skill hot-reload** (`watchfiles` on `~/.openvox/skills/`).
 3. **Curated MCP server catalogue** with one-click pre-fill.
 4. **CRM-via-MCP** for the SDR template (HubSpot / Salesforce snippets).
-5. **VAD provider**: Silero VAD locally, BytePlus VAD when launched.
+5. **Server-side VAD reliability** — Silero VAD provider is loaded
+   and wired, but `speech_start` doesn't fire during TTS playback
+   because browser AEC isn't clean enough. Session 13 worked around
+   it with the client-side Stop button + browser stop-word listener.
+   Real fixes: (a) server-side echo subtraction (subtract outgoing
+   TTS PCM from incoming mic PCM by sample); or (b) continuous STT
+   during TTS so stop-words detect server-side. Track this; the
+   client-side fallback is good enough for now.
 6. **Speech-to-Speech**: OpenAI Realtime adapter (BytePlus S2S not yet GA).
 7. **Live interpretation**: simultaneous translation pipeline.
 8. **Voice podcast generation**.
 9. **BytePlus RTC client SDK** wiring (server-side token issuance done).
 10. **Twilio Media Streams** ↔ pipeline bridge for the inbound path
-    (outbound dial-out path lands in Session 6; inbound Media Stream
+    (outbound dial-out lands in Session 6; inbound Media Stream
     handler in WS is still scaffolded).
-7. **WhatsApp Business inbound** message routing (verify done).
-8. **Telegram bot** message routing (webhook scaffolded).
-9. **Alembic migrations** (currently using `Base.metadata.create_all()`).
-10. **Test suite** — `packages/core/tests/` is empty.
-11. **GCS, Alibaba OSS** storage implementations (interface defined).
-12. **CLI**: `deploy`, `logs`, `dev` subcommands.
-13. **Cloud-hosted multi-tenant mode** + OAuth (scaffold present, disabled).
+11. **WhatsApp Business inbound** message routing (verify done).
+12. **Alembic migrations** (currently using `Base.metadata.create_all()`).
+13. **Test suite** — `packages/core/tests/` is empty. Session 13
+    landed a 27-case truth-table for `ReasoningStripper` +
+    `sanitize_user_final` but those tests live in a `/tmp` script,
+    not in a permanent pytest harness. **Promote them** into
+    `packages/core/tests/test_text_helpers.py` and wire to CI.
+14. **GCS, Alibaba OSS** storage implementations (interface defined).
+15. **CLI**: `deploy`, `logs`, `dev` subcommands.
+16. **Cloud-hosted multi-tenant mode** + OAuth (scaffold present, disabled).
+
+### New from Sessions 12-14
+
+17. **Reserved ngrok domain** — the free tunnel URL changes on every
+    `docker compose restart ngrok`, which breaks Telegram's webhook
+    until a manual reconnect. If the user has a reserved subdomain
+    on ngrok dashboard, wire `--domain=...` into `docker-compose.yml:210`.
+18. **Schedule trigger language hint per-agent** — `sanitize_user_final`
+    branches on `agent_language.startswith("zh")` to know whether
+    嗯/啊 are real or hallucinations. For zh-* agents the filter
+    correctly passes them through. But the schedule's STT config
+    inherits the agent's voice_language wholesale — confirm this
+    plumbing covers all telephony paths (Telegram, Twilio, future
+    WeChat/Lark).
+19. **Auto-update existing agents from template** — Session 13 added
+    self-heal for the **Setup Assistant** singleton only. Other
+    templates' default fields don't propagate to existing agent rows
+    after deploys. Decide policy: (a) leave as-is (template snapshots
+    are intentional); (b) add an opt-in "resync from template" button
+    on the agent edit page; (c) auto-resync only specific fields like
+    `system_prompt`.
+20. **Telegram channel — voice responses** — current implementation
+    sends TTS-cleaned text back; doesn't auto-attach OGG-Opus
+    synthesised audio. If users want voice notes, wire the existing
+    `_telegram_synthesize_ogg` path into the standard reply flow,
+    behind a per-agent toggle.
+21. **Custom voice on `create_custom_agent`** — the new skill defaults
+    voice_id to `settings.byteplus_tts_default_voice` (en_male_tim
+    today). Should accept a voice_id parameter so the LLM can match
+    user requests like "with a female voice".

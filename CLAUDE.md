@@ -1160,6 +1160,150 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     validation trivial. Run them in a unit test on every template
     file (TODO).
 
+### Session 12 onward — UX polish + voice-quality overhaul
+
+60. **APScheduler `from_crontab()` uses a non-standard day-of-week
+    convention.** Session 12 added a "Simple" mode to the Schedules
+    UI that translated `Repeat: Weekly` on a Saturday-picked date
+    into cron `0 8 * * 6` — JS `getDay()` returns 6 for Saturday,
+    matching Unix cron's Sun=0..Sat=6. But `CronTrigger.from_crontab()`
+    forwards the 5th field straight to `CronTrigger(day_of_week=…)`
+    which uses Mon=0..Sun=6. So our `dow=6` was interpreted as
+    Sunday, and the schedule fired on Sundays. *Fix*: remap JS dow
+    → APS dow via `(jsDow + 6) % 7` in the client-side translator
+    (`apps/dashboard/src/app/dashboard/schedules/page.tsx`).
+    **Lesson**: every cross-language day-of-week boundary is a trap.
+    Verify by setting a real Saturday date in the UI and confirming
+    the resulting `next_run_at` from the server is also a Saturday
+    — visual end-to-end check, not just the cron string.
+
+61. **BytePlus Seed-ASR streaming defaults to Chinese on silence
+    when the request omits `language`.** Symptom: `嗯。`, `啊。`,
+    `哦` appeared as USER turns mid-conversation in English voice
+    sessions on the SetupAssistant. Confidence filter never caught
+    them — Seed reported either `confidence: 0.0` (no value) OR
+    `>= 0.5` for its own filler hallucinations. The streaming
+    `start` payload our `byteplus/stt.py` sends had `model_name`,
+    `enable_itn`, `enable_punc`, `end_window_size` — but no
+    `audio.language` field. Without it, Seed runs in auto-detect
+    mode and falls back to Chinese on breath / lip smack / room
+    tone. The batch endpoint (`transcribe_file_url`) already set
+    `audio.language` correctly; the streaming endpoint just hadn't
+    been wired the same way. *Fix*: send `start["audio"]["language"]
+    = config.language` whenever non-empty + INFO-log
+    `stt language hint: <lang>` per session. Defence-in-depth in
+    `pipeline/orchestrator.py` `sanitize_user_final()`: trim leading/
+    trailing filler chars + CJK punctuation so `嗯。create` → `create`;
+    drop pure-filler or ≤3-char pure-CJK finals on non-zh agents
+    (passes through unchanged on zh-* agents).
+    **Lesson**: when a provider has a `language` field, send it
+    EVERYWHERE you use that provider, on both streaming and batch
+    paths. Audit at the provider-module level, not the endpoint
+    level. Every multilingual model has a "default if absent"
+    fallback and it is rarely the language you actually want.
+
+62. **Reasoning-model close tags carry per-session hash suffixes
+    that break naïve regex stripping.** Seed-2-Pro emits chain-of-
+    thought inside `<think>…</think_HASH>` blocks where `HASH` is a
+    32-char hex random per session (anti-prompt-injection — the
+    user can't fake a close because they don't know the hash).
+    Result: `</think_never_used_51bce0c785ca2f68081bfa7d91973934>`
+    landed in the chat display, TTS spoke it as "less than slash
+    think underscore never underscore used…", and the LLM history
+    accumulated reasoning across turns (input cost ballooned, model
+    started repeating itself). Streaming token boundaries also
+    split tags mid-name (`<th` + `ink_neve` + `r_used_…>`), so a
+    per-chunk `re.sub(...)` leaks fragments. *Fix*: new streaming
+    state machine `ReasoningStripper` (`openvox/utils/text.py`) that
+    holds back tag-boundary text until the open or close resolves.
+    Wired into `orchestrator._llm_turn()` so display / TTS buffer /
+    history all see only clean text. `clean_for_tts` defensively
+    re-strips via `strip_reasoning_tags()` for non-streaming
+    callers (telephony, /turn endpoint). Open and close regex is
+    `<(think|reasoning)([^>]*)>` so future variants (`<thinking>`,
+    `<reasoning_v2>`, hash-suffixed open like `<think_HASH>`) are
+    covered.
+    **Lesson**: any reasoning-capable LLM provider needs token-stream
+    filtering at the orchestrator boundary, not at the display
+    layer. Three boundaries that must see clean text: chat UI,
+    TTS, and LLM history — miss any one and the bug returns.
+
+63. **Singleton endpoints serve point-in-time snapshots; template
+    changes don't propagate to existing agent rows.** Session 13
+    added a `create_custom_agent` skill + workflow branch to the
+    Setup Assistant. Wired and tested via the `singleton` GET, but
+    the LLM kept calling the OLD tools because the running Setup
+    Assistant agent (created at first GET) had the OLD `system_prompt`
+    + `skills` snapshot from when it was first instantiated. The
+    template's `default` dict only feeds `instantiate_template`
+    once — after that the Agent row is decoupled. *Fix*: the
+    `setup_assistant_singleton` endpoint now reconciles `system_prompt`,
+    `greeting`, and `skills` against the current template defaults
+    on every GET. Voice_id / temperature / max_tokens / llm_model
+    stay untouched (those are owner-tunable; the user may have
+    customised them deliberately). INFO-log on every resync:
+    `Setup Assistant <id> re-synced from template defaults`.
+    **Lesson**: built-in/canonical/managed agents need a sync
+    policy. Per-field decide: "definition" fields (prompt, skills,
+    greeting) → resync from template; "tuning" fields (voice,
+    temperature, model) → leave alone. Document the policy in
+    template comments so it's not relitigated each session.
+
+64. **Server-side VAD-based barge-in fails silently when browser AEC
+    isn't perfect.** Silero VAD is registered, the orchestrator's
+    `_vad_loop` is running, `push_audio` tees to `_vad_inbound`,
+    `_speaking == True` during TTS — all the plumbing is right.
+    But `speech_start` never fires when the user starts talking
+    during TTS playback. Hypothesis: browser's getUserMedia echo
+    cancellation isn't clean enough to remove the TTS bleed-through,
+    so VAD stays in `in_speech` from the moment TTS starts (it
+    treats the TTS audio coming back through the mic as
+    "continuing speech"), never sees a silence→speech transition
+    to fire on. *Workaround (not a real fix)*: add TWO client-side
+    interrupt paths that don't depend on VAD: (a) visible Stop
+    button during TTS playback that sends `{"type":"interrupt",
+    "source":"button"}` over WS; (b) browser-native `webkitSpeech
+    Recognition` listener running in parallel with TTS, matching
+    stop-words `stop|pause|wait|halt|cancel|quiet|hold on|be quiet`
+    (+ 停/停下/暂停) and firing the same interrupt path with
+    `source="voice"`. Both feed `session.interrupt()` which sets
+    `_cancel_tts` — the existing backend path was always wired
+    correctly, the trigger was the missing piece. Backend logs
+    `interrupt requested via WS (source=...)` so future "stop
+    didn't work" reports are debuggable.
+    **Real fix deferred** to a future session: either server-side
+    echo subtraction (subtract outgoing TTS PCM from incoming mic
+    PCM by sample) or continuous STT during TTS so stop-words
+    detect server-side. Track as Session 13 open follow-up.
+    **Lesson**: when the VAD probe never fires in production, the
+    issue is almost never the VAD model — it's the input audio's
+    SNR / echo profile vs what VAD was trained on. Always layer a
+    deterministic non-acoustic trigger (button, hotword via
+    independent recogniser) before relying on VAD alone for any
+    user-visible feature.
+
+65. **Relative `/api/v1/...` URL in a dashboard `fetch()` lands at
+    the Next.js dev server's 404 page, NOT the backend.** The
+    Agents → Voice & model → "Test voice" button used `fetch
+    ("/api/v1/playground/synthesize", ...)`. The dashboard runs on
+    :3000 (Next.js); the API gateway is on :3001. A relative URL
+    resolves against the page origin → request never leaves
+    Next.js → Next.js has no such route → returns its default 404
+    HTML body. The dashboard then tried to play the `<!DOCTYPE
+    html>...` page as PCM audio. *Fix*: route through the existing
+    `api.synthesize()` helper in `apps/dashboard/src/lib/api.ts`
+    which builds `${BASE}/api/v1/...` from `NEXT_PUBLIC_API_URL`
+    (or the `http://localhost:3001` fallback). The hand-rolled
+    `fetch` also passed a `tts_provider` field the backend's
+    `SynthesizeRequest` pydantic model didn't have — silently
+    ignored, dropped on the floor at refactor time.
+    **Lesson**: there should be ONE place in the dashboard that
+    knows the backend's base URL — `lib/api.ts`. Anything that
+    bypasses it is a relative-URL bomb waiting to surface.
+    Grepped the whole dashboard for sibling bugs (`fetch("/api/v1`)
+    — zero hits this time, but a CI/lint rule that forbids the
+    pattern is worth adding.
+
 ---
 
 ## 9. Known constraints / environment quirks

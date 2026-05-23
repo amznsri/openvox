@@ -1,10 +1,18 @@
 # Planning — next session
 
-Updated end of Session 11 (2026-05-18, late).
+Updated end of Session 14 (2026-05-23).
 
-> Sessions 9, 10, 11 all wrapped this round. The repo state going
-> into the next session is **clean main + only 3 external-dependency
-> -gated carry-forwards + a handful of polish opportunities**.
+> Sessions 12, 13, 14 wrapped UX polish + a voice-pipeline quality
+> overhaul + barge-in. The repo state going into the next session is
+> **clean main + Telegram tunnel running locally + 4 new follow-ups
+> queued from Session 13's findings + the existing Session-11 backlog**.
+
+Recent commits on main:
+- `6997af7` Dashboard: fix Test-voice button (Session 14)
+- `193ff79` Voice: barge-in — Stop button + browser stop-word listener (Session 13)
+- `a2f4823` Voice: kill ASR hallucinations + reasoning-tag leaks + prompt hygiene (Session 13)
+- `cf6734e` Templates: Copy + auto-suffix (Session 12)
+- `dba8200` Schedules: Simple date/time/repeat trigger (Session 12)
 
 ---
 
@@ -26,11 +34,12 @@ The lowest-risk, highest-shippable next session:
    `_handle_telegram_update`. Needs verified test credentials
    (WeCom EncodingAESKey + Lark tenant_access_token) before we
    can iterate.
-3. **Telegram E2E pass** (~0.5 day) — pipeline is shipped + verified
-   text-side end-to-end as of Session 11. Worth one more pass with
-   a real PDF-equipped Doc Assistant agent to confirm the full
-   "Telegram → STT → query_documents → TTS → voice reply" loop
-   stays clean. Should already work given Session 11's fixes.
+3. **Telegram E2E pass** (~0.5 day) — pipeline shipped + text-side
+   verified as of Session 11; Session 14 brought the bot live with
+   ngrok. Worth one more pass with a real PDF-equipped Doc Assistant
+   agent to confirm the full "Telegram → STT → query_documents →
+   TTS → voice reply" loop stays clean given Session 13's voice
+   sanitiser changes.
 
 ### Track B — `ondelete="CASCADE"` schema migration
 The third FK-cascade bug landed in Session 11 (#53). The pattern is
@@ -45,38 +54,79 @@ the same hole. Worth biting the Alembic-introduction bullet:
 3. Audit `_ADDITIVE_COLUMNS` shim — once Alembic is wired, this
    pattern can retire too.
 
-### Track C — Session 12 / new features
-The Session-10 Setup Assistant opened several follow-up surfaces
-that real users will hit:
+### Track C — Setup Assistant follow-ups
+The Session-10 Setup Assistant + Session-13 voice-quality work
+opened several surfaces real users will hit:
 
 - **Edit-by-voice on published agents** — currently SetupAssistant
   only works on drafts. Adding an "Open this agent in voice mode"
   button on the agent detail page would let users tweak a deployed
-  agent conversationally. Out-of-scope from the original Session 10
-  plan, but cheap to layer on now.
-- **Setup Assistant skill catalogue suggestions** — when the LLM
-  recommends a template, list the included skills and let the user
-  ask "what about adding web_search?" → `update_agent_field` with
-  the merged skill list. Maybe 0.5 day.
+  agent conversationally. Cheap to layer on.
+- ~~Setup Assistant skill catalogue suggestions~~ **SHIPPED in
+  Session 13**: `_SKILL_CATALOGUE_TEXT` baked into the system prompt,
+  `create_custom_agent` skill creates blank agents from a skill
+  list, score-based `recommend_template` returns `recommend_custom`
+  when no template fits. What's left: **voice-driven skill ADD/REMOVE
+  on existing agents** (today the LLM only sets `skills` at create
+  time; can't say "add web_search to my Acme Support agent").
+- **Custom voice picking** — `create_custom_agent` always uses the
+  default voice. Accept a `voice_id` arg and have the LLM map user
+  requests like "with a female English voice" → catalogue lookup.
 - **Recordings → CI eval suite** — Session 8 shipped the recording
   + replay framework; nobody's actually wired a real eval suite
   against it yet. Tutorial / example workflow + a `make eval`
   target would unblock the value-prop.
 
-### Track D — `clean_for_tts` provenance
-Session 11 hit four separate TTS-quality bugs from raw LLM text.
-The current solution (centralised sanitiser at the TTS boundary)
-works but is reactive. Worth considering:
-- A pre-flight LLM "voice-style" hint in agent system prompts
-  for new voice agents.
-- A test harness that synthesises 20 sample LLM outputs and
-  surfaces any new mis-pronunciations before they hit users.
-- A `dry-run` flag on the orchestrator's `_speak()` for unit tests.
+### Track D — `clean_for_tts` provenance + Session-13 sanitiser hardening
+Session 11 hit four TTS-quality bugs; Session 13 hit five more
+voice-quality bugs (filler hallucinations, reasoning-tag leaks,
+endpoint detection, template-snapshot drift, no barge-in). The
+sanitiser surface is now substantial. Worth investing in:
+- **Promote the 27-case truth-table to pytest** —
+  `ReasoningStripper` + `sanitize_user_final` tests currently live
+  in an ad-hoc `/tmp/voice_fix_tests.py`. Move to
+  `packages/core/tests/test_text_helpers.py` and wire to CI.
+- **Pre-flight LLM "voice-style" hint** in agent system prompts
+  for new voice agents — defensive, catches the next class of
+  TTS-hostile output before it ships.
+- **Test harness that synthesises N sample LLM outputs** and
+  surfaces any new mis-pronunciations / reasoning leaks / filler
+  hallucinations before they hit users.
+- **`dry-run` flag** on the orchestrator's `_speak()` for unit
+  tests — no TTS API call, just collect the cleaned text the
+  synth would have spoken.
 
-Each of A/B/C/D is independently valuable. My recommendation: **Track
-A** first (clears the carry-forwards, mostly bash + curl), then
-**Track B** (debt cleanup, structural), then **Track C** or **D**
-depending on user signal.
+### Track E — Voice-pipeline open issues from Session 13
+Two things Session 13 deferred:
+
+1. **Server-side barge-in** — Silero VAD is loaded + wired but
+   `speech_start` doesn't fire during TTS playback. Browser AEC
+   isn't perfect; TTS bleed-through keeps VAD in continuous
+   `in_speech`. Two real fixes:
+     (a) Server-side echo subtraction — buffer outgoing TTS PCM,
+         subtract sample-aligned from incoming mic PCM. Most
+         work, most robust.
+     (b) Continuous STT during TTS — refactor the turn-based loop
+         so STT stays open across TTS playback, then match the
+         stop-word list server-side (instead of in browser).
+         Smaller change but ties up an extra Seed-ASR stream.
+   Session 13's client-side Stop button + browser-native listener
+   are good enough for now; promote when needed for non-browser
+   channels (Twilio, Telegram voice notes).
+2. **Per-channel STT language hint propagation** — Session 13
+   pinned `audio.language` on the streaming start payload from
+   `STTConfig.language`, and the WS handler wires it from the
+   agent's `voice_language`. Worth a second pass to confirm
+   telephony paths (Twilio inbound, Telegram voice notes,
+   future WeChat/Lark) all set this before instantiating STT.
+
+Each of A/B/C/D/E is independently valuable. My recommendation:
+**Track A** first (clears Session-9 deferrals, ~half a day),
+then **Track B** (the FK-cascade migration debt — every new
+agent-referencing table reopens that hole), then **Track D**
+(test-harness the Session-13 sanitisers — they're load-bearing
+for voice quality now). Track E only when a non-browser channel
+actually needs barge-in.
 
 ---
 

@@ -66,6 +66,11 @@ A **full regression pass** runs every P0+P1 — about an hour.
 | T-211 | BytePlus STT final framing | Speak a 5-second sentence | `user_final` event arrives with correct text (bug #13 — 4-byte sequence parse) | ✅ |
 | T-212 | BytePlus STT clean close | End session | no error logged; `ConnectionClosedOK` swallowed gracefully (bug #15) | ✅ |
 | T-213 | Background-noise rejection | Stay silent for 10s while mic open | no spurious "I couldn't make out" messages; `looks_like_real_speech()` rejects them silently | ✅ |
+| T-214 | Streaming STT language hint | core logs after mic-start | `stt language hint: en-US` (or zh-CN, etc.) emitted on every session — confirms `audio.language` reaches BytePlus and stops auto-detect-default-to-Chinese hallucinations (bug #61) | ✅ |
+| T-215 | Filler-prefix trim | Speak "嗯。create a new agent" (or trigger a 嗯 hallucination then real word) | `user_final` text is `"create a new agent"` (filler stripped); log line shows `trimmed ASR filler affix:` (Session 13) | ✅ |
+| T-216 | Pure-filler drop | Idle mic for 30s on en-US agent | no `user_final` events for 嗯/啊/哦 hallucinations; logs show `dropping ASR hallucination` with reason; LLM does NOT respond (Session 13) | ✅ |
+| T-217 | Chinese agent unaffected | Set `voice_language=zh-CN` on an agent; speak `嗯` | filler is preserved (real turn); `sanitize_user_final` returns text unchanged for zh-* agents (Session 13) | 🆕 |
+| T-218 | Endpoint detection 1500ms | Speak with a 1-second mid-sentence pause | STT does NOT promote to final during the pause; full utterance arrives as one user_final (Session 13, `end_window_size=1500`) | ⚠ |
 
 ### 2.3 TTS correctness  (P1)
 
@@ -77,7 +82,10 @@ A **full regression pass** runs every P0+P1 — about an hour.
 | T-224 | Emoji stripped | Reply contains 🎉; voice turn | not spoken as "white heavy check mark"; silently dropped | ✅ |
 | T-225 | HTML entities | Reply contains `&amp;`; voice turn | spoken as "and", not "ampersand a m p semicolon" (bug #50) | ✅ |
 | T-226 | Voice ID valid | Pick any English template, voice turn | NO `code=55000000 message='resource ID is mismatched'` (bugs #25/#58/#59) | ✅ |
-| T-227 | Voice catalogue dropdown | `/dashboard/agents/<id>` → Voice tab | dropdown lists 41 BytePlus voices; "Test voice" button plays a sample (bug #59) | 🆕 |
+| T-227 | Voice catalogue dropdown | `/dashboard/agents/<id>` → Voice tab | dropdown lists 41 BytePlus voices; "Test voice" button plays a sample (bug #59) | ⚠ |
+| T-228 | Reasoning-tag stripped from display | Use a Seed-2-Pro agent; voice or text turn that triggers reasoning | chat bubble does NOT show `<think>…</think_HASH>`; `ReasoningStripper` filters across streaming chunks (bug #62) | ✅ |
+| T-229 | Reasoning-tag stripped from TTS | Same as T-228 | TTS does NOT speak "less than slash think…"; `clean_for_tts` defensively re-strips (Session 13) | ✅ |
+| T-230 | Reasoning-tag stripped from history | After T-228, send a follow-up turn | LLM doesn't repeat its prior reasoning; history shows ONLY user-visible assistant text (Session 13) | 🆕 |
 
 ### 2.4 LLM round-trip + tool-calling  (P1)
 
@@ -94,6 +102,10 @@ A **full regression pass** runs every P0+P1 — about an hour.
 |---|---|---|---|---|
 | T-241 | Silero loads | core logs show `vad: silero registered` at boot | success; no `No module named 'onnxruntime'` (bug #42) | ✅ |
 | T-242 | `vad_provider="none"` falls back | Set agent's `vad_provider=none`; voice turn | works; interrupt latency higher (client-driven) | ⚠ |
+| T-243 | Stop button cancels TTS | During SetupAssistant agent's long reply, click the red ⏹ button in the composer | TTS audio stops within ~20-40 ms; `[stopped — button]` line appears in chat; core logs `interrupt requested via WS (source=button)` + `interrupt() called — speaking=True` (bug #64) | ✅ |
+| T-244 | Voice "stop" word cancels TTS | During reply, say "stop" or "pause" or "cancel" | TTS stops; `[stopped — voice]` line in chat; core logs `source=voice` (Session 13) | ⚠ |
+| T-245 | Stop button disabled outside speaking state | Mic state = idle/listening | composer shows mic button NOT Stop button — no accidental interrupt while user is talking | ✅ |
+| T-246 | Server VAD known-broken under TTS bleed-through | Trigger interrupt via voice during TTS playback | server-side Silero VAD does NOT fire `speech_start` reliably; client-side fallback (T-243/244) handles it. Track for future server-side AEC work (Session 13 deferred) | 🚧 |
 
 ## 3. Channels
 
@@ -109,6 +121,8 @@ Covered by §2.1.
 | T-322 | Voice note → reply | Send a 5-sec voice note | bot transcribes (`.oga`→`.ogg` normalisation, bug #48); replies in voice + text | ✅ |
 | T-323 | Skill loop runs | Doc Assistant: "summarise the API docs" | reply contains real `query_documents` result, NOT text like "Function call begins…" (bug #49) | ✅ |
 | T-324 | Session row persisted | After T-321; check `/dashboard/observability` | new row with `channel=telegram` and both user + assistant Transcripts (bug #55) | ✅ |
+| T-325 | Tunnel detection | With `docker compose --profile tunnel up -d ngrok` running, `curl /api/v1/telephony/public_url` | `{"available": true, "source": "ngrok", "url": "https://...ngrok-free.dev"}` — dashboard's Connect Telegram modal no longer shows "No public tunnel" banner (Session 14) | ✅ |
+| T-326 | Tunnel-down graceful banner | Stop ngrok: `docker compose --profile tunnel down ngrok`; reload Channels page | yellow "No public tunnel detected" callout appears with the .env / ngrok instructions (Session 14) | ✅ |
 
 ### 3.3 Twilio  (P2)
 
@@ -137,17 +151,24 @@ Covered by §2.1.
 | T-410 | Setup Assistant — text+voice hybrid | Start voice; switch to text mid-flow | draft_agent_id survives — both transports see the same state (Session 10) | ✅ |
 | T-411 | Skill hot-reload | Edit `~/.openvox/skills/foo.py` while core is running | `watchfiles` triggers reload; new tool appears in next `list_tools` | ⚠ |
 | T-412 | Skill TLS routing | grep `httpx.AsyncClient(` in `skills/builtin/**` | zero hits — all calls route through `make_async_client` (bug #31) | ✅ |
+| T-413 | recommend_template — multi-keyword match | `recommend_template({"description":"look up an order and start a return"})` | returns `ecommerce-support` with `confidence=0.85`, `recommend_custom=false`, ≥2 hits in reasoning (Session 13) | ✅ |
+| T-414 | recommend_template — single-keyword low-confidence | `recommend_template({"description":"search web and return news"})` | returns weak candidate with `confidence=0.4`, `recommend_custom=true` so the setup-assistant prompt routes to the custom path (bug #60 scoring rewrite) | ✅ |
+| T-415 | recommend_template — no match | `recommend_template({"description":"agent that reads me horoscopes"})` | returns `template_id=""`, `confidence=0.0`, `recommend_custom=true`, suggests `create_custom_agent` | ✅ |
+| T-416 | create_custom_agent skill | Setup Assistant: "create a news reader with web search" → agree → name it | LLM calls `create_custom_agent({"name":...,"skills":["web_search"]})`; new Agent row has `template_id=""` and the right skills; draft_agent_id stashed (Session 13) | ✅ |
+| T-417 | Setup Assistant self-heal | After deploying a templates.py change, GET `/api/v1/templates/setup-assistant/singleton` | existing setup-assistant agent's `system_prompt`+`skills`+`greeting` re-sync from current template defaults; core log: `Setup Assistant <id> re-synced from template defaults` (bug #63) | ✅ |
+| T-418 | Setup Assistant prompt hygiene | Watch a multi-turn voice session | NO step-number narration ("per step 6"), NO agent_ids spoken, NO raw JSON read aloud; replies <20 words (Session 13) | ⚠ |
 
 ## 5. Templates  (P1)
 
 | ID | Test | Steps | Expected | Status |
 |---|---|---|---|---|
 | T-501 | List templates | `/dashboard/templates` | 29 templates listed (8 core + 21 multilingual) | ✅ |
-| T-502 | Instantiate | Click "Use template" on a fresh one | new agent created with template defaults; redirects to `/dashboard/agents/<id>` | ✅ |
-| T-503 | Duplicate guard | Click same template twice | confirm dialog shows "N created" count; OK opens existing, Cancel allows duplicate (bug #39) | ✅ |
+| T-502 | Instantiate (Copy template) | Click "Copy template" on a fresh one | new agent created with template defaults; redirects to `/dashboard/agents/<id>` (Session 12 renamed button) | ✅ |
+| T-503 | Auto-suffix duplicate names | Click "Copy template" on the same template 3× | first creates `Acme Support Voice`, then `(2)`, then `(3)` — no confirm dialog, just keep producing distinguishable names (Session 12 superseded the bug #39 dialog) | ✅ |
 | T-504 | Voice IDs valid | Each multilingual template's voice_id is in `providers/byteplus/voices.py:VOICES_BY_ID` | all 7 languages map to a real catalogue entry (bug #59) | ✅ |
 | T-505 | MCP servers passed through | Instantiate Email Assistant | `agent.mcp_servers` populated from template defaults | ✅ |
 | T-506 | Productivity templates | Email Assistant + Calendar Scheduler + Executive Assistant | all 3 visible; each carries the right MCP server config | ✅ |
+| T-507 | Auto-suffix on first new name | Delete all copies of Acme Support Voice; click "Copy template" | first copy is `Acme Support Voice` (no suffix) — confirms `_next_available_agent_name` doesn't suffix the first instance (Session 12) | ✅ |
 
 ## 6. Dashboard / UX  (P0 = 6.1, P1 = rest)
 
@@ -230,6 +251,13 @@ Covered by §2.1.
 | T-1006 | Audio batch | Drop a new WAV into watched folder; trigger audio_batch job | processes only new files (`.openvox_processed` state) | ✅ |
 | T-1007 | Outbound call batch | preview=true | dry-run shows leads + script; no real dial | ✅ |
 | T-1008 | Scheduler state survives restart | Restart core | jobs reload from DB; in-flight runs not double-fired | ⚠ |
+| T-1009 | Simple-mode "Daily 8 AM" | New schedule → Simple mode → Date today, Time 08:00, Repeat Daily → Save | DB row gets `trigger_type=cron`, `trigger_expr="0 8 * * *"`, `next_run_at` = tomorrow 08:00 in agent's tz (Session 12) | ✅ |
+| T-1010 | Simple-mode "Doesn't repeat" | Simple mode → future date, 14:30, Repeat: Doesn't repeat | DB: `trigger_type=once`, `trigger_expr="<YYYY-MM-DD>T14:30:00"`; `next_run_at` exact match (Session 12) | ✅ |
+| T-1011 | Simple-mode weekly on Saturday | Pick a Saturday date in Simple, 09:00, Repeat Weekly | DB: `trigger_expr="0 9 * * 5"` (APScheduler Mon=0..Sun=6, so Sat=5); `next_run_at` lands on a Saturday — **NOT** Sunday (regression test for bug #60) | ✅ |
+| T-1012 | Simple-mode monthly | Date 2026-06-20, 08:00, Repeat Monthly | DB: `trigger_expr="0 8 20 * *"`; next_run_at = 2026-06-20 08:00 (Session 12) | ✅ |
+| T-1013 | Simple-mode hourly | Time 09:30, Repeat Hourly | DB: `trigger_expr="30 * * * *"`; next_run_at within an hour at the :30 mark (Session 12) | ✅ |
+| T-1014 | Simple ↔ Advanced toggle preserves Advanced state | In New-schedule modal: switch to Advanced, type custom cron, switch to Simple, switch back to Advanced | Advanced field retains the user's custom cron — Simple toggle is non-destructive (Session 12) | ⚠ |
+| T-1015 | Edit defaults to Advanced | Click Edit on an existing cron schedule | modal opens with Advanced selected, NOT Simple — avoids lossy reverse-translation of arbitrary cron (Session 12) | ✅ |
 
 ## 11. Voice catalogue  (P1)
 
@@ -238,8 +266,9 @@ Covered by §2.1.
 | T-1101 | `/providers/voices` returns full catalogue | curl endpoint | 41 BytePlus voices + curated OpenAI/ElevenLabs/Cartesia (bug #59) | ✅ |
 | T-1102 | `is_known(voice_id)` validation | unit-call from Python REPL inside core | returns True for catalogue entries, False for `multilingual_v2_*` | ✅ |
 | T-1103 | All template voices validated | grep `voice_id` in `templates.py`; cross-ref with `VOICES_BY_ID` | every ID exists in the catalogue OR is the empty string | 🆕 |
-| T-1104 | Test voice button — happy path | Pick Tim → Test voice | sample plays | 🆕 |
-| T-1105 | Test voice button — unactivated | Pick a voice user doesn't have activated → Test voice | red error message surfaces the BytePlus `code=55000000` verbatim | 🆕 |
+| T-1104 | Test voice button — happy path | Pick Tim → Test voice | sample plays via Web Audio API; uses `api.synthesize()` not relative URL (bug #65 regression test) | ⚠ |
+| T-1105 | Test voice button — unactivated | Pick a voice user doesn't have activated → Test voice | red error message surfaces the BytePlus `code=55000000` verbatim — propagated through `api.synthesize` Error.message | 🆕 |
+| T-1106 | Test voice button — no Next.js 404 | Pick any voice → Test voice → if it fails, error toast must NOT be `<!DOCTYPE html>...` (the Next.js 404 shell). Should be the backend's plain error text | ✅ (bug #65) |
 
 ## 12. Storage / persistence  (P1)
 
@@ -255,11 +284,17 @@ Covered by §2.1.
 
 Tests marked 🆕 above. The biggest gaps:
 
-- **`clean_for_tts` golden samples** (T-221 to T-225). Right now we test each pattern by hand once. Build a small Python harness:
+- **`clean_for_tts` golden samples** (T-221 to T-225) + Session-13
+  text-helpers (T-228, T-230, T-413-T-418). Right now we test each
+  pattern by hand once, and Session 13 ran a 27-case truth-table
+  via an ad-hoc `/tmp/voice_fix_tests.py`. **Promote both into a
+  permanent pytest harness:**
   ```bash
-  packages/core/tests/test_clean_for_tts.py
+  packages/core/tests/test_text_helpers.py    # ReasoningStripper, sanitize_user_final, clean_for_tts
+  packages/core/tests/test_setup_skills.py    # recommend_template scoring + create_custom_agent
   ```
-  with `INPUT → EXPECTED` pairs. Regress every commit.
+  with `INPUT → EXPECTED` pairs. Regress every commit. This is now
+  load-bearing — voice quality depends on these filters being correct.
 - **LLM tier crossover** (T-710). The pricing calculator quietly assumes the BytePlus `[0,128]` LLM tier. For multi-turn sessions with growing history, every turn after the first probably crosses 128 input tokens and gets billed double. We have the `prompt_tokens` value in `llm_usage` events — wire it through.
 - **Voice catalogue regression** (T-1103). Add a CI check that fails the build if any template `voice_id` is missing from `VOICES_BY_ID`. Prevents another bug #59.
 - **MCP teardown** (T-904). Subprocess leaks would only show up after many sessions — easy to miss until a server runs out of file descriptors.
