@@ -1,13 +1,23 @@
 # Planning — next session
 
-Updated end of Session 14 (2026-05-23).
+Updated start of Session 15 (2026-05-23).
 
-> Sessions 12, 13, 14 wrapped UX polish + a voice-pipeline quality
-> overhaul + barge-in. The repo state going into the next session is
-> **clean main + Telegram tunnel running locally + 4 new follow-ups
-> queued from Session 13's findings + the existing Session-11 backlog**.
+> **The committed plan for Sessions 15+ lives in
+> [`PLANNING_SESSION15.md`](./PLANNING_SESSION15.md).** It covers a 4-phase
+> ~6-week roadmap to strip the stack to no-Docker, swap channels to polling/QR
+> (no public URLs needed), add a first-run wizard, and ship four free install
+> paths (pip / curl-bash / brew / winget) + daemon mode.
+>
+> Sessions 12, 13, 14 wrapped UX polish + voice-pipeline quality + barge-in +
+> Telegram tunnel. Session 14 added a research-driven repositioning round:
+> README is now vendor-neutral, and the strategic direction shifted from
+> "general OSS voice framework" to "easy-onboarding voice agent platform for
+> non-technical users + developers" (closer to OpenClaw's bar, distinct from
+> LiveKit/Pipecat's "low-level framework" niche).
 
 Recent commits on main:
+- `7c25034` README: vendor-neutral positioning, multilingual lead, accurate templates (Session 14)
+- `bb24302` Docs: capture Sessions 12-14 (Session 14)
 - `6997af7` Dashboard: fix Test-voice button (Session 14)
 - `193ff79` Voice: barge-in — Stop button + browser stop-word listener (Session 13)
 - `a2f4823` Voice: kill ASR hallucinations + reasoning-tag leaks + prompt hygiene (Session 13)
