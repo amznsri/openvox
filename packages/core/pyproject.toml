@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openvox-core"
-version = "0.1.5"
+version = "0.1.6"
 description = "Local-first, open-source voice agent platform — install with pip, run as a daemon, no Docker required."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -81,6 +81,14 @@ dependencies = [
   "opentelemetry-instrumentation-fastapi>=0.48b0",
   # Telephony
   "twilio>=9.3.0",
+  # PEP 594 removed `audioop` from the stdlib in Python 3.13.
+  # `packages/core/openvox/api/ws/twilio_stream.py` uses it for
+  # μ-law / linear PCM conversion on Twilio Media Streams. The
+  # `audioop-lts` package vendors the removed stdlib module under
+  # the same name, so the `import audioop` works unchanged across
+  # all supported Python versions. Conditional install: only pulled
+  # in on 3.13+ where the stdlib copy is gone.
+  "audioop-lts>=0.2.1; python_version >= '3.13'",
   # Utility
   "tenacity>=9.0.0",
   "orjson>=3.10.0",
