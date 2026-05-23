@@ -240,6 +240,33 @@ export const api = {
       { method: "DELETE" },
     ),
 
+  // ── Admin / first-run wizard ─────────────────────────────────────
+  // Phase 3 (`docs/PLANNING_SESSION15.md`). Resolution at runtime is
+  // env-var-first, store-fallback — see `openvox/secrets.py` on the
+  // backend.
+  setupStatus: () =>
+    http<{
+      complete: boolean;
+      have_llm: boolean;
+      have_voice: boolean;
+      providers_configured: Record<string, string[]>;
+    }>("/api/v1/admin/setup/status"),
+  setupSaveKeys: (provider: string, keys: Record<string, string>) =>
+    http<{
+      ok: boolean;
+      saved: string[];
+      deleted: string[];
+      status: {
+        complete: boolean;
+        have_llm: boolean;
+        have_voice: boolean;
+        providers_configured: Record<string, string[]>;
+      };
+    }>("/api/v1/admin/setup/keys", {
+      method: "POST",
+      body: JSON.stringify({ provider, keys }),
+    }),
+
   // ── Pricing ───────────────────────────────────────────────────────
   sessionPricing: (sessionId: string) =>
     http<SessionPricing>(`/api/v1/pricing/sessions/${sessionId}`),

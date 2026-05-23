@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from openvox.api.routes import (
+    admin as admin_routes,
     agents,
     auth as auth_routes,
     documents as documents_routes,
@@ -123,6 +124,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(auth_routes.router, prefix="/api/v1/auth", tags=["auth"])
+    app.include_router(admin_routes.router, prefix="/api/v1/admin", tags=["admin"])
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["agents"])
     app.include_router(documents_routes.router, prefix="/api/v1/agents", tags=["documents"])
     app.include_router(sessions.router, prefix="/api/v1/sessions", tags=["sessions"])
