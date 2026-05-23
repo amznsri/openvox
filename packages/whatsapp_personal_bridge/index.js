@@ -52,6 +52,35 @@ const SESSIONS_DIR = process.env.SESSIONS_DIR || "/data/sessions";
 const sessions = new Map();
 
 /**
+ * Build the Chrome flags we launch with.
+ *
+ * Two non-default flags are mandatory in Docker:
+ *   --no-sandbox / --disable-setuid-sandbox — Chromium can't sandbox
+ *   without elevated capabilities the container doesn't have.
+ *
+ * One optional flag controlled by env:
+ *   --ignore-certificate-errors — added when OPENVOX_INSECURE_TLS=true.
+ *   Networks running corporate TLS interception (Zscaler, BlueCoat,
+ *   etc.) inject their own CA into every HTTPS handshake. Chromium
+ *   rejects the unknown CA with ERR_CERT_AUTHORITY_INVALID, breaking
+ *   the page load to web.whatsapp.com. This flag is INSECURE — only
+ *   set OPENVOX_INSECURE_TLS=true when you've already chosen to trust
+ *   the intercepting proxy at the OS / network level. Mirrors the
+ *   Python core's OPENVOX_INSECURE_TLS toggle (see openvox/utils/http.py).
+ */
+function buildChromeArgs() {
+  const args = ["--no-sandbox", "--disable-setuid-sandbox"];
+  const insecure = (process.env.OPENVOX_INSECURE_TLS || "").toLowerCase();
+  if (insecure === "true" || insecure === "1" || insecure === "yes") {
+    args.push("--ignore-certificate-errors");
+    console.log(
+      "  ⚠ OPENVOX_INSECURE_TLS=true — Chromium will ignore TLS cert errors"
+    );
+  }
+  return args;
+}
+
+/**
  * Initialise (or re-initialise) the WhatsApp Client for an agent.
  * Idempotent: calling on an existing session destroys + recreates.
  */
@@ -82,8 +111,14 @@ async function startClient(agentId) {
       dataPath: SESSIONS_DIR,
     }),
     puppeteer: {
-      // Required for headless Chromium inside our Docker container.
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      // Use the apt-installed Chromium binary (see Dockerfile). Without
+      // this, whatsapp-web.js's bundled puppeteer instance ignores the
+      // PUPPETEER_EXECUTABLE_PATH env var and tries to launch the
+      // auto-downloaded Chromium that doesn't exist in this image.
+      // Falls through to puppeteer's default discovery when unset
+      // (useful for running the bridge outside Docker for dev).
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+      args: buildChromeArgs(),
     },
   });
   state.client = client;

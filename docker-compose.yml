@@ -244,6 +244,11 @@ services:
       PORT: "4100"
       PYTHON_WEBHOOK: "http://core:8000/api/v1/telephony/whatsapp_personal/inbound"
       SESSIONS_DIR: "/data/sessions"
+      # Inherit the same insecure-TLS toggle the Python core uses. On
+      # corporate networks with TLS interception (Zscaler etc.) this is
+      # required for Chromium to reach web.whatsapp.com; on normal
+      # networks it should stay unset.
+      OPENVOX_INSECURE_TLS: ${OPENVOX_INSECURE_TLS:-}
     volumes:
       - whatsapp-sessions:/data/sessions
     depends_on:
