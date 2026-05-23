@@ -215,6 +215,28 @@ export const api = {
   telegramDisconnect: (agentId: string) =>
     http<{ disconnected: boolean }>(`/api/v1/telephony/telegram/connect/${agentId}`, { method: "DELETE" }),
 
+  // ── WhatsApp Personal (whatsapp-web.js bridge) ────────────────────
+  // Connect spins up the bridge session; status() is then polled every
+  // ~2s until status==="ready" (and the QR appears in between).
+  whatsappPersonalConnect: (agentId: string) =>
+    http<{ connected: boolean; started?: boolean; agent_id?: string }>(
+      "/api/v1/telephony/whatsapp_personal/connect",
+      { method: "POST", body: JSON.stringify({ agent_id: agentId }) },
+    ),
+  whatsappPersonalStatus: (agentId: string) =>
+    http<{
+      status: "not_started" | "initializing" | "qr" | "authenticated" | "ready" | "disconnected" | "error" | "bridge_offline";
+      qr?: string | null;
+      info?: { wid: string | null; pushname: string | null; platform: string | null } | null;
+      last_error?: string | null;
+      hint?: string;
+    }>(`/api/v1/telephony/whatsapp_personal/status/${agentId}`),
+  whatsappPersonalDisconnect: (agentId: string) =>
+    http<{ disconnected: boolean }>(
+      `/api/v1/telephony/whatsapp_personal/connect/${agentId}`,
+      { method: "DELETE" },
+    ),
+
   // ── Pricing ───────────────────────────────────────────────────────
   sessionPricing: (sessionId: string) =>
     http<SessionPricing>(`/api/v1/pricing/sessions/${sessionId}`),

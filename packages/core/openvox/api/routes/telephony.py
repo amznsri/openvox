@@ -158,6 +158,182 @@ async def whatsapp_event(request: Request) -> dict:
     return {"received": True, "object": body.get("object")}
 
 
+# ── WhatsApp Personal (unofficial QR-scan via whatsapp-web.js) ──────
+# Separate from WhatsApp Business above. Personal mode uses the
+# whatsapp-web.js library running in a sibling Docker service (the
+# `whatsapp-bridge` profile). No public URL needed. Account ban risk
+# is real — surfaced prominently in the dashboard UI.
+
+
+class WhatsappPersonalConnectRequest(BaseModel):
+    agent_id: str
+
+
+@router.post("/whatsapp_personal/connect")
+async def whatsapp_personal_connect(
+    req: WhatsappPersonalConnectRequest,
+) -> dict[str, Any]:
+    """Spin up the whatsapp client for this agent and mark it enabled.
+
+    The actual QR code arrives a few seconds later — dashboard polls
+    ``/whatsapp_personal/status`` until ``status == "qr"`` or ``ready``.
+    """
+    from openvox.db import db_session
+    from openvox.db.models import Agent
+    from openvox.telephony import whatsapp_personal as wpp
+
+    if not await wpp.is_bridge_reachable():
+        raise HTTPException(
+            502,
+            "WhatsApp bridge container is not running. Run "
+            "`docker compose --profile whatsapp up -d whatsapp-bridge` "
+            "to enable WhatsApp Personal mode.",
+        )
+
+    # Persist the enabled flag BEFORE telling the bridge to connect, so
+    # a crash mid-connect leaves a consistent record we can resume from.
+    async with db_session() as s:
+        a = await s.get(Agent, req.agent_id)
+        if a is None:
+            raise HTTPException(404, "agent not found")
+        channels = dict(a.channels or {})
+        channels["whatsapp_personal"] = {"enabled": True}
+        a.channels = channels
+
+    try:
+        result = await wpp.connect(req.agent_id)
+    except Exception as e:
+        raise HTTPException(502, f"bridge /start failed: {e}") from e
+
+    return {"connected": True, **result}
+
+
+@router.get("/whatsapp_personal/status/{agent_id}")
+async def whatsapp_personal_status(agent_id: str) -> dict[str, Any]:
+    """Polled by the dashboard QR view (every ~2s) until ready."""
+    from openvox.telephony import whatsapp_personal as wpp
+
+    if not await wpp.is_bridge_reachable():
+        return {
+            "status": "bridge_offline",
+            "hint": "Run `docker compose --profile whatsapp up -d whatsapp-bridge`.",
+        }
+    try:
+        return await wpp.status(agent_id)
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@router.delete("/whatsapp_personal/connect/{agent_id}")
+async def whatsapp_personal_disconnect(agent_id: str) -> dict[str, Any]:
+    """Tear down + wipe persisted auth. Next connect needs a fresh QR scan."""
+    from openvox.db import db_session
+    from openvox.db.models import Agent
+    from openvox.telephony import whatsapp_personal as wpp
+
+    # Best-effort bridge cleanup — proceed with DB clear even if the
+    # bridge is unreachable (operator may have already killed the
+    # bridge container; we still want to clear our local record).
+    try:
+        await wpp.disconnect(agent_id)
+    except Exception as e:
+        logger.warning("whatsapp_personal bridge disconnect failed: %s", e)
+
+    async with db_session() as s:
+        a = await s.get(Agent, agent_id)
+        if a is None:
+            raise HTTPException(404, "agent not found")
+        channels = dict(a.channels or {})
+        channels.pop("whatsapp_personal", None)
+        a.channels = channels
+
+    return {"disconnected": True}
+
+
+@router.post("/whatsapp_personal/inbound")
+async def whatsapp_personal_inbound(request: Request) -> dict[str, Any]:
+    """Webhook called by the Node bridge when a message arrives.
+
+    Payload shape (from bridge index.js):
+        {
+            "agent_id": "<uuid>",
+            "from":     "15551234567@c.us",
+            "body":     "Hello there",
+            "type":     "chat" | "audio" | "image" | ...,
+            "timestamp": <unix-seconds>,
+            "has_media": true | false
+        }
+
+    We dispatch in a background task so the bridge gets a fast ack
+    and isn't held by long LLM turns.
+    """
+    body = await request.json()
+    agent_id = body.get("agent_id")
+    if not agent_id:
+        return {"ok": True, "ignored": True, "reason": "no agent_id"}
+
+    asyncio.create_task(_handle_whatsapp_personal_update(agent_id, body))
+    return {"ok": True}
+
+
+async def _handle_whatsapp_personal_update(
+    agent_id: str, msg: dict[str, Any]
+) -> None:
+    """Run an inbound WhatsApp message through the agent's LLM + reply.
+
+    Text-only for v1: media handling (voice notes / images) deferred
+    to a follow-up. Most WhatsApp Personal traffic is text anyway.
+    """
+    from openvox.db import db_session
+    from openvox.db.models import Agent
+    from openvox.telephony import whatsapp_personal as wpp
+
+    body_text = (msg.get("body") or "").strip()
+    sender = msg.get("from") or ""
+    if not body_text:
+        logger.info(
+            "whatsapp_personal: empty body from %s (type=%s) — ignoring",
+            sender, msg.get("type"),
+        )
+        return
+
+    # Look up the agent for its system_prompt + model + skills.
+    async with db_session() as s:
+        a = await s.get(Agent, agent_id)
+        if a is None:
+            logger.warning(
+                "whatsapp_personal: inbound for unknown agent=%s", agent_id
+            )
+            return
+        # Snapshot fields we need outside the session.
+        system_prompt = a.system_prompt
+        greeting = a.greeting
+        llm_model = a.llm_model
+
+    # Run the same text-turn path the dashboard playground uses, so we
+    # get the full skill loop (web_search, lookup_order, etc.) for free.
+    from openvox.api.routes.agents import TurnRequest, agent_text_turn
+
+    try:
+        result = await agent_text_turn(
+            agent_id, TurnRequest(user_text=body_text, history=[])
+        )
+        reply_text = (result.get("text") or "").strip()
+    except Exception:
+        logger.exception("whatsapp_personal: agent turn failed")
+        reply_text = "Sorry, something went wrong on my end. Please try again."
+
+    if not reply_text:
+        # Some agent turns end with no text (pure skill calls, etc.).
+        # Don't spam an empty message back; just no-op.
+        return
+
+    try:
+        await wpp.send_text(agent_id, sender, reply_text)
+    except Exception:
+        logger.exception("whatsapp_personal: send_text failed")
+
+
 # ── Telegram ────────────────────────────────────────────────────────
 # Full pipeline: verify token / set webhook on connect, then handle
 # inbound text + voice Updates by feeding them through a VoiceSession
