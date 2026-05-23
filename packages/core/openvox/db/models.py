@@ -402,3 +402,36 @@ class EvalRun(Base):
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ProviderKey(Base):
+    """Encrypted provider API key — populated by the Phase 3 setup wizard.
+
+    Resolution order at runtime is env var → this table. That means
+    operators running OpenVox via Docker with `.env` populated never
+    touch this table; the wizard's audience is CLI-mode personal users
+    who'd otherwise have to hand-edit `.env`.
+
+    Values are encrypted with a per-machine symmetric key stored at
+    ``~/.openvox/secret.key`` (0600). See ``openvox/secrets.py`` for
+    encrypt/decrypt + the key-lifecycle code.
+
+    Composite primary key on (provider, key_name) keeps things simple
+    — a provider can have multiple named keys (e.g. byteplus has
+    separate LLM and Voice keys) and we want UPSERT semantics, not
+    duplicates.
+    """
+
+    __tablename__ = "provider_keys"
+
+    # e.g. "byteplus", "openai", "anthropic", "elevenlabs", "twilio"
+    provider: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # e.g. "llm_api_key", "voice_api_key", "access_key", "secret_key"
+    key_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Fernet token — base64-encoded ciphertext + nonce + MAC. Long
+    # because Fernet adds ~80 bytes of overhead per value.
+    encrypted_value: Mapped[str] = mapped_column(Text, nullable=False)
+    # Audit trail — when last set. Advances on UPSERT.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
+    )

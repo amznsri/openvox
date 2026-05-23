@@ -1,0 +1,133 @@
+"""Admin endpoints — backing API for the dashboard's first-run wizard.
+
+Phase 3 of `docs/PLANNING_SESSION15.md`. Three endpoints:
+
+- ``GET  /api/v1/admin/setup/status``   — what's configured + is setup complete?
+- ``POST /api/v1/admin/setup/keys``     — save provider keys (encrypted-at-rest)
+- ``DELETE /api/v1/admin/setup/keys``   — remove a stored key
+
+The dashboard's wizard pages (``apps/dashboard/src/app/dashboard/setup/*``)
+poll status on mount, present the form when ``complete == false``, and
+POST the user's pasted keys here. The encrypted-store layer
+(``openvox/secrets.py``) handles persistence; this module is just the
+HTTP shell.
+
+Security notes
+==============
+- Endpoints don't require auth today because OpenVox runs local-first;
+  the operator and the admin are the same person. When
+  ``OPENVOX_AUTH=enabled`` (multi-tenant cloud), these must be gated
+  behind admin-only authorization — see the TODO at the top of
+  ``check_admin()`` below.
+- POSTed values flow into Fernet-encrypted storage. Never logged or
+  returned in any response.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
+from openvox import secrets as secret_store
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+def check_admin() -> None:
+    """Authorization placeholder for the multi-tenant future.
+
+    Today: no-op. OpenVox runs local-first; operator == admin.
+
+    When ``OPENVOX_AUTH=enabled`` ships (cloud mode), this should
+    inspect the request's bearer token and 403 if the caller isn't
+    an admin. Keep all admin endpoints calling this so the eventual
+    gate has a single edit point.
+    """
+    # TODO: when OPENVOX_AUTH lands, verify admin role from JWT.
+    return None
+
+
+class SetupKeysRequest(BaseModel):
+    """Save one or more provider keys at once.
+
+    Example body:
+        {
+          "provider": "byteplus",
+          "keys": {
+            "llm_api_key": "01a2b3c4...",
+            "voice_api_key": "01a2b3c4..."
+          }
+        }
+
+    An empty string for a key value deletes the stored key (caller
+    can use this to "forget" a key without a separate DELETE call).
+    """
+
+    provider: str = Field(..., min_length=1, max_length=64)
+    keys: dict[str, str] = Field(default_factory=dict)
+
+
+@router.get("/setup/status")
+async def setup_status() -> dict[str, Any]:
+    """Tell the dashboard whether the first-run wizard should run.
+
+    Used by ``apps/dashboard/src/app/dashboard/layout.tsx`` (or
+    equivalent) on mount: if ``complete == false`` and the user
+    isn't already on /dashboard/setup, redirect them there.
+    """
+    check_admin()
+    return await secret_store.setup_complete()
+
+
+@router.post("/setup/keys")
+async def setup_keys(req: SetupKeysRequest) -> dict[str, Any]:
+    """Persist a batch of provider keys.
+
+    Returns the updated setup-status so the wizard can refresh its
+    "what's configured" panel without a second round-trip.
+    """
+    check_admin()
+
+    provider = req.provider.strip().lower()
+    if not provider:
+        raise HTTPException(400, "provider is required")
+    if not req.keys:
+        raise HTTPException(400, "keys map must be non-empty")
+
+    saved: list[str] = []
+    deleted: list[str] = []
+    for key_name, value in req.keys.items():
+        try:
+            await secret_store.set_provider_key(provider, key_name, value)
+        except ValueError as e:
+            raise HTTPException(400, f"invalid key '{key_name}': {e}") from e
+        (deleted if value == "" else saved).append(key_name)
+
+    logger.info(
+        "admin/setup/keys: provider=%s saved=%s deleted=%s",
+        provider, saved, deleted,
+    )
+
+    return {
+        "ok": True,
+        "saved": saved,
+        "deleted": deleted,
+        "status": await secret_store.setup_complete(),
+    }
+
+
+class DeleteKeyRequest(BaseModel):
+    provider: str = Field(..., min_length=1, max_length=64)
+    key_name: str = Field(..., min_length=1, max_length=64)
+
+
+@router.delete("/setup/keys")
+async def delete_key(req: DeleteKeyRequest) -> dict[str, Any]:
+    """Remove a single stored key — env-var fallback resumes."""
+    check_admin()
+    await secret_store.delete_provider_key(req.provider, req.key_name)
+    return {"ok": True, "status": await secret_store.setup_complete()}
