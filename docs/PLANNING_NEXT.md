@@ -1,28 +1,97 @@
 # Planning — next session
 
-Updated start of Session 15 (2026-05-23).
+Updated end of Session 15 (2026-05-22..23).
 
-> **The committed plan for Sessions 15+ lives in
-> [`PLANNING_SESSION15.md`](./PLANNING_SESSION15.md).** It covers a 4-phase
-> ~6-week roadmap to strip the stack to no-Docker, swap channels to polling/QR
-> (no public URLs needed), add a first-run wizard, and ship four free install
-> paths (pip / curl-bash / brew / winget) + daemon mode.
+> **State going into the next session: Phase 2 done on main; Phase 1 PR-1
+> shipped on `phase1-implementation` branch (not yet merged); Phase 1 PR-2
+> through PR-6 + Phase 3 + Phase 4 are the remaining work.** The
+> committed plan continues to live in [`PLANNING_SESSION15.md`](./PLANNING_SESSION15.md);
+> the Phase 1 spike findings in [`phase1-audit.md`](./phase1-audit.md) replaced
+> the original 2-week Phase 1 estimate with ~4 days of actual work.
 >
-> Sessions 12, 13, 14 wrapped UX polish + voice-pipeline quality + barge-in +
-> Telegram tunnel. Session 14 added a research-driven repositioning round:
-> README is now vendor-neutral, and the strategic direction shifted from
-> "general OSS voice framework" to "easy-onboarding voice agent platform for
-> non-technical users + developers" (closer to OpenClaw's bar, distinct from
-> LiveKit/Pipecat's "low-level framework" niche).
+> The "stack diet" promised by the spike shipped in Phase 1 PR-1: 6 services
+> → 4. Node gateway gone. Redis (which was never actually used) gone.
+> Browser talks directly to FastAPI core. See `SESSION_LOG.md` Session 15
+> entry for the full narrative.
 
-Recent commits on main:
-- `7c25034` README: vendor-neutral positioning, multilingual lead, accurate templates (Session 14)
-- `bb24302` Docs: capture Sessions 12-14 (Session 14)
-- `6997af7` Dashboard: fix Test-voice button (Session 14)
-- `193ff79` Voice: barge-in — Stop button + browser stop-word listener (Session 13)
-- `a2f4823` Voice: kill ASR hallucinations + reasoning-tag leaks + prompt hygiene (Session 13)
-- `cf6734e` Templates: Copy + auto-suffix (Session 12)
-- `dba8200` Schedules: Simple date/time/repeat trigger (Session 12)
+Recent commits on `main`:
+- `8bad56a` Merge phase1-spike — audit + SQLite parity (Session 15)
+- `33217ca` Merge phase2-channel-adapters — Telegram polling + WhatsApp Personal (Session 15)
+- `4b955e7` WhatsApp bridge: apt Chromium + Zscaler TLS toggle (Session 15)
+- `261d7f0` Phase 2.3+2.4: WhatsApp Personal QR adapter (Session 15)
+- `60579ca` Phase 2.5+2.6: Docs — supersede ngrok, document WeChat skip (Session 15)
+- `805be51` Phase 2.1+2.2: Telegram polling (Session 15)
+- `7c25034` README: vendor-neutral positioning (Session 14)
+- `d1972bf` Docs: PLANNING_SESSION15.md (Session 14)
+
+On `phase1-implementation` (not yet merged):
+- `(PR-1)` Delete Node gateway + Redis + port auth scaffolds to FastAPI
+  (−454 / +35 lines)
+
+## Suggested next session
+
+### Immediate (within Phase 1)
+
+The 5 remaining PR-sized chunks of Phase 1 implementation, in priority order:
+
+| PR | Effort | What |
+|---|---|---|
+| **PR-2** | 1 day | CLI scaffold (`openvox run` / `start` / `stop` / `status` / `restart` / `onboard` / `logs` / `version`). Replace stub `cli.py` with typer-based `cli/` package. Wire `webbrowser.open()` into `run` after `/health` returns 200. |
+| **PR-3** | 0.5 day | Next.js static export — `output: 'export'` in `next.config.js`. FastAPI mounts `apps/dashboard/out/` at `/dashboard/*`. Enables single-process serving (dashboard + API on the same port) for CLI mode. |
+| **PR-4** | (subsumed) | Auth endpoints already ported in PR-1. |
+| **PR-5** | 0.5 day | Run full TESTPLAN P0+P1 in both modes (Docker + CLI). Fix any breakage. |
+| **PR-6** | 0.5 day | `docs/install-cli.md` + README "Quick install" section + operator-upgrade notes (orphan container cleanup from PR-1). |
+
+After Phase 1 lands on main: `pip install openvox && openvox run` is a
+working dev-experience.
+
+### Mid-term (Phase 3 + 4)
+
+Both can begin right after Phase 1 PR-6:
+
+- **Phase 3** (~1 week): First-run wizard for API keys, encrypted local
+  store, template picker, optional channel connect. `openvox onboard` CLI
+  equivalent. Specs in `PLANNING_SESSION15.md`.
+- **Phase 4** (~2 weeks): Four free install paths (pip / curl-bash / brew /
+  winget) + daemon mode (launchd / systemd / Windows Service). Specs in
+  `PLANNING_SESSION15.md`. **One-time prerequisite — reserve `openvox` on
+  PyPI** before Phase 4 starts. Free; takes 5 minutes; blocks the whole
+  distribution story if the name is taken.
+
+### Carry-forward from Session 15
+
+| Item | Why deferred |
+|---|---|
+| WhatsApp Personal phone-scan E2E test (T-WP-1) | User doesn't have a separate test phone number; smoke test (QR generates) is as far as we can validate today |
+| WhatsApp Personal stale-lock auto-recovery | Bridge could `rm -f SingletonLock` on startup if Chromium crashed previously; small ergonomic improvement |
+| Telegram polling: per-sender history for WhatsApp Personal too | Currently each WA message starts a fresh LLM turn; should reuse sender_id as session key |
+| Per-channel STT language-hint audit | Confirm `voice_language` reaches STTConfig on Twilio inbound + future WeChat/Lark voice paths |
+
+### Original backlog (still pending)
+
+Same items as the post-Session-14 list; nothing was pulled in or pushed
+out in Session 15 beyond Phase 2:
+
+1. **Scheduler webhook trigger** (event-driven jobs).
+2. **Skill hot-reload** (`watchfiles` on `~/.openvox/skills/`).
+3. **Curated MCP server catalogue** with one-click pre-fill.
+4. **CRM-via-MCP** for the SDR template (HubSpot / Salesforce snippets).
+5. **Server-side VAD reliability** (carry-forward from Session 13).
+6. **Speech-to-Speech** (OpenAI Realtime adapter).
+7. **Live interpretation** pipeline.
+8. **Voice podcast generation**.
+9. **BytePlus RTC client SDK** wiring.
+10. **Twilio Media Streams** inbound bridge.
+11. **WhatsApp Business inbound** routing (production webhook path).
+12. **Alembic migrations** (replace `Base.metadata.create_all()` shim).
+13. **Promote test_storage_sqlite_parity.py to CI** alongside the Session-13
+    truth-table tests (still in `/tmp/...` rather than `packages/core/tests/`
+    for those).
+14. **GCS / Alibaba OSS** storage implementations.
+15. **Cloud-hosted multi-tenant mode** + OAuth.
+
+(Items 1, 13 are particularly low-risk and good first-tasks for a future
+session that doesn't want to bite into Phase 3 yet.)
 
 ---
 

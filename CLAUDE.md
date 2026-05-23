@@ -1304,6 +1304,111 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     — zero hits this time, but a CI/lint rule that forbids the
     pattern is worth adding.
 
+### Session 15 — Phase 2 channels + Phase 1 PR-1 stack diet
+
+66. **Puppeteer cache-path failure inside Docker.** The WhatsApp
+    Personal bridge (whatsapp-web.js → Puppeteer → Chromium) failed
+    on first launch with:
+        `Could not find Chrome (ver. 146.0.7680.31). This can occur if
+         either 1. you did not perform an installation before running
+         the script (e.g. npx puppeteer browsers install chrome)
+         or 2. your cache path is incorrectly configured
+         (/root/.cache/puppeteer).`
+    Root cause: my original Dockerfile installed all of Chromium's
+    runtime libraries (libgtk-3-0, libnss3, libxshmfence, etc.) but
+    didn't install Chromium itself — relying on Puppeteer's auto-
+    downloader. That downloader's cache conventions (binary name +
+    version subdirectory under `~/.cache/puppeteer/`) shift between
+    Puppeteer versions and don't survive Docker layer-cache cleanly.
+    *Fix*: install `chromium` from Debian apt directly + set
+    `PUPPETEER_SKIP_DOWNLOAD=true` + `PUPPETEER_EXECUTABLE_PATH=
+    /usr/bin/chromium`. Also explicitly pass `executablePath` to
+    `puppeteer.launch()` in `index.js` — whatsapp-web.js's bundled
+    puppeteer instance ignores the env var. apt's chromium also
+    handles its own library transitive deps, so the Dockerfile
+    shrinks from 20+ explicit libs to just `chromium +
+    fonts-liberation + ca-certificates`.
+    **Lesson**: when running Puppeteer inside Docker, NEVER rely on
+    Puppeteer's auto-downloader. Always pin to a known-installed
+    Chromium (apt for Debian/Ubuntu images, alpine-chromium for
+    Alpine). Set both env var AND explicit `executablePath` —
+    libraries that embed their own puppeteer instance often ignore
+    the env var.
+
+67. **Zscaler TLS interception breaks Chromium too.** After fixing
+    bug #66, the next error was
+    `ERR_CERT_AUTHORITY_INVALID at https://web.whatsapp.com/` — same
+    root cause `OPENVOX_INSECURE_TLS=true` solves on the Python side
+    (corporate proxy injects its own CA, Chromium rejects unknown
+    CA). *Fix*: bridge's `index.js` reads `OPENVOX_INSECURE_TLS`
+    from env; when truthy, appends `--ignore-certificate-errors` to
+    Chrome's launch args and logs the trade-off prominently.
+    `docker-compose.yml` passes the variable through to the bridge
+    so the existing `.env` toggle just works.
+    **Lesson**: when adding new components that make outbound HTTPS
+    calls (especially headless-browser components), check for the
+    EXISTING `OPENVOX_INSECURE_TLS` toggle and respect it. Users
+    behind corporate proxies have already opted into the trade-off
+    at the OS / network level; making each new component reinvent
+    the toggle is annoying.
+
+68. **Stale Chromium profile lock blocks bridge restart.** When the
+    WhatsApp bridge subprocess died mid-launch (Chromium crash, the
+    container OOM'd, etc.), the next start fails with:
+        `The profile appears to be in use by another Chromium process
+         (38) on another computer (28fcd1b7c13e). Chromium has locked
+         the profile so that it doesn't get corrupted.`
+    The `SingletonLock` file inside `/data/sessions/<agent_id>/` is
+    leftover from the crashed process. Recovery today is manual:
+        `docker volume rm openvox_whatsapp-sessions`
+    which wipes the volume + forces a fresh QR scan. Quick fix
+    deferred to follow-up: on bridge startup, `rm -f` the
+    SingletonLock files before initialising any client.
+    **Lesson**: any Chromium-based subprocess in a container needs
+    crash-resilient startup. The "is the profile locked" check is
+    designed for cross-machine cases where lock truly matters; in a
+    single-container deployment it just gets in the way.
+
+69. **FastAPI rejects union return-type annotations.** Porting the
+    auth scaffolds from the Node gateway to FastAPI in Phase 1 PR-1,
+    I wrote:
+        `async def github_start() -> JSONResponse | RedirectResponse:`
+    FastAPI errored at import with:
+        `Invalid args for response field! Hint: check that
+         starlette.responses.JSONResponse |
+         starlette.responses.RedirectResponse is a valid Pydantic
+         field type.`
+    Pydantic can't build a response model from a Response | Response
+    union. *Fix*: add `response_model=None` to the decorator and
+    drop the return-type annotation:
+        `@router.get("/github/start", response_model=None)`
+        `async def github_start():`
+    **Lesson**: any FastAPI endpoint that can return DIFFERENT
+    Response subclasses on different code paths needs
+    `response_model=None` — otherwise FastAPI tries to introspect the
+    union as a Pydantic schema and crashes. This applies to any
+    endpoint that mixes JSONResponse / RedirectResponse / Response
+    in its branches.
+
+70. **Orphan containers after `docker-compose.yml` rewrite.** Phase 1
+    PR-1 deleted the `server` and `redis` services from
+    `docker-compose.yml`. The OLD containers (`openvox-server`,
+    `openvox-redis`) kept running — `docker compose up` doesn't
+    touch containers whose service definitions no longer exist in
+    the file. To clean up, an explicit one-time step is needed:
+        `docker stop openvox-server openvox-redis`
+        `docker rm   openvox-server openvox-redis`
+        `docker volume rm openvox_redis-data`  # optional
+    Any operator upgrading from a pre-Phase-1 install hits this.
+    *Fix*: document the steps in the PR-6 README update (the
+    Session 15 SESSION_LOG.md entry already captures the procedure).
+    **Lesson**: when a service is removed from `docker-compose.yml`
+    in a release, the changelog MUST include the manual cleanup
+    step. Compose's design philosophy is "manage only what I'm
+    told about" — removed services become invisible-but-running.
+    Consider a `scripts/upgrade.sh` that automates the cleanup for
+    operators.
+
 ---
 
 ## 9. Known constraints / environment quirks

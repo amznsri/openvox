@@ -73,6 +73,9 @@ dependencies = [
   # Hot-reload of user skills in ~/.openvox/skills/ — small async-friendly
   # wrapper around inotify/FSEvents/ReadDirectoryChangesW.
   "watchfiles>=0.24.0",
+  # CLI framework — backs `openvox version`/`info`/`run`. Click-based,
+  # type-hint-driven, plays nicely with the rest of our Python stack.
+  "typer>=0.12.0",
 ]
 
 [project.optional-dependencies]
@@ -89,7 +92,11 @@ local-stt = [
 ]
 
 [project.scripts]
-openvox-core = "openvox.cli:main"
+# Phase 1 PR-2: renamed openvox-core → openvox. This is the user-facing
+# binary name that `pip install openvox` (or `pip install openvox-core`)
+# exposes on the user's PATH. Matches the project name people will
+# search for.
+openvox = "openvox.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["openvox"]

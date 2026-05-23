@@ -4,8 +4,11 @@
  * which proxies to the Python core.
  */
 
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
-const WS = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3001";
+// Defaults point directly at the FastAPI core (port 8000). The Node gateway
+// at :3001 was deleted in Phase 1 (docs/phase1-audit.md) — these defaults
+// match the new docker-compose.yml NEXT_PUBLIC_API_URL/WS_URL values.
+const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const WS = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
 
 async function http<T>(path: string, init: RequestInit = {}): Promise<T> {
   // Only attach `Content-Type: application/json` when there's a body

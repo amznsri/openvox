@@ -45,19 +45,54 @@ TypeScript to extend any piece.
   runner. Simple-mode UI for non-technical scheduling.
 - 🛡️ **GDPR-aware** — configurable retention, data residency, transcript-only mode, PII masking.
 
-## Quick start
+## Quick install
+
+Two install modes — pick the one that matches you. Both share the same
+agents, skills, templates, and dashboard.
+
+### Personal install (CLI mode)
 
 ```bash
-# 1. Configure — add at least one LLM key and one voice key.
+git clone https://github.com/amznsri/openvox.git
+cd openvox/packages/core
+pip install -e .
+
+cp ../../.env.example ../../.env
+$EDITOR ../../.env       # paste BYTEPLUS_LLM_API_KEY or OPENAI_API_KEY
+
+openvox run              # foreground server + auto-opens browser
+```
+
+`openvox run` starts a single Python process and opens the dashboard
+in your browser. See [`docs/install-cli.md`](./docs/install-cli.md) for
+the `version` / `info` / `--port` / `--no-browser` options.
+
+> **Coming in Phase 4**: `pip install openvox-core` from PyPI,
+> `brew install openvox`, `winget install OpenVox.OpenVox`, plus daemon
+> mode (`openvox start` — always-running background service). Roadmap:
+> [`docs/PLANNING_SESSION15.md`](./docs/PLANNING_SESSION15.md).
+
+### Production install (Docker mode)
+
+```bash
+git clone https://github.com/amznsri/openvox.git
+cd openvox
 cp .env.example .env
-$EDITOR .env       # e.g. OPENAI_API_KEY=... or BYTEPLUS_LLM_API_KEY=...
+$EDITOR .env       # add at least one LLM key + one voice key
 
-# 2. Run
 docker compose up --build
-
-# 3. Open the dashboard
 open http://localhost:3000
 ```
+
+Brings up four services: core + dashboard + postgres (+ optional
+`--profile whatsapp` for WhatsApp Personal or `--profile tunnel`
+for ngrok). See [`docs/install-docker.md`](./docs/install-docker.md)
+when written (Phase 4).
+
+> **Upgrading an existing install?** If you're pulling the latest
+> after a long pause, check [`docs/upgrade-notes.md`](./docs/upgrade-notes.md)
+> — Phase 1 deleted the Node gateway + Redis services, which means a
+> one-time orphan-container cleanup is required.
 
 That's it. The dashboard ships with **29 ready-to-run templates** — pick one and you have a
 working voice agent in under a minute. Or click **"Build by voice"** in the agent creator and

@@ -48,6 +48,11 @@ A **full regression pass** runs every P0+P1 — about an hour.
 | T-104 | TLS escape hatch honored | `.env` has `OPENVOX_INSECURE_TLS=true` OR `docker/extra-ca.pem` populated | core logs show no `CERTIFICATE_VERIFY_FAILED` on first BytePlus call (bug #11) | ✅ |
 | T-105 | Dashboard fresh bundle | After TS edit + rebuild + hard-refresh | new feature visible (bug #40 — stale Next.js build) | ✅ |
 | T-106 | Hot-copy lands in container | `docker cp packages/core/openvox/. openvox-core:/app/openvox` then restart | listing inside container shows updated mtime — NOT nested as `/app/openvox/openvox/` (bug #41) | ✅ |
+| T-107 | Stack diet — 4 services not 6 | After Phase 1 PR-1 (commit on phase1-implementation): `docker ps --filter name=openvox` | shows core / dashboard / postgres (+ optional ngrok / whatsapp-bridge). NO openvox-server or openvox-redis (Session 15) | ✅ |
+| T-108 | Browser→core direct | `curl http://localhost:8000/api/v1/agents` returns 200 + JSON list | Was on :3001 (gateway) before Session 15; gateway deleted (Session 15 PR-1) | ✅ |
+| T-109 | `/api/v1/auth/me` on core | `curl http://localhost:8000/api/v1/auth/me` | `{"id":"local","name":"Local User","provider":"local"}` (synthetic local user when OPENVOX_AUTH!=enabled). Ported from deleted Node gateway (Session 15) | ✅ |
+| T-110 | OAuth scaffolds graceful | `curl http://localhost:8000/api/v1/auth/github/start` (no client_id env set) | HTTP 501 + `{"error":"github oauth not configured"}` — link doesn't 404 (Session 15) | ✅ |
+| T-111 | Orphan-container cleanup (operator-upgrade) | After pulling Phase 1 PR-1, run `docker stop openvox-server openvox-redis; docker rm openvox-server openvox-redis` | Containers removed; `docker compose up` continues working with the 4-service stack (Session 15 bug #70 — document in PR-6 README) | 🆕 |
 
 ## 2. Voice pipeline  (P0 = 2.1, P1 = rest)
 
@@ -123,6 +128,14 @@ Covered by §2.1.
 | T-324 | Session row persisted | After T-321; check `/dashboard/observability` | new row with `channel=telegram` and both user + assistant Transcripts (bug #55) | ✅ |
 | T-325 | Tunnel detection | With `docker compose --profile tunnel up -d ngrok` running, `curl /api/v1/telephony/public_url` | `{"available": true, "source": "ngrok", "url": "https://...ngrok-free.dev"}` — dashboard's Connect Telegram modal no longer shows "No public tunnel" banner (Session 14) | ✅ |
 | T-326 | Tunnel-down graceful banner | Stop ngrok: `docker compose --profile tunnel down ngrok`; reload Channels page | yellow "No public tunnel detected" callout appears with the .env / ngrok instructions (Session 14) | ✅ |
+| T-327 | Telegram polling mode connect | Channels → Telegram → Connect with mode=polling, paste BotFather token | Wizard shows green "Polling mode — no public URL needed" callout; Connect succeeds even with ngrok stopped; bot replies to inbound messages within ~1s (Session 15) | ✅ |
+| T-328 | Telegram polling resumes after core restart | Connect a bot in polling mode → `docker compose restart core` | core log shows `telegram polling: started N agent(s) at boot`; bot continues responding to messages (Session 15) | ✅ |
+| T-329 | Webhook-mode Telegram backward-compat | Existing webhook-mode bot (no `mode` field in channels.telegram) | Continues working unchanged via /telegram/webhook handler. `start_all_pollers` deliberately skips agents without `mode=="polling"` (Session 15) | ✅ |
+| T-330 | WhatsApp Personal — bridge offline graceful | With `--profile whatsapp` NOT running, click Connect | Wizard shows the exact `docker compose --profile whatsapp up -d whatsapp-bridge` command in a yellow callout (Session 15) | ✅ |
+| T-331 | WhatsApp Personal — QR generation | `--profile whatsapp up`, click Connect | Status polls return `qr` within ~3s; PNG data-URL renders in the wizard (Session 15) | ✅ (smoke) |
+| T-332 | WhatsApp Personal — phone-scan E2E | T-331 + scan QR with test phone | wizard transitions qr → authenticated → ready; "Connected as X" shown; inbound message → bot replies | 🚧 (no test phone available end Session 15) |
+| T-333 | WhatsApp Personal — Zscaler TLS toggle | With `OPENVOX_INSECURE_TLS=true` in `.env`, bridge restart | bridge log shows `⚠ OPENVOX_INSECURE_TLS=true — Chromium will ignore TLS cert errors`; Chromium reaches web.whatsapp.com (Session 15 bug #67) | ✅ |
+| T-334 | WhatsApp Personal — stale-lock recovery | Crash bridge mid-launch; restart | Currently FAILS — `SingletonLock` blocks next start. Manual recovery: `docker volume rm openvox_whatsapp-sessions` (Session 15 bug #68) | ⚠ |
 
 ### 3.3 Twilio  (P2)
 

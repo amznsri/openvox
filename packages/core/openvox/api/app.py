@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from openvox.api.routes import (
     agents,
+    auth as auth_routes,
     documents as documents_routes,
     evals as evals_routes,
     health,
@@ -121,6 +122,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health.router)
+    app.include_router(auth_routes.router, prefix="/api/v1/auth", tags=["auth"])
     app.include_router(agents.router, prefix="/api/v1/agents", tags=["agents"])
     app.include_router(documents_routes.router, prefix="/api/v1/agents", tags=["documents"])
     app.include_router(sessions.router, prefix="/api/v1/sessions", tags=["sessions"])
@@ -138,4 +140,69 @@ def create_app() -> FastAPI:
     app.include_router(voice_ws.router)
     app.include_router(twilio_ws.router)
 
+    # ── Optional static-dashboard serving ───────────────────────────
+    # Phase 1 PR-3 scaffolding: when the dashboard has been built with
+    # BUILD_OUTPUT=export (Next.js static export → `out/` directory),
+    # FastAPI serves it at /dashboard/* on the same port as the API.
+    # This is what enables the single-process CLI experience
+    # (`openvox run` → one process, browser opens to localhost:8000/dashboard).
+    #
+    # Discovery order — first existing path wins:
+    #   1. OPENVOX_DASHBOARD_PATH env var (explicit override)
+    #   2. /app/dashboard_static/    (Docker/CLI install — bundled at build)
+    #   3. ../apps/dashboard/out/    (repo-relative dev workflow)
+    #
+    # If none of the above exist, the mount is silently skipped —
+    # browsers hitting /dashboard get 404, which is correct for Docker
+    # mode (where the separate `openvox-dashboard` container handles it).
+    #
+    # Today this is no-op: the dashboard's static-export build pipeline
+    # ships in a follow-up commit (the agents/[id] route needs to be
+    # refactored to query params first — Next.js static export can't
+    # handle dynamic path params for runtime-created IDs). The mount
+    # itself is committed now so we don't have to revisit api/app.py
+    # in that follow-up — just produce the out/ directory and it
+    # gets served automatically.
+    _maybe_mount_dashboard_static(app)
+
     return app
+
+
+def _maybe_mount_dashboard_static(app: FastAPI) -> None:
+    """Mount the built dashboard static files under /dashboard/* if available.
+
+    See the comment block in create_app() above for the discovery
+    rules + why this is a no-op today. Pulled into its own function so
+    it can be unit-tested + so the mount logic doesn't clutter the
+    main app factory.
+    """
+    import os
+    from pathlib import Path
+
+    from fastapi.staticfiles import StaticFiles
+
+    explicit = os.environ.get("OPENVOX_DASHBOARD_PATH")
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit))
+    candidates.append(Path("/app/dashboard_static"))
+    # Repo-relative — works in `openvox run` invoked from the repo root.
+    candidates.append(Path(__file__).resolve().parent.parent.parent.parent.parent
+                      / "apps" / "dashboard" / "out")
+
+    for path in candidates:
+        if path.is_dir() and (path / "index.html").exists():
+            app.mount(
+                "/dashboard",
+                StaticFiles(directory=str(path), html=True),
+                name="dashboard",
+            )
+            logger.info("dashboard static files mounted at /dashboard from %s", path)
+            return
+
+    # Not found — that's fine in Docker mode where the separate
+    # `openvox-dashboard` container serves the dashboard on its own port.
+    logger.debug(
+        "no dashboard static files found — /dashboard will 404. "
+        "Either set OPENVOX_DASHBOARD_PATH or use Docker dashboard service."
+    )
