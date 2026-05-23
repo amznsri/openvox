@@ -7,21 +7,45 @@ from __future__ import annotations
 
 import typer
 
-from openvox.cli.commands import info, run, version
+from openvox.cli.commands import (
+    info,
+    logs,
+    restart,
+    run,
+    start,
+    status,
+    stop,
+    version,
+)
 
 app = typer.Typer(
     name="openvox",
     help=(
         "OpenVox — the open-source platform for building production voice agents. "
-        "Run `openvox run` to start the server and open the dashboard in your "
-        "browser. See `openvox <command> --help` for per-command options."
+        "Run `openvox run` for foreground operation or `openvox start` for an "
+        "always-on background daemon. See `openvox <command> --help` for per-"
+        "command options."
     ),
     no_args_is_help=True,
     add_completion=False,  # don't litter the user's shell with completion files
 )
 
-# Register subcommands. Each module declares a single function and we wire
-# it here so the user-facing command name is consistent + greppable.
+# Foreground + introspection commands (Phase 1 PR-2).
 app.command("version", help="Print the installed OpenVox version.")(version.version_cmd)
 app.command("info", help="Show resolved configuration + service health.")(info.info_cmd)
-app.command("run", help="Start the FastAPI server in the foreground and open the dashboard.")(run.run_cmd)
+app.command(
+    "run",
+    help="Start the FastAPI server in the foreground and open the dashboard.",
+)(run.run_cmd)
+
+# Daemon lifecycle commands (Phase 4 PR-1). Delegate to the per-OS
+# backend in openvox.cli.daemon — see that package for launchd /
+# systemd / Windows Service implementations.
+app.command(
+    "start",
+    help="Install + start OpenVox as a background daemon (survives terminal close).",
+)(start.start_cmd)
+app.command("stop", help="Stop the background daemon (leaves it installed).")(stop.stop_cmd)
+app.command("status", help="Show daemon state.")(status.status_cmd)
+app.command("restart", help="Restart the daemon.")(restart.restart_cmd)
+app.command("logs", help="Tail the daemon log file (use -f to follow).")(logs.logs_cmd)
