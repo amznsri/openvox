@@ -910,6 +910,207 @@ relative-`/api/v1` fetches. Telegram bot replied to a test message.
 
 ---
 
+## Session 15 — 2026-05-22..23 (PLANNING_SESSION15 execution: Phase 2 + Phase 1 PR-1)
+
+**Goal**: Execute the multi-phase roadmap in `PLANNING_SESSION15.md`. After a
+research detour into OpenClaw / competitive landscape and a vendor-neutral
+README rewrite, the substantive code work landed: Phase 2 (channel adapters
+that don't need public URLs) and Phase 1 PR-1 (delete the Node gateway +
+Redis). The "stack diet" promised by the audit shipped — 6 services → 4.
+
+### What changed at a glance
+
+| Component | Before Session 15 | After Session 15 |
+|---|---|---|
+| Stack size | 6 services (core/server/dashboard/postgres/redis/[ngrok]) | **4** (core/dashboard/postgres/[ngrok\|whatsapp]) |
+| Telegram connect | Webhook only — required ngrok + public URL | **Polling default** — no ngrok needed |
+| WhatsApp | Business API stub only (webhook, public URL) | **Personal QR-scan** added via whatsapp-web.js (opt-in profile) |
+| WeChat | Work (official) supported | Same — Personal explicitly skipped (ban-risk decision documented) |
+| Browser → core | Browser → :3001 (Node gateway) → :8000 (FastAPI) | **Browser → :8000 directly** |
+| Auth endpoints | Hosted by Node gateway | Ported to FastAPI `api/routes/auth.py` |
+| README positioning | "OpenClaw of voice agents", BytePlus-led | Vendor-neutral, multilingual-lead (commit `7c25034`) |
+
+### Commits landed (chronological)
+
+| SHA | Branch | What |
+|---|---|---|
+| `7c25034` | main | README vendor-neutral rewrite (researched OpenClaw — different product shape) |
+| `bb24302` | main | Docs: capture Sessions 12-14 |
+| `d1972bf` | main | `PLANNING_SESSION15.md` — full 4-phase plan committed |
+| `a254a79` | phase1-spike | Phase 1 audit — refactor scope shrinks 2w→4d |
+| `95ae56c` | phase1-spike | SQLite parity test (9/9 PASS) — Phase 1.1 needs no code |
+| `805be51` | phase2-channel-adapters | Phase 2.1+2.2 — Telegram polling |
+| `60579ca` | phase2-channel-adapters | Phase 2.5+2.6 — docs (WeChat skip + drop ngrok roadmap) |
+| `261d7f0` | phase2-channel-adapters | Phase 2.3+2.4 — WhatsApp Personal QR adapter |
+| `4b955e7` | phase2-channel-adapters | WhatsApp bridge: apt Chromium + Zscaler TLS toggle |
+| `33217ca` | main | Merge phase2-channel-adapters |
+| `8bad56a` | main | Merge phase1-spike |
+| `(PR-1)`   | phase1-implementation | Delete gateway + Redis, port auth — `-454/+35 lines` |
+
+### Strategic context captured along the way (Session 14 → 15 transition)
+
+The Session 14 research round identified two corrections to my earlier
+analysis:
+
+1. **OpenClaw is NOT a voice-agent-builder**, it's a personal-assistant
+   platform. Direct competitors are LiveKit Agents / Pipecat / Dograh / TEN.
+   The "vendor-neutral, multilingual-lead" positioning landed in `7c25034`.
+2. **OpenClaw's onboarding bar is matched by `curl install.sh | bash`** —
+   not signed installers. Phase 4 scope reduced to paths A-D (pip/curl/brew/
+   winget) with $0 ongoing cost; signed installers (path E) deferred.
+
+The strategic decisions from that conversation are baked into
+`PLANNING_SESSION15.md`:
+- Same project, dual-mode (no fork) — industry pattern (Ollama, Streamlit, Jupyter).
+- Drop ngrok built-in — solve the underlying channel-protocol choice instead.
+- Skip WeChat Personal — account ban risk too high.
+
+### Phase 1 spike findings (the big surprise)
+
+`docs/phase1-audit.md` — committed on the `phase1-spike` branch, merged to
+main as `8bad56a` — established the originally-planned 2-week Phase 1
+refactor collapses to ~4 days:
+
+1. **SQLite is already the default** (`config.py:49`). The "storage
+   abstraction" sub-task needed ZERO code — SQLAlchemy's async engine
+   handles both backends through the same path. The 9-case parity test
+   at `packages/core/tests/test_storage_sqlite_parity.py` (also from
+   the spike) is the regression coverage for that claim.
+2. **Redis is declared but never used.** `redis_url` is in `config.py:50`
+   and zero `*.py` files in `packages/core/openvox/` import it.
+3. **Node gateway is 320 LoC of pure passthrough**, not a porting
+   target. The dashboard can connect directly to core; only the auth
+   scaffolds (~30 LoC) needed reimplementing.
+
+### Phase 2 — Telegram polling (commit 805be51)
+
+The biggest single non-tech UX win in this session. Before, connecting a
+Telegram bot needed: ngrok account → auth-token in `.env` → `--profile
+tunnel up`. After:
+
+- `packages/core/openvox/telephony/telegram_polling.py` — per-agent
+  background asyncio task long-polls Telegram's `getUpdates`. 30s
+  polling interval, exponential back-off on errors, dispatches each
+  update through the same `_handle_telegram_update` the webhook
+  handler used. Lifecycle: `start_polling` / `stop_polling` /
+  `start_all_pollers` (boot) / `stop_all_pollers` (shutdown).
+- `TelegramConnectRequest` gets a `mode` field with `"polling"` as
+  default. Existing webhook-mode agents (no `mode` field) are
+  deliberately not auto-converted — they keep working via the
+  unchanged webhook handler.
+- Dashboard Channels → Telegram tab: new "Ingestion mode" picker;
+  polling is preselected; the yellow "no public tunnel" banner is now
+  gated to webhook mode only. Connect button no longer requires a
+  public URL when polling is selected.
+
+User verified end-to-end with their existing `ovoxdoc_bot` after
+disconnect+reconnect in polling mode. Three edge cases also confirmed:
+sending multiple messages quickly, stopping ngrok, restarting core.
+
+### Phase 2 — WhatsApp Personal (commits 261d7f0 + 4b955e7)
+
+A separate Docker service (opt-in via `--profile whatsapp`) running
+Node + Express + whatsapp-web.js. Multi-agent multiplexed in one
+process. LocalAuth persists session keys so reconnect after bridge
+restart skips QR.
+
+Two real bugs surfaced + fixed during the build:
+
+1. **Chromium not found.** Original Dockerfile installed Chromium's
+   runtime libs but relied on Puppeteer to auto-download a binary —
+   which failed because `/root/.cache/puppeteer` path conventions
+   changed between Puppeteer versions. **Fix**: install `chromium`
+   from Debian apt, set `PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium`
+   + `PUPPETEER_SKIP_DOWNLOAD=true`, and explicitly pass
+   `executablePath` to puppeteer.launch() in index.js (whatsapp-web.js's
+   embedded puppeteer ignores the env var).
+2. **Zscaler TLS interception.** Chromium failed
+   `net::ERR_CERT_AUTHORITY_INVALID at https://web.whatsapp.com/` — same
+   root cause `OPENVOX_INSECURE_TLS` solves on the Python side.
+   **Fix**: bridge now reads the same env var; when true, adds
+   `--ignore-certificate-errors` to Chromium launch args and logs
+   the trade-off. docker-compose passes the var from `.env`.
+
+Also surfaced (deferred): **stale Chromium profile lock** when the
+bridge crashes mid-launch. The `SingletonLock` file in the volume
+blocks the next start. Manual recovery is `docker volume rm
+openvox_whatsapp-sessions`; auto-recovery on startup is a follow-up.
+
+End-to-end smoke verified: bridge healthy, generates 6 KB PNG QR
+within 3 seconds, Python core's `/whatsapp_personal/status` returns
+it correctly. Real phone-scan test deferred (user doesn't have a
+test number — primary WhatsApp is too risky given ban policy).
+
+### Phase 1 PR-1 — Delete Node gateway + Redis (this commit on phase1-implementation)
+
+Net change: **−454 / +35 lines**. Most invasive structural change in
+the entire OpenVox history but actually low-risk because everything
+the gateway did was either pure passthrough or trivially port-able:
+
+| Deleted | New home |
+|---|---|
+| `packages/server/` (entire 320-LoC Node service) | n/a |
+| docker-compose `server:` service | n/a |
+| docker-compose `redis:` service + `redis-data` volume | n/a (dead config) |
+| pnpm-workspace.yaml `packages/server` line | n/a |
+| `/api/v1/auth/me` (gateway) | NEW `packages/core/openvox/api/routes/auth.py` |
+| `/api/v1/auth/github/start` (gateway OAuth) | Same |
+| `/api/v1/auth/google/start` (gateway OAuth) | Same |
+| Dashboard `NEXT_PUBLIC_API_URL=http://localhost:3001` | now `http://localhost:8000` |
+| Dashboard `NEXT_PUBLIC_WS_URL=ws://localhost:3001` | now `ws://localhost:8000` |
+| ngrok `command: http server:3001` | now `http core:8000` |
+
+Real bug encountered during the port: FastAPI rejected
+`-> JSONResponse | RedirectResponse` union return-type annotations
+("Invalid args for response field"). Fix was `response_model=None` on
+the decorator.
+
+Operator-upgrade note: anyone pulling this commit on an existing
+install must one-time prune the orphan containers — docker compose
+can't manage them once they're removed from the file:
+
+```
+docker stop openvox-server openvox-redis
+docker rm   openvox-server openvox-redis
+docker volume rm openvox_redis-data  # optional
+docker compose up --build
+```
+
+This will be in PR-6's README update.
+
+### Verification (Phase 1 PR-1)
+
+- ✅ `docker compose up --build` → 4 services healthy.
+- ✅ `curl :8000/health` → 200.
+- ✅ `curl :8000/api/v1/auth/me` → `{"id":"local","name":"Local User"}`.
+- ✅ `curl :8000/api/v1/auth/github/start` → 501 + readable error.
+- ✅ `curl :8000/api/v1/agents` → existing 4 agents listed.
+- ✅ `/ws/voice` endpoint exists on core (rejects malformed curl
+  handshake; real browser upgrades succeed).
+- ✅ Dashboard rebuilt with `NEXT_PUBLIC_API_URL=:8000` — loads at
+  `localhost:3000`, hits core directly.
+
+### Lessons logged to CLAUDE.md §8
+
+Bugs #66 (Puppeteer cache-path failure in Docker — install apt
+chromium instead), #67 (Zscaler TLS for Chromium — same
+OPENVOX_INSECURE_TLS toggle as Python), #68 (stale Chromium profile
+lock after subprocess crash — wipe the session volume to recover),
+#69 (FastAPI union return-type annotation needs response_model=None),
+#70 (orphan containers after `docker-compose.yml` rewrite — compose
+won't clean up services it no longer knows about; document the manual
+docker-stop/rm step in upgrade notes).
+
+### Open at end of Session 15
+
+- **Phase 2 phone-scan test** (T-WP-1, deferred — user has no test number).
+- **Phase 1 PR-2 through PR-6** — CLI scaffold, static dashboard build,
+  TESTPLAN re-run, README + docs/install-cli.md.
+- **WhatsApp Personal stale-lock auto-recovery** — bridge could `rm -f`
+  the SingletonLock file on startup if Chromium crashed previously.
+
+---
+
 ## Open follow-ups (carried forward)
 
 Updated end of Session 14. Items shipped through Session 14 removed;
