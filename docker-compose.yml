@@ -27,7 +27,9 @@ services:
       # be overridden by a developer's `.env` (which usually points at localhost
       # for running services outside Docker).
       - DATABASE_URL=postgresql+asyncpg://openvox:openvox@postgres:5432/openvox
-      - REDIS_URL=redis://redis:6379
+      # REDIS_URL intentionally unset — Phase 1 audit (docs/phase1-audit.md)
+      # confirmed nothing in the core actually imports redis. APScheduler runs
+      # in-process. Leaving the env var unset triggers the in-process queue path.
       # BytePlus
       - BYTEPLUS_LLM_API_KEY=${BYTEPLUS_LLM_API_KEY:-}
       - BYTEPLUS_LLM_ENDPOINT_ID=${BYTEPLUS_LLM_ENDPOINT_ID:-}
@@ -95,8 +97,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
@@ -104,38 +104,12 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Node.js gateway: REST + WS bridge + telephony webhooks ───────────────
-  server:
-    build:
-      context: ./packages/server
-      dockerfile: Dockerfile
-    container_name: openvox-server
-    ports:
-      - "${SERVER_PORT:-3001}:3001"
-    environment:
-      - NODE_ENV=production
-      - LOG_LEVEL=${LOG_LEVEL:-info}
-      - PORT=3001
-      - CORE_API_URL=http://core:8000
-      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
-      - OPENVOX_AUTH=${OPENVOX_AUTH:-disabled}
-      - GITHUB_OAUTH_CLIENT_ID=${GITHUB_OAUTH_CLIENT_ID:-}
-      - GITHUB_OAUTH_CLIENT_SECRET=${GITHUB_OAUTH_CLIENT_SECRET:-}
-      - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID:-}
-      - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET:-}
-      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID:-}
-      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:-}
-      - WHATSAPP_VERIFY_TOKEN=${WHATSAPP_VERIFY_TOKEN:-}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
-    depends_on:
-      core:
-        condition: service_started
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+  # NOTE: The Node gateway service was deleted in Phase 1 of the Sessions-15+
+  # roadmap (commit on phase1-implementation branch). Per docs/phase1-audit.md,
+  # the gateway was 320 lines of pure passthrough — the dashboard now connects
+  # directly to the core service at port 8000. The /me + OAuth-start endpoints
+  # the gateway used to host were ported to core/api/routes/auth.py.
+  # Public URL (ngrok / Twilio / Telegram webhook) now points at core directly.
 
   # ── Next.js dashboard ────────────────────────────────────────────────────
   dashboard:
@@ -147,11 +121,13 @@ services:
       - "${DASHBOARD_PORT:-3000}:3000"
     environment:
       - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=http://localhost:3001
-      - NEXT_PUBLIC_WS_URL=ws://localhost:3001
+      # Dashboard now talks DIRECTLY to core (was: gateway on :3001).
+      # See phase1-audit.md — the gateway was a passthrough proxy.
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_WS_URL=ws://localhost:8000
       - NEXT_PUBLIC_OPENVOX_AUTH=${OPENVOX_AUTH:-disabled}
     depends_on:
-      server:
+      core:
         condition: service_started
     restart: unless-stopped
 
@@ -175,26 +151,18 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Redis ────────────────────────────────────────────────────────────────
-  redis:
-    image: redis:7-alpine
-    container_name: openvox-redis
-    command: redis-server --appendonly yes
-    volumes:
-      - redis-data:/data
-    ports:
-      - "6379:6379"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+  # NOTE: The Redis service was deleted in Phase 1 of the Sessions-15+ roadmap.
+  # Per docs/phase1-audit.md, redis_url is declared in core/config.py:50 but
+  # NEVER imported anywhere in packages/core/openvox/**/*.py. APScheduler runs
+  # in-process. Removing the dependency cut one container + the redis-data
+  # volume from the stack with zero code changes.
 
   # ── ngrok tunnel (optional, opt-in via --profile tunnel) ─────────────────
-  # Exposes the gateway (server:3001) on a public HTTPS URL so external
-  # telephony providers (Twilio, Telegram, WeCom, Lark) can reach our
-  # webhooks. The core/app calls ngrok's local API (http://ngrok:4040) to
+  # Exposes core on a public HTTPS URL so external telephony providers
+  # (Twilio, WhatsApp Business, WeChat Work, Lark) can reach our webhooks.
+  # Telegram users should prefer polling mode (no public URL needed) —
+  # see channels.telegram.mode = "polling" in Phase 2.
+  # The core service calls ngrok's local API (http://ngrok:4040) to
   # discover the current public URL — see /api/v1/telephony/public_url.
   #
   # Setup:
@@ -207,13 +175,15 @@ services:
   ngrok:
     image: ngrok/ngrok:latest
     container_name: openvox-ngrok
-    command: http server:3001 --log=stdout
+    # Phase 1: ngrok now exposes core (port 8000) directly. Was server:3001
+    # before the Node gateway was deleted.
+    command: http core:8000 --log=stdout
     environment:
       NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
     ports:
       - "4040:4040"   # local inspector UI + JSON API at /api/tunnels
     depends_on:
-      server:
+      core:
         condition: service_started
     restart: unless-stopped
     profiles:
@@ -260,6 +230,5 @@ services:
 
 volumes:
   postgres-data:
-  redis-data:
   openvox-data:
   whatsapp-sessions:

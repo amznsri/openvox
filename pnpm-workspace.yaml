@@ -1,5 +1,8 @@
 packages:
   - "apps/*"
-  - "packages/server"
   - "packages/sdk-ts"
   - "packages/cli"
+  - "packages/whatsapp_personal_bridge"
+  # packages/server removed in Phase 1 (see phase1-implementation branch).
+  # Dashboard now connects directly to the FastAPI core; the gateway was
+  # a 320-line passthrough proxy — see docs/phase1-audit.md.
