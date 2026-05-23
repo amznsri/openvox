@@ -1499,6 +1499,28 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     registry mirrors), reach for a classic PAT scoped to
     `public_repo`.
 
+76. **PEP 594 removed `audioop` from stdlib in Python 3.13.**
+    `packages/core/openvox/api/ws/twilio_stream.py:41` uses
+    `import audioop` for μ-law / linear PCM conversion on Twilio
+    Media Streams. On Python 3.13+ that import fails with:
+        `ModuleNotFoundError: No module named 'audioop'`
+    Symptom: `pip install openvox-core` into a 3.13+ venv builds
+    fine, but the daemon crashes at startup when uvicorn imports
+    the FastAPI app. With `KeepAlive: {SuccessfulExit: false}` in
+    the launchd plist, the process respawn-loops until
+    ThrottleInterval hits.
+    *Fix*: conditional dep in `pyproject.toml`:
+        `"audioop-lts>=0.2.1; python_version >= '3.13'",`
+    `audioop-lts` vendors the removed stdlib module under the same
+    name, so `import audioop` works unchanged. Pip skips it on
+    older Pythons (stdlib has it) and installs on 3.13+.
+    **Lesson**: PEP 594's deprecation list is long (audioop, aifc,
+    cgi, asynchat, asyncore, imghdr, sndhdr, telnetlib, uu,
+    xdrlib, nntplib, pipes, and more). Before any new release,
+    grep imports for these and either rip them out or add their
+    LTS shim packages as conditional deps. The PyPI ecosystem has
+    `audioop-lts`, `legacy-cgi`, etc. for most of them.
+
 ---
 
 ## 9. Known constraints / environment quirks

@@ -1230,6 +1230,55 @@ The final v0.1.5 run end-to-end:
 - WinGet upstream PR: https://github.com/microsoft/winget-pkgs/pull/378753
   pending Microsoft validators + reviewer.
 
+### v0.1.6 — `audioop` fix for Python 3.13+
+
+The Phase 4 macOS smoke test on the user's machine surfaced a real
+runtime bug: `pipx install openvox-core==0.1.5` into a Python 3.14
+venv produces a daemon that crashes at startup with
+`ModuleNotFoundError: No module named 'audioop'`.
+
+PEP 594 removed `audioop` from the stdlib in Python 3.13.
+`packages/core/openvox/api/ws/twilio_stream.py:41` imports it for
+μ-law / PCM conversion on Twilio Media Streams.
+
+Fix (`f8266e7`, shipped as v0.1.6): one-line conditional dep in
+`packages/core/pyproject.toml`:
+
+```
+"audioop-lts>=0.2.1; python_version >= '3.13'",
+```
+
+`audioop-lts` is the canonical PyPI package that vendors the
+removed stdlib module under the same name, so `import audioop`
+works unchanged across all supported Python versions. Pip skips
+the dep on 3.11/3.12 (stdlib has it) and installs it on 3.13+.
+
+Smoke test on the user's Mac after upgrade:
+- `pipx upgrade openvox-core` → 0.1.6
+- `openvox start` → daemon stays alive across multiple status
+  checks (5s apart, same PID) — was crash-respawning before
+- `curl localhost:8000/health` → 200 returning `version: 0.1.6`
+- `launchctl list | grep openvox` → real PID
+
+**Phase 4 verification matrix is now CLOSED.** Daemon mode works
+end-to-end on a real Mac with a real PyPI install.
+
+### WinGet duplicate-PR edge case + cleanup
+
+v0.1.6 also re-triggered the WinGet `submit` path because the
+upstream merge of PR #378753 hadn't happened yet. Result: two
+duplicate open PRs on microsoft/winget-pkgs (#378753 for 0.1.5
+and #378758 for 0.1.6).
+
+Manual cleanup at end of Session 16: closed PR #378753 (broken
+0.1.5 — would have crashed for every Python 3.13+ user). PR
+#378758 (0.1.6) left open for Microsoft to review.
+
+Spawned follow-up to fix the workflow's submit-vs-update probe
+to also check for OPEN PRs by us, not just upstream merge state.
+Pseudocode in the spawned task; one-file `.github/workflows/
+release.yml` change.
+
 ### PR #2 — release.yml fixes
 
 PR #2 (`release-pipeline-fixes` branch, +76 / −9 in
