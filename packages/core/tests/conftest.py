@@ -63,9 +63,18 @@ def tmp_openvox_home(
     ``openvox.secrets._fernet_cached`` on both entry and exit so no
     cross-test bleed.
 
+    Also snapshots ``os.environ`` at entry and restores it at exit.
+    This catches env vars set DIRECTLY (not via monkeypatch) inside
+    the test — most notably the provider-key env vars that the
+    hydration helper writes. Without this snapshot, the first test
+    that calls ``_hydrate_secrets_into_env()`` would leak a real
+    BYTEPLUS_VOICE_API_KEY into every subsequent test.
+
     Yields the path to the isolated home so tests can assert on
     files written there (machine key, SQLite DB, etc.).
     """
+    import os
+
     home = tmp_path / "openvox"
     home.mkdir(parents=True, exist_ok=True)
     db_path = home / "openvox.db"
@@ -76,35 +85,93 @@ def tmp_openvox_home(
     # in tests rather than inheriting whatever the host has set.
     monkeypatch.setenv("OPENVOX_AUTH", "disabled")
 
+    # Explicitly UNSET provider-key env vars that the test contributor
+    # likely has in their host shell (.env, exported in .zshrc, etc.).
+    # Without this, a test that asserts "settings.byteplus_voice_api_key
+    # == ''" will fail on a developer's machine but pass in CI — exactly
+    # the kind of "works on my machine" trap we want to avoid.
+    # Keep this list in sync with the mapping in
+    # `openvox/api/app.py::_hydrate_secrets_into_env`.
+    for env_var in (
+        "BYTEPLUS_LLM_API_KEY",
+        "BYTEPLUS_VOICE_API_KEY",
+        "BYTEPLUS_RTC_APP_ID",
+        "BYTEPLUS_RTC_APP_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "ELEVENLABS_API_KEY",
+        "CARTESIA_API_KEY",
+        "DEEPGRAM_API_KEY",
+        "ASSEMBLYAI_API_KEY",
+        "TWILIO_ACCOUNT_SID",
+        "TWILIO_AUTH_TOKEN",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+
+    # Snapshot the FULL env BEFORE the test runs. On teardown we
+    # restore os.environ to exactly this state so direct os.environ
+    # mutations (e.g. by _hydrate_secrets_into_env) don't leak.
+    env_snapshot = dict(os.environ)
+
     _bust_caches()
-    yield home
-    _bust_caches()
+    try:
+        yield home
+    finally:
+        # Restore env exactly. We do this in three steps because
+        # pytest's monkeypatch will ALSO run an undo at teardown,
+        # and we want our snapshot to be authoritative.
+        for key in list(os.environ.keys()):
+            if key not in env_snapshot:
+                del os.environ[key]
+        for key, value in env_snapshot.items():
+            os.environ[key] = value
+        _bust_caches()
 
 
 def _bust_caches() -> None:
-    """Clear settings + secrets process-level caches.
+    """Clear all process-level caches that would otherwise leak
+    one test's config into the next.
 
-    Both ``get_settings()`` and the Fernet instance behind
-    ``_fernet()`` are cached for performance. In tests that's a
-    leak — a previous test's tempdir keeps being used for the
-    "real" path. Always call this between tests.
+    Three caches matter:
+
+      1. ``openvox.config.get_settings`` — ``@lru_cache(1)`` on a
+         function that reads env vars + ``.env`` once.
+      2. ``openvox.secrets._fernet_cached`` — module-level Fernet
+         instance keyed on the machine key file. Different tempdir
+         = different machine key = needs rebuild.
+      3. ``openvox.db.session._engine`` (and ``_sessionmaker``) —
+         module-level SQLAlchemy async engine pointing at
+         ``settings.database_url`` at first construction. A second
+         test would inherit the first test's engine + connection
+         pool pointing at the first test's tempdir SQLite.
+
+    All three are cleared every fixture entry AND exit. If you
+    add another module-level cache that depends on settings or the
+    filesystem, add it here too — and write a smoke test in
+    ``test_conftest_smoke.py`` proving the leak is fixed.
     """
-    # Settings: lazy import because openvox.config is itself
-    # cached at module level — re-importing wouldn't help.
+    # Settings.
     from openvox.config import get_settings
 
     get_settings.cache_clear()
 
-    # Fernet: lazy import because openvox.secrets pulls in the DB
-    # layer which we don't want loaded for tests that only need
-    # tmp_openvox_home.
+    # Fernet (secrets store).
     try:
         import openvox.secrets as secrets_mod
 
         secrets_mod._fernet_cached = None
     except ImportError:
-        # secrets module may not even be importable in some narrow
-        # test contexts; that's fine — there's nothing to clear.
+        pass
+
+    # DB engine + session-maker.
+    try:
+        import openvox.db.session as session_mod
+
+        session_mod._engine = None
+        session_mod._sessionmaker = None
+    except ImportError:
         pass
 
 
