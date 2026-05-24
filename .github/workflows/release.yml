@@ -48,9 +48,46 @@ permissions:
 
 jobs:
 
+  # ── Preflight: tests must pass on the tagged commit ────────────────
+  #
+  # The .github/workflows/test.yml workflow runs on `push: main` and
+  # `pull_request` — NOT on tag pushes. Without this preflight, a tag
+  # pushed against a known-broken main would still trigger the full
+  # publish fan-out and ship the breakage to PyPI / Homebrew (PyPI is
+  # immutable once a version uploads, so the damage is permanent).
+  #
+  # We rerun the unit suite here against the EXACT commit the tag
+  # points at. Cheap (~10s) and decisive. The e2e suite isn't repeated
+  # because (a) it's slower, (b) the publish jobs that follow are
+  # themselves an e2e-of-sorts — wheel build + twine check exercise
+  # the real install path.
+  preflight-tests:
+    name: Preflight — unit tests on tagged commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install in editable mode + dev deps
+        working-directory: packages/core
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Run pytest (excluding e2e)
+        working-directory: packages/core
+        # Same selector as test.yml's unit-tests job. If this passes
+        # in the per-PR / per-main-push test.yml run, it should also
+        # pass here — the only thing that's "new" is the tag pointing
+        # at this commit. A failure means somebody force-pushed main
+        # or tagged an out-of-band commit; either way we want a stop.
+        run: pytest -m "not e2e"
+
   # ── Build wheel + sdist once, share across jobs via an artefact ────
   build:
     name: Build wheel + sdist
+    needs: preflight-tests
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.value }}
@@ -229,8 +266,16 @@ jobs:
         # and it crashes on import because newer pip releases no longer
         # ship `pkg_resources`. `scripts/gen_homebrew_resources.py`
         # replaces it — pip-driven resolution + PyPI JSON API artefact
-        # picker with per-OS fallback for wheel-only deps (torch).
-        # See the module docstring for full rationale.
+        # picker. See the module docstring for the full rationale.
+        #
+        # Note on torch / silero-vad: those moved to
+        # `[project.optional-dependencies] vad` in v0.2.1 because PyPI's
+        # Linux torch wheel pulls in 15+ nvidia-* deps with no macOS
+        # counterparts (which broke the v0.2.0 Homebrew publish).
+        # Users who want server-side VAD via brew install do:
+        #   $(brew --prefix openvox)/libexec/bin/pip install 'openvox-core[vad]'
+        # The runtime gracefully degrades to client-driven interrupts
+        # if the [vad] extra isn't installed.
         run: |
           mkdir -p out
           python scripts/gen_homebrew_resources.py \

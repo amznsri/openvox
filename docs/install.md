@@ -23,7 +23,7 @@ openvox info
 
 ```bash
 pip install openvox-core            # latest
-pip install 'openvox-core==0.2.0'    # pinned
+pip install 'openvox-core==0.2.1'    # pinned
 pip install -U openvox-core         # upgrade in place
 ```
 
@@ -33,6 +33,18 @@ in its own venv and won't conflict with project Python deps:
 ```bash
 pipx install openvox-core
 ```
+
+**Extras.** Server-side VAD (sub-100 ms barge-in detection) is opt-in
+because it pulls in `torch` (~200 MB on macOS, ~2.5 GB on Linux with
+CUDA wheels). Enable with:
+
+```bash
+pip install 'openvox-core[vad]'      # or: pipx install 'openvox-core[vad]'
+```
+
+The runtime gracefully degrades to client-driven interrupts when the
+`[vad]` extra isn't installed — the voice agent still works, you just
+lose the server-side stop-talking detection.
 
 > **PEP 668 systems** (Homebrew Python on macOS; Debian/Ubuntu Python
 > 3.11+): system `pip install` is blocked by default. Use `pipx`,
