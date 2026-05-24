@@ -152,6 +152,17 @@ openvox = "openvox.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["openvox"]
 
+# Ship the alembic config + migration scripts alongside the package
+# (Session 17 Phase 3). The migration env.py needs to import openvox.*
+# at runtime, which is awkward if alembic/ lives INSIDE openvox/ (would
+# require careful import-cycle avoidance). Keeping alembic/ alongside
+# openvox/ keeps the imports clean. The wheel ships both via the
+# force-include block below; init_db() probes a few candidate paths
+# at runtime to find them.
+[tool.hatch.build.targets.wheel.force-include]
+"alembic" = "alembic"
+"alembic.ini" = "alembic.ini"
+
 # Note on dashboard bundling: the `openvox/_dashboard/` directory is
 # included automatically via the `packages = ["openvox"]` setting
 # above (hatchling defaults pick up ALL files under listed packages,
@@ -178,6 +189,8 @@ packages = ["openvox"]
 include = [
   "/openvox",
   "/tests",
+  "/alembic",
+  "/alembic.ini",
   "/README.md",
   "/pyproject.toml",
 ]

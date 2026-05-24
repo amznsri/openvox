@@ -10,6 +10,7 @@ import typer
 from openvox.cli.commands import (
     info,
     logs,
+    migrate,
     restart,
     run,
     start,
@@ -49,3 +50,12 @@ app.command("stop", help="Stop the background daemon (leaves it installed).")(st
 app.command("status", help="Show daemon state.")(status.status_cmd)
 app.command("restart", help="Restart the daemon.")(restart.restart_cmd)
 app.command("logs", help="Tail the daemon log file (use -f to follow).")(logs.logs_cmd)
+
+# Schema migrations (Session 17 Phase 3). Wraps Alembic so operators
+# don't have to learn the alembic CLI separately. Daemon startup runs
+# `upgrade head` automatically; this command is for inspection +
+# manual control.
+app.command(
+    "migrate",
+    help="Run a schema migration command (default: upgrade head).",
+)(migrate.migrate_cmd)
