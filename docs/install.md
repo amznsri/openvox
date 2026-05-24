@@ -1,16 +1,22 @@
 # Install OpenVox
 
-Four install paths, all shipping the same `openvox` binary. Pick whichever
-matches your platform and existing tooling.
+```bash
+curl -fsSL https://github.com/amznsri/openvox/releases/latest/download/install.sh | bash
+openvox start
+```
 
-| # | Path | Best for | One-liner |
-|---|---|---|---|
-| A | PyPI | Any OS, Python-savvy users | `pip install openvox-core` |
-| B | Curl-bash | macOS / Linux, "just run it" | `curl -fsSL https://github.com/amznsri/openvox/releases/latest/download/install.sh \| bash` |
-| C | Homebrew | macOS / Linux with brew | `brew install amznsri/openvox/openvox` |
-| D | WinGet | Windows | `winget install OpenVox.OpenVox` |
+~45 seconds, no Docker, no compile step. Works on macOS + Linux.
+After `openvox start` the dashboard wizard opens at
+<http://localhost:8000/dashboard/setup>.
 
-After install, all four expose `openvox` on `$PATH`. Verify with:
+| Install path | Best for | Install time |
+|---|---|---|
+| **Curl-bash (below)** | **macOS / Linux — recommended** | **~45s** |
+| pipx / pip | Any OS, you already use Python tooling | ~60s |
+| Homebrew | brew-native macOS / Linux setups | 2-5 min (compiles from source) |
+| WinGet | Windows | ~30s (when shipped) |
+
+All four install the same `openvox` binary. Verify with:
 
 ```bash
 openvox version
@@ -19,40 +25,7 @@ openvox info
 
 ---
 
-## Path A — PyPI
-
-```bash
-pip install openvox-core            # latest
-pip install 'openvox-core==0.2.1'    # pinned
-pip install -U openvox-core         # upgrade in place
-```
-
-Recommended on top of [`pipx`](https://pipx.pypa.io) so the install lives
-in its own venv and won't conflict with project Python deps:
-
-```bash
-pipx install openvox-core
-```
-
-**Extras.** Server-side VAD (sub-100 ms barge-in detection) is opt-in
-because it pulls in `torch` (~200 MB on macOS, ~2.5 GB on Linux with
-CUDA wheels). Enable with:
-
-```bash
-pip install 'openvox-core[vad]'      # or: pipx install 'openvox-core[vad]'
-```
-
-The runtime gracefully degrades to client-driven interrupts when the
-`[vad]` extra isn't installed — the voice agent still works, you just
-lose the server-side stop-talking detection.
-
-> **PEP 668 systems** (Homebrew Python on macOS; Debian/Ubuntu Python
-> 3.11+): system `pip install` is blocked by default. Use `pipx`,
-> a `venv`, or path B (which handles this for you).
-
----
-
-## Path B — Curl-bash one-liner
+## Recommended — Curl-bash one-liner
 
 ```bash
 curl -fsSL https://github.com/amznsri/openvox/releases/latest/download/install.sh | bash
@@ -72,7 +45,7 @@ Override hooks:
 
 | Env var | What it does |
 |---|---|
-| `OPENVOX_VERSION` | Pin to a specific PyPI release (e.g. `0.2.0`). |
+| `OPENVOX_VERSION` | Pin to a specific PyPI release (e.g. `0.2.1`). |
 | `OPENVOX_INSTALLER` | Force `pipx` or `venv`. Default: auto. |
 | `OPENVOX_PREFIX` | Custom venv location. Default: `~/.openvox/venv`. |
 | `OPENVOX_NO_START` | Skip the "start daemon now?" prompt. |
@@ -90,7 +63,44 @@ bash install.sh
 
 ---
 
-## Path C — Homebrew
+## Alternative — pipx / pip
+
+Use this if you already manage Python tools via `pipx`, or you want
+the install inside your own venv.
+
+```bash
+pipx install openvox-core            # recommended — isolated venv
+pip install openvox-core             # in current env; PEP 668 systems block this
+pip install 'openvox-core==0.2.1'    # pinned
+pip install -U openvox-core          # upgrade in place
+```
+
+**Extras.** Server-side VAD (sub-100 ms barge-in detection) is opt-in
+because it pulls in `torch` (~200 MB on macOS, ~2.5 GB on Linux with
+CUDA wheels). Enable with:
+
+```bash
+pip install 'openvox-core[vad]'      # or: pipx install 'openvox-core[vad]'
+```
+
+The runtime gracefully degrades to client-driven interrupts when the
+`[vad]` extra isn't installed — the voice agent still works, you just
+lose the server-side stop-talking detection.
+
+> **PEP 668 systems** (Homebrew Python on macOS; Debian/Ubuntu Python
+> 3.11+): system `pip install` is blocked by default. Use `pipx`,
+> a `venv`, or the curl-bash one-liner above (which handles this).
+
+---
+
+## Alternative — Homebrew
+
+> **Slower than the one-liner.** Homebrew compiles ~5 native deps from
+> source (cryptography, bcrypt, pydantic-core, numpy, asyncpg via
+> sdists) — 2-5 min vs 45s for the curl-bash path. Same `openvox`
+> binary at the end; only the install path differs. Pick this if you
+> prefer brew-managed lifecycle (`brew upgrade`, brew bundle, etc.) or
+> if you don't want a Python toolchain in your `~/.local/bin/`.
 
 ```bash
 brew install amznsri/openvox/openvox
@@ -114,7 +124,7 @@ Upgrade with the usual `brew upgrade openvox`.
 
 ---
 
-## Path D — WinGet (not yet supported)
+## Alternative — WinGet (not yet supported)
 
 > **Status (May 2026):** WinGet support is **deferred**. An earlier
 > attempt to package the Python wheel as a WinGet portable zip didn't
@@ -256,9 +266,12 @@ as `set` / `unset` so the output is safe to paste in a bug report).
 
 ```bash
 openvox stop                                   # stop daemon if running
-# Path A / B: pipx uninstall openvox-core   OR  pip uninstall openvox-core
-# Path C:     brew uninstall openvox
-# Path D:     winget uninstall OpenVox.OpenVox
+# Installed via curl-bash / pipx / pip:
+pipx uninstall openvox-core    # or: pip uninstall openvox-core
+# Installed via Homebrew:
+brew uninstall openvox
+# Installed via WinGet (when shipped):
+winget uninstall OpenVox.OpenVox
 rm -rf ~/.openvox                              # config + DB + logs (CAREFUL)
 ```
 

@@ -47,29 +47,44 @@ TypeScript to extend any piece.
 
 ## Quick install
 
-Two install modes — pick the one that matches you. Both share the same
-agents, skills, templates, and dashboard.
+```bash
+curl -fsSL https://github.com/amznsri/openvox/releases/latest/download/install.sh | bash
+openvox start
+```
 
-### Personal install (CLI mode)
+That's it — ~45 seconds end-to-end. The installer detects Python 3.11+,
+picks `pipx` (or a venv fallback), drops the `openvox` binary on `$PATH`,
+then `openvox start` boots the daemon + opens the dashboard wizard at
+<http://localhost:8000/dashboard/setup>. No compile step, no Docker
+required.
 
-Pick whichever path fits your machine — all four ship the same
-`openvox` binary:
+> Works on macOS + Linux. On Windows, see the WinGet line under
+> *alternative installers* below.
+
+### Alternative installers
+
+Pick a different path if the one-liner doesn't match your setup —
+they all install the same `openvox` binary:
 
 ```bash
-# A) PyPI — works on macOS, Linux, Windows
-pip install openvox-core
+# Already use pipx / pip? — works on macOS, Linux, Windows
+pipx install openvox-core
+pip install openvox-core      # ditto, but conflicts with PEP 668 systems
 
-# B) Curl-bash — macOS / Linux (auto-picks pipx or venv)
-curl -fsSL https://github.com/amznsri/openvox/releases/latest/download/install.sh | bash
-
-# C) Homebrew — macOS / Linux
+# Homebrew on macOS — slower (compiles from source) but more brew-native
 brew install amznsri/openvox/openvox
 
-# D) WinGet — Windows
+# WinGet — Windows
 winget install OpenVox.OpenVox
 ```
 
-Then pick foreground or daemon mode:
+> **Heads-up on Homebrew speed.** brew installs from sdists (compiles
+> ~5 native deps via clang + rust), so expect 2-5 min vs the one-liner's
+> ~45s. The end result is the same binary; only the install path
+> differs. See [`docs/install.md`](./docs/install.md) for the trade-off
+> in detail.
+
+### After install — start the daemon
 
 ```bash
 openvox run              # foreground; Ctrl-C to stop. Auto-opens dashboard.
