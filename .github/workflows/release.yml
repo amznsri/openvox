@@ -223,19 +223,31 @@ jobs:
           done
           echo "::error::PyPI never indexed ${{ needs.build.outputs.version }} within 5 min"
           exit 1
-      - name: Install poet (generates resource blocks)
-        run: pip install homebrew-pypi-poet "openvox-core==${{ needs.build.outputs.version }}"
-      - name: Generate formula
+      - name: Generate resource blocks
+        # `homebrew-pypi-poet` (our previous generator) is doubly broken:
+        # it emits empty sha256s for wheel-only deps like `audioop-lts`,
+        # and it crashes on import because newer pip releases no longer
+        # ship `pkg_resources`. `scripts/gen_homebrew_resources.py`
+        # replaces it — pip-driven resolution + PyPI JSON API artefact
+        # picker with per-OS fallback for wheel-only deps (torch).
+        # See the module docstring for full rationale.
         run: |
           mkdir -p out
-          poet -f openvox-core > out/resources.rb
+          python scripts/gen_homebrew_resources.py \
+            "openvox-core==${{ needs.build.outputs.version }}" \
+            > out/resources.rb
+      - name: Render formula from template
+        run: |
           # Substitute version + sha256 into the template, then inject
           # the freshly-generated resource list between the BEGIN/END
           # markers.
           python - <<'PY'
           import pathlib, re
           tmpl = pathlib.Path("packaging/homebrew/openvox.rb").read_text()
-          resources = pathlib.Path("out/resources.rb").read_text().strip()
+          # `rstrip` (not `strip`) — the generator emits each block
+          # indented two spaces, and `strip` would chop the leading
+          # indent off the first line.
+          resources = pathlib.Path("out/resources.rb").read_text().rstrip()
           version = "${{ needs.build.outputs.version }}"
           sha = "${{ needs.build.outputs.sdist_sha256 }}"
           tmpl = tmpl.replace("0.0.0", version)
