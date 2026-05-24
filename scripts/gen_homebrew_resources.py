@@ -92,8 +92,15 @@ class Artefact:
     sha256: str
 
 
-def _resolve(spec: str, python: str) -> list[dict]:
-    """Run pip's dry-run installer for `spec` and return the install report."""
+def _resolve(spec: str, python: str, pip_args: list[str]) -> list[dict]:
+    """Run pip's dry-run installer for `spec` and return the install report.
+
+    `pip_args` is appended to the pip command. The release workflow uses
+    it to add `--extra-index-url https://download.pytorch.org/whl/cpu`
+    so we resolve against the CPU-only torch — the default GPU wheel
+    pulls in 15+ nvidia-* deps that ship Linux-x86_64 wheels only and
+    fail the OS-portable artefact check.
+    """
     with tempfile.TemporaryDirectory() as td:
         report = Path(td) / "report.json"
         cmd = [
@@ -108,6 +115,7 @@ def _resolve(spec: str, python: str) -> list[dict]:
             "off",
             "--report",
             str(report),
+            *pip_args,
             spec,
         ]
         subprocess.run(cmd, check=True)
@@ -227,10 +235,21 @@ def main(argv: list[str] | None = None) -> int:
         help="Python interpreter to drive pip's resolver. Defaults to "
         "the running interpreter.",
     )
+    p.add_argument(
+        "--pip-arg",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help="Additional argument to pass to pip's resolver. Repeatable. "
+        "Used by the release workflow to add "
+        "`--extra-index-url https://download.pytorch.org/whl/cpu` so "
+        "the resolver picks CPU-only torch (avoiding 15+ nvidia-* "
+        "Linux-only deps that block the OS-portable artefact check).",
+    )
     args = p.parse_args(argv)
 
     skip = {n.strip().lower().replace("_", "-") for n in args.exclude.split(",") if n.strip()}
-    installs = _resolve(args.spec, args.python)
+    installs = _resolve(args.spec, args.python, args.pip_arg)
 
     portable: list[str] = []
     platform: list[str] = []

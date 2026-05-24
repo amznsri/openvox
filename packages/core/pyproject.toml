@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openvox-core"
-version = "0.2.0"
+version = "0.2.1"
 description = "Local-first, open-source voice agent platform — install with pip, run as a daemon, no Docker required."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -53,13 +53,15 @@ dependencies = [
   # Audio / numerics
   "numpy>=1.26.0",
   "scipy>=1.13.0",
-  # Silero VAD — sub-100 ms server-side voice activity detection. Brings
-  # in torch (CPU-only wheel is ~200 MB but no GPU runtime needed); the
-  # silero-vad package vendors the ONNX model so no network fetch at
-  # runtime. If you really want a lighter image, set
-  # OPENVOX_DISABLE_SILERO=1 and the provider will report unavailable
-  # without trying to import torch.
-  "silero-vad>=5.1.0",
+  # silero-vad (server-side VAD) lives in [project.optional-dependencies].
+  # It pulls in torch + torchaudio which only ship platform-specific
+  # wheels and (on PyPI's Linux variant) declare ~15 nvidia-*
+  # dependencies that don't have macOS counterparts. That broke the
+  # Homebrew formula's resource generator for v0.2.0. Making VAD opt-in
+  # keeps the default install lean and lets pip pick the right torch
+  # build for each platform via `pip install 'openvox-core[vad]'`.
+  # See SilroVADProvider.is_available — the runtime gracefully
+  # degrades to client-driven interrupts if silero-vad isn't installed.
   # Audio decoding for the Audio Analyzer file-upload path. Requires the
   # ffmpeg binary, which is installed in the core Dockerfile.
   "pydub>=0.25.1",
@@ -119,6 +121,20 @@ dev = [
 local-stt = [
   # Optional: local Whisper inference. Heavy — opt-in.
   "openai-whisper>=20240930",
+]
+vad = [
+  # Silero VAD — sub-100 ms server-side voice activity detection.
+  # Heavy: pulls in torch (~200 MB on macOS, ~2.5 GB on Linux with
+  # CUDA wheels from PyPI's default index) + torchaudio. Off by
+  # default to keep `pip install openvox-core` lean — install with
+  # `pip install 'openvox-core[vad]'` to enable.
+  #
+  # silero-vad packages the ONNX model so no runtime network fetch.
+  # The Python-side provider (openvox.providers.vad.silero) imports
+  # silero_vad + torch lazily inside is_available() so a missing
+  # install gracefully degrades to client-driven interrupts instead
+  # of crashing provider bootstrap.
+  "silero-vad>=5.1.0",
 ]
 # Postgres / production-database operators. Today asyncpg ships in the
 # base install so the production path "just works", but reserving the
