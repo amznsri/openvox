@@ -58,7 +58,15 @@ class TextRequest(BaseModel):
 async def text_chat(req: TextRequest) -> StreamingResponse:
     llm = get_registry().get(ProviderType.LLM, req.provider)
     if llm is None or not isinstance(llm, LLMProvider) or not llm.is_available():
-        raise HTTPException(400, f"LLM provider '{req.provider}' is not available — set its API key in .env")
+        raise HTTPException(
+            400,
+            f"LLM provider '{req.provider}' is not configured. "
+            f"Add an API key via the dashboard setup wizard "
+            f"(http://localhost:8000/dashboard/setup) "
+            f"or set the provider's API key env var (e.g. "
+            f"BYTEPLUS_LLM_API_KEY / OPENAI_API_KEY / "
+            f"ANTHROPIC_API_KEY) in your .env file.",
+        )
 
     msgs = [LLMMessage(role="system", content=req.system), LLMMessage(role="user", content=req.user)]
     cfg = LLMConfig(model=req.model, temperature=req.temperature, max_tokens=req.max_tokens, stream=True)
@@ -241,7 +249,11 @@ async def audio_analyze(
     stt = get_registry().get(ProviderType.STT, "byteplus")
     if stt is None or not isinstance(stt, STTProvider) or not stt.is_available():
         raise HTTPException(
-            400, "BytePlus STT unavailable — set BYTEPLUS_VOICE_API_KEY in .env"
+            400,
+            "BytePlus STT is not configured. "
+            "Add your BytePlus Voice API key via the dashboard setup wizard "
+            "(http://localhost:8000/dashboard/setup) "
+            "or set BYTEPLUS_VOICE_API_KEY in your .env file.",
         )
 
     transcript, utterances = await _stream_pcm_to_stt(pcm, duration_ms, stt, language=language)
@@ -360,7 +372,11 @@ async def transcribe(
     stt = get_registry().get(ProviderType.STT, "byteplus")
     if stt is None or not isinstance(stt, STTProvider) or not stt.is_available():
         raise HTTPException(
-            400, "BytePlus STT unavailable — set BYTEPLUS_VOICE_API_KEY in .env"
+            400,
+            "BytePlus STT is not configured. "
+            "Add your BytePlus Voice API key via the dashboard setup wizard "
+            "(http://localhost:8000/dashboard/setup) "
+            "or set BYTEPLUS_VOICE_API_KEY in your .env file.",
         )
 
     transcript, _ = await _stream_pcm_to_stt(pcm, duration_ms, stt, language=language)
@@ -389,7 +405,11 @@ async def synthesize(req: SynthesizeRequest) -> Response:
     tts = get_registry().get(ProviderType.TTS, "byteplus")
     if tts is None or not isinstance(tts, TTSProvider) or not tts.is_available():
         raise HTTPException(
-            400, "BytePlus TTS unavailable — set BYTEPLUS_VOICE_API_KEY in .env"
+            400,
+            "BytePlus TTS is not configured. "
+            "Add your BytePlus Voice API key via the dashboard setup wizard "
+            "(http://localhost:8000/dashboard/setup) "
+            "or set BYTEPLUS_VOICE_API_KEY in your .env file.",
         )
 
     settings = get_settings()

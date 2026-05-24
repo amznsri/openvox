@@ -160,10 +160,23 @@ def test_first_run_wizard_to_synthesize_end_to_end(tmp_path: Path) -> None:
             timeout=5.0,
         )
         assert r.status_code == 400, (
-            f"expected 400 (TTS unavailable) on fresh daemon, got {r.status_code}: {r.text}"
+            f"expected 400 (TTS not configured) on fresh daemon, "
+            f"got {r.status_code}: {r.text}"
         )
-        assert "TTS unavailable" in r.json().get("detail", ""), (
-            f"expected 'TTS unavailable' in error detail, got: {r.json()}"
+        # After Phase 4, the error message format is:
+        #   "BytePlus TTS is not configured. Add ... via the dashboard
+        #    setup wizard ... or set BYTEPLUS_VOICE_API_KEY in your
+        #    .env file."
+        # Assert on the actionable content (the env-var name) so the
+        # test stays robust against future copy edits — what matters
+        # is that the user is told WHICH key + WHERE to set it, not
+        # the exact wording.
+        detail_before = r.json().get("detail", "")
+        assert "not configured" in detail_before.lower(), (
+            f"expected 'not configured' in pre-wizard error, got: {detail_before}"
+        )
+        assert "BYTEPLUS_VOICE_API_KEY" in detail_before, (
+            f"error message must name the env var so users can fix it, got: {detail_before}"
         )
 
         # ─── Wizard save (simulating Phase 3 first-run wizard) ─────
@@ -227,12 +240,23 @@ def test_first_run_wizard_to_synthesize_end_to_end(tmp_path: Path) -> None:
         #         the failure is now from the real provider call
         if r.status_code == 400:
             detail = r.json().get("detail", "")
-            assert "TTS unavailable" not in detail, (
-                "BUG #77/#78 REGRESSED — "
-                "synth still returns 'TTS unavailable' after wizard save + restart. "
-                "Either hydration didn't run, or providers were instantiated "
-                "before hydration. See CLAUDE.md §8 bugs #77 + #78."
+            # The bug-#77/#78 surface was a "TTS not configured /
+            # unavailable / API_KEY not set" message AFTER the wizard
+            # had saved keys. If we see ANY phrasing that implies the
+            # provider thinks no key exists, hydration regressed.
+            forbidden_substrings = (
+                "not configured",  # Phase 4 message
+                "unavailable",     # pre-Phase 4 message (kept for safety)
+                "API_KEY not set", # raw provider __init__ error
             )
+            for needle in forbidden_substrings:
+                assert needle.lower() not in detail.lower(), (
+                    f"BUG #77/#78 REGRESSED — "
+                    f"synth still returns {needle!r} after wizard save + restart. "
+                    f"Either hydration didn't run, or providers were instantiated "
+                    f"before hydration. See CLAUDE.md §8 bugs #77 + #78. "
+                    f"Full detail: {detail}"
+                )
         # Anything else (200, 401, 403, 500) means hydration worked.
         # The real BytePlus API would 401 on our fake key; that's fine.
     finally:
