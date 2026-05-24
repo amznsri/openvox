@@ -1,16 +1,26 @@
-# Run pytest on every PR + push to main.
+# Test workflow — runs on every PR + push to main.
 #
-# This is the Phase 1 stub. Phase 6 (per PLANNING_SESSION17.md) expands
-# this to a multi-OS / multi-Python-version matrix. For now: just
-# Ubuntu + Python 3.12 on the Phase-1 unit suite, so a PR that breaks
-# tests can't merge silently.
+# Two jobs:
 #
-# Coverage threshold (60%) is enforced via the pytest-cov plugin +
-# `fail_under = 60` in packages/core/pyproject.toml's
-# [tool.coverage.report] block. The threshold is moderate by design
-# — Phase 1's value is in catching the load-bearing paths
-# (hydration, secrets, providers, setup skills), not chasing 100%
-# of every thin HTTP wrapper.
+#   unit-tests — fast (~5s). Phase 1 conftest + 5 unit-test files.
+#     Excludes e2e tests via `-m "not e2e"`. Runs the coverage gate.
+#
+#   e2e-tests — slower (~30s). Spawns 'openvox run' as a real
+#     subprocess + drives it over HTTP. Catches the v0.1.7-class
+#     bugs (provider key flow, mount config) at the system level.
+#     Today's e2e tests are HTTP-only — no browser/Playwright.
+#
+# Why no Playwright (yet):
+#   The plan (PLANNING_SESSION17.md §Phase 2) called for a
+#   Playwright walk through the dashboard UI. In practice, an
+#   HTTP-only test caught the v0.1.7 bug (#77 + #78) faithfully
+#   and runs in 5s rather than 30s+ with Chromium overhead.
+#   Browser-level tests are deferred until there's a visual /
+#   interaction regression that an HTTP test can't catch.
+#   Tracked as a follow-up; not blocking Session 17 progress.
+#
+# Phase 6 (PLANNING_SESSION17.md) expands this to a multi-OS /
+# multi-Python-version matrix. For now: Ubuntu + Python 3.12 only.
 
 name: test
 
@@ -24,8 +34,8 @@ permissions:
   contents: read
 
 jobs:
-  pytest:
-    name: pytest + coverage (ubuntu, py3.12)
+  unit-tests:
+    name: unit tests + coverage (ubuntu, py3.12)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,14 +54,17 @@ jobs:
           pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Run pytest with coverage
+      - name: Run pytest with coverage (excluding e2e)
         # --cov= uses [tool.coverage.run]'s source list.
         # --cov-report=term-missing surfaces uncovered lines in the
         # job log so contributors don't need to download the report.
-        # --cov-fail-under uses [tool.coverage.report]'s fail_under.
+        # `-m "not e2e"` filters out the slow tests in tests/e2e/ —
+        # those run in the separate e2e-tests job below.
+        # `--cov-fail-under` uses [tool.coverage.report]'s fail_under
+        # (currently 25%; see pyproject.toml for the ramp plan).
         working-directory: packages/core
         run: |
-          pytest --cov=openvox --cov-report=term-missing --cov-report=xml
+          pytest -m "not e2e" --cov=openvox --cov-report=term-missing --cov-report=xml
 
       - name: Upload coverage XML as workflow artifact
         # Phase 6 will switch to Codecov. For now an XML artifact lets
@@ -62,3 +75,53 @@ jobs:
           name: coverage-xml
           path: packages/core/coverage.xml
           retention-days: 14
+
+  e2e-tests:
+    name: e2e tests (ubuntu, py3.12)
+    runs-on: ubuntu-latest
+    # Run only on the same triggers as unit-tests (PRs + main pushes).
+    # No `needs:` — e2e and unit are independent; failing unit tests
+    # shouldn't block e2e from reporting its own failures.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install openvox-core in editable mode + dev deps
+        working-directory: packages/core
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # Note: NOT building the dashboard for e2e here. Today's e2e
+      # tests are HTTP-only (don't load the dashboard UI). When a
+      # Playwright walk lands, this is where we'd add:
+      #   - actions/setup-node@v4 (Node 20)
+      #   - cd apps/dashboard && npm ci
+      #   - BUILD_OUTPUT=export npm run build
+      #   - cp -r out/. ../../packages/core/openvox/_dashboard/
+      # plus a `npx playwright install chromium --with-deps` step.
+
+      - name: Run e2e tests
+        # Default pytest filter excludes network tests; explicit -m
+        # selects only e2e. Total runtime should be <60s.
+        working-directory: packages/core
+        run: |
+          pytest -m e2e -v
+
+      - name: Upload daemon logs on failure
+        # The e2e fixture writes daemon stdout/stderr to the test's
+        # tempdir. On failure we want those for debugging, but
+        # tempdirs get cleaned up. So we have a separate step that
+        # finds and uploads any daemon logs that landed in pytest's
+        # tmp_path. (No-op on success.)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-daemon-logs
+          path: /tmp/pytest-of-runner/**/daemon.*.log
+          retention-days: 7
+          if-no-files-found: ignore
