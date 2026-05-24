@@ -1419,6 +1419,187 @@ not blocking v0.1.x.
 
 ---
 
+## Session 17 — 2026-05-24 (PLANNING_SESSION17.md execution: Phases 1-4 of 6 done)
+
+**Goal**: Execute `docs/PLANNING_SESSION17.md` — production-trustworthy
+foundation (tests, e2e, Alembic migrations, install-matrix closure,
+CI hardening). The premise after Session 16: the class of bugs
+that broke v0.1.7 (#77-83) would all have been caught by a single
+~80-line Playwright test that didn't exist. Build the foundation so
+every Session-18+ feature lands with a safety net.
+
+### Status at end of session
+
+**4 of 6 phases done.** All committed + pushed; PRs stacked, awaiting review:
+
+```
+main ← PR #3 (Phase 1, 124 unit tests)
+     ← PR #4 (Phase 2, +6 e2e tests — bug-#77/#78 catch contract verified)
+     ← PR #5 (Phase 4, error messages + hydration log + setup banner)
+     ← PR #6 (Phase 3, Alembic migrations + 3-path init_db)
+```
+
+**Merge order: 3 → 4 → 5 → 6.** PR #5 deliberately stacks on PR #4
+(error message changes touch the e2e test); PR #6 stacks on PR #5
+(both ship under the same v0.1.x line).
+
+| Phase | Goal | PR | Tests added | Status |
+|---|---|---|---|---|
+| 1 | Real pytest suite | #3 | 124 | ✓ |
+| 2 | Playwright/HTTP e2e walk | #4 | 6 | ✓ |
+| 3 | Alembic migrations | #6 | 5 | ✓ |
+| 4 | Provider error message UX | #5 | (updates existing) | ✓ |
+| 5 | Install matrix closure | — | — | **Pending** |
+| 6 | CI matrix hardening | — | — | **Pending** |
+
+### Phase 1 — pytest suite foundation (PR #3, branch session17-phase1-test-suite)
+
+7 commits, 6 new test files, **124 tests, ~5s suite runtime, 30% line coverage**.
+
+| Sub-task | What |
+|---|---|
+| 1.1 conftest fixtures | `tmp_openvox_home` (isolated DATA_DIR), `isolated_db` (sqlite + init), `mocked_http` (respx) — plus 8 smoke tests of the fixtures themselves |
+| 1.2 text helpers truth-table | 49 cases × 4 helpers (`strip_reasoning_tags`, `ReasoningStripper`, `clean_for_tts`, `sanitize_user_final`) — promotes Session-13's `/tmp` script |
+| 1.3 hydration regression (bugs #77 #78) | 7 tests; verified bug-catch contract by reintroducing the bug |
+| 1.4 secrets module | 21 tests covering full public API + machine-key lifecycle + corruption recovery |
+| 1.5 provider × 5 | 15 tests (3 contracts × 5 providers: byteplus-tts/llm, anthropic, elevenlabs, cartesia) parameterised — adding a provider = 1 row in PROVIDERS list |
+| 1.6 setup skills | 11 tests on `RecommendTemplateSkill` + `CreateCustomAgentSkill` (Session 10 carry-forward) |
+| 1.7 coverage + markers + CI | `[tool.pytest.ini_options]` markers (slow/integration/network/e2e); `[tool.coverage]` config; `.github/workflows/test.yml` stub |
+
+Three real bugs surfaced WHILE writing the fixtures (logged in commit
+messages, fixed in `conftest.py`):
+  - `os.environ` direct mutations not tracked by `monkeypatch` — fix:
+    snapshot env at fixture entry, restore at exit
+  - `openvox.db.session._engine` is a module-level singleton →
+    inherits the first test's DATABASE_URL → fix: bust in `_bust_caches`
+  - Host env vars (real `BYTEPLUS_VOICE_API_KEY` in the contributor's
+    shell) leak into tests → fix: explicit `monkeypatch.delenv` list
+    for all known provider keys
+
+### Phase 2 — e2e walk (PR #4, branch session17-phase2-e2e-playwright)
+
+3 commits, +6 e2e tests, ~30s e2e runtime.
+
+| Sub-task | What |
+|---|---|
+| 2.1 daemon-subprocess fixture | `tests/e2e/conftest.py` with `running_daemon` + `http_client`. Picks random port, sets DATA_DIR, polls /health, tears down. 5 smoke tests. |
+| 2.2 wizard → synth walk | `test_first_run.py` — the killer test. Spawns daemon, hits 400 'TTS unavailable', wizard-saves keys, restarts daemon, verifies synth no longer returns 'TTS unavailable'. **Bug-catch contract verified.** |
+| 2.3 CI integration | `.github/workflows/test.yml` extended with `e2e-tests` job alongside `unit-tests`. Uploads daemon stderr as workflow artifact on failure. |
+
+**Deviation from plan**: NO Playwright (browser). HTTP-only e2e test
+catches the same regression class in 5s instead of 30s+ with Chromium.
+Browser tests deferred until there's a visual/interaction regression
+HTTP can't catch. Documented in test.yml comments.
+
+### Phase 4 — error message UX (PR #5, branch session17-phase4-error-messages)
+
+3 commits, ~280 LoC, 130 tests still pass.
+
+| Sub-task | What |
+|---|---|
+| 4.1 rewrite '.env' errors | 4 user-facing errors in `playground.py` (TTS/STT×2/LLM) + `embeddings.py` now mention `http://localhost:8000/dashboard/setup` AND the env var. Deferred: telephony/RAG-cloud (advanced setups). |
+| 4.2 hydration log visible | Custom uvicorn `log_config` adds an "openvox" logger so module-level INFO messages reach stderr. The `print()` workaround in `app.py` (v0.1.6 era) is REMOVED. |
+| 4.3 setup-status banner | `apps/dashboard/src/components/setup-banner.tsx` — yellow banner shown when setup incomplete (belt-and-braces with `SetupGate`'s redirect; covers partial-keys / key-deletion-mid-session edge cases) |
+
+Two real bugs surfaced WHILE writing this phase:
+  - **Subprocess stderr buffering**: read AFTER process exits or miss
+    the log line. Reorder test to `_stop(d) → read_text(log)`.
+  - **Shared `'a'`-mode log files** between two daemon spawns produced
+    confusing file-handle inheritance behaviour. Fix: per-daemon
+    label suffix in `_spawn_daemon(label="d1"/"d2")`.
+
+### Phase 3 — Alembic migrations (PR #6, branch session17-phase3-alembic)
+
+1 atomic commit (sub-tasks mutually interdependent), +1030/-45 LoC across 10 files, **135 tests pass, 60s suite runtime (~40s overhead from alembic subprocess spawns)**.
+
+| Sub-task | What |
+|---|---|
+| 3.1 alembic skeleton | `alembic init --template async`. env.py wired to `openvox.config.get_settings()` for DATABASE_URL. `compare_type=True` + `compare_server_default=True` so autogenerate catches Phase-1-_ADDITIVE_COLUMNS-style sneaky changes. |
+| 3.2 baseline migration | `alembic/versions/0001_baseline_schema.py` — autogenerated; 14 tables + 3 indexes; folds in all 8 _ADDITIVE_COLUMNS entries |
+| 3.3 init_db rewrite | Three paths: (a) no tables → `upgrade head`; (b) tables but no `alembic_version` → stamp baseline + upgrade head (the **v0.1.x orphan upgrade**, the riskiest); (c) aligned → just upgrade head (idempotent). The `_ADDITIVE_COLUMNS` shim is GONE; `session.py` dropped 85→25 lines. |
+| 3.4 `openvox migrate` CLI + tests | Wraps alembic subcommands. 5 path tests, including `test_init_db_orphan_v01x_preserves_data` which seeds a v0.1.x-shape row, runs init_db, asserts data + `alembic_version` both present. |
+
+**Wheel packaging gotcha**: `alembic/` + `alembic.ini` live at
+`packages/core/`, NOT inside `openvox/`. Default hatch `packages=["openvox"]`
+doesn't ship them. Fix: `[tool.hatch.build.targets.wheel.force-include]`
+in pyproject.toml. Verified via `python -m zipfile -l` against the
+built wheel.
+
+**Cost**: suite runtime 18s → 60s. Alembic spawn ~0.4s per test using
+`isolated_db`. Acceptable for foundation; optimisable later by using
+alembic's Python API in-process (would need careful asyncio-loop
+juggling because alembic's own runner does `asyncio.run`).
+
+### What's NOT done — Phases 5 + 6 (pending for Session 17 continuation OR Session 18)
+
+**Phase 5 — Install matrix closure (~2 days)**:
+  - 5.1 Homebrew formula sha256 fix (~1 hour) — switch poet → pipgrip
+    OR pin poet version that handles wheel-only deps
+  - 5.2 macOS daemon smoke (already passed in v0.1.8; document with
+    screenshots in docs/install.md)
+  - 5.3 Linux daemon smoke — Ubuntu 24.04 VM or systemd-in-Docker
+  - 5.4 Windows daemon smoke — Windows 11 VM; verify nssm-based
+    service registration. Either works (great) or document the gap.
+  - 5.5 `brew install` E2E pass — after 5.1 ships, real brew install
+    on a clean Mac
+
+**Phase 6 — CI matrix hardening (~1 day)**:
+  - 6.1 `.github/workflows/test.yml` matrix: ubuntu + macos × Python
+    3.11/3.12/3.13
+  - 6.2 Codecov integration (OSS free)
+  - 6.3 Release workflow `needs: test` (no publishing if tests fail)
+  - 6.4 `.github/PULL_REQUEST_TEMPLATE.md` + `docs/contributing.md`
+
+### v0.1.x → v0.2.0 — when to bump?
+
+After Phase 3 lands on main, the next release should be **v0.2.0**
+(minor bump) because:
+  - Migration mechanism changed materially (Base.metadata.create_all
+    → Alembic). Operators need to know.
+  - Bug fixes in v0.1.x have been silent patches; users haven't been
+    told to upgrade. v0.2.0 is a good "tell people" milestone.
+  - Phase 5/6 work doesn't have to block the release — those can ship
+    as v0.2.1+.
+
+Tag command, after PRs #3-#6 merge:
+  - Bump `packages/core/pyproject.toml` `version = "0.2.0"`
+  - `git tag -a v0.2.0 -m "OpenVox v0.2.0 — production foundation"`
+  - `git push origin v0.2.0`
+  - Release pipeline auto-publishes to PyPI + GitHub Release + tap
+
+### Lessons logged to CLAUDE.md §8 (new bugs from this session)
+
+  #84 — Cross-test env-var leak when subprocess code mutates
+        `os.environ`; monkeypatch doesn't track those mutations
+  #85 — Module-level engine cache (`_engine`, `_sessionmaker`) leaks
+        DATABASE_URL across tests; bust in `_bust_caches`
+  #86 — Host env vars (e.g. real `BYTEPLUS_VOICE_API_KEY` in the
+        contributor's shell) silently pass tests that should fail in
+        CI; explicit `monkeypatch.delenv` list per provider
+  #87 — uvicorn's `dictConfig` at startup wipes `openvox.*` logger
+        handlers; pass a custom `log_config` to `uvicorn.run` instead
+        of the simple `log_level=` argument
+  #88 — Subprocess stderr buffer flushes on exit only; read AFTER
+        `_stop(daemon)` or miss the log line
+  #89 — Shared `'a'`-mode log file across two daemon spawns produces
+        confusing file-handle inheritance behaviour; use per-daemon
+        label suffix
+  #90 — Hatch's `packages=["openvox"]` doesn't ship sibling files
+        like `alembic.ini` / `alembic/`; use `force-include` block
+  #91 — Alembic autogenerate's defaults (`compare_type=False` +
+        `compare_server_default=False`) silently miss column-type and
+        default-value changes; turn both ON in `env.py`
+
+### Open at end of Session 17
+
+  - Phases 5 + 6 not started (~3 days combined)
+  - PRs #3-6 awaiting human review/merge
+  - v0.2.0 release awaiting Phase 3 merge to main
+  - 4 spawned-task chips still showing (PyInstaller WinGet, Homebrew
+    sha256, WinGet duplicate-PR guard, dashboard-bundle done)
+
+---
+
 ## Open follow-ups (carried forward)
 
 Updated end of Session 14. Items shipped through Session 14 removed;

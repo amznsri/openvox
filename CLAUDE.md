@@ -1673,6 +1673,155 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     expects .deb. The shape of your artefact must match BEFORE
     writing manifests, not after.
 
+84. **`monkeypatch` doesn't track direct `os.environ` mutations.**
+    pytest's monkeypatch reverts the env vars IT sets via
+    `monkeypatch.setenv`. If the code under test mutates
+    `os.environ` directly (e.g. `_hydrate_secrets_into_env` setting
+    `BYTEPLUS_VOICE_API_KEY = ...`), those values LEAK into the
+    next test. The bleed shows as bizarre cross-test failures
+    where test B sees env vars test A set, often only when the
+    suite is run in a specific order.
+    *Fix*: in conftest fixtures, snapshot `dict(os.environ)` at
+    entry and restore it byte-for-byte at exit. See
+    `packages/core/tests/conftest.py::tmp_openvox_home`.
+    **Lesson**: any fixture that yields to code which might
+    `os.environ[...] = ...` directly needs an env snapshot,
+    not just monkeypatch.
+
+85. **Module-level engine cache leaks across tests.**
+    `openvox.db.session._engine` is a process-level singleton
+    constructed on first `get_engine()` call. It binds to
+    `settings.database_url` at that moment. Subsequent tests
+    with different `DATABASE_URL` env vars STILL get the first
+    test's engine + connection pool, pointing at the wrong DB.
+    *Fix*: bust the engine + sessionmaker in the conftest
+    cache-bust helper:
+        ```
+        import openvox.db.session as session_mod
+        session_mod._engine = None
+        session_mod._sessionmaker = None
+        ```
+    **Lesson**: every module-level cache that closes over
+    settings is a cross-test-leak waiting to happen. When you
+    add one, also add it to `tests/conftest.py::_bust_caches`.
+
+86. **Host env vars silently leak into tests.**
+    A contributor with `BYTEPLUS_VOICE_API_KEY=...` in their
+    shell profile sees tests that should fail (testing the "no
+    keys configured" path) pass spuriously. The same tests fail
+    in CI where the env is clean. Classic "works on my machine."
+    *Fix*: in `tmp_openvox_home`, explicitly `monkeypatch.delenv`
+    every provider-key env var on entry. Keep the list in sync
+    with the mapping in `_hydrate_secrets_into_env`.
+    **Lesson**: never assume the test process's env is clean.
+    Either snapshot+restore (#84) or explicit delenv on entry
+    for every var the test logic depends on.
+
+87. **uvicorn's `dictConfig` wipes module-level logger handlers.**
+    `uvicorn.run(app, log_level="info")` calls
+    `logging.config.dictConfig(...)` at startup. The default
+    dict only configures `uvicorn.*` loggers, but the dictConfig
+    operation removes handlers from non-uvicorn loggers that had
+    been configured earlier via `logging.basicConfig`. So
+    `logger.info()` from `openvox.api.app` produces no output
+    in the daemon's stderr — surfaced when trying to verify
+    "did hydration run?" from `openvox logs`.
+    *Fix*: pass a custom `log_config` dict to `uvicorn.run`
+    that preserves uvicorn defaults AND adds an "openvox"
+    logger entry with handler:
+        ```
+        "loggers": {
+            "uvicorn": {...},
+            "uvicorn.error": {...},
+            "uvicorn.access": {...},
+            "openvox": {
+                "handlers": ["default"], "level": "INFO",
+                "propagate": False,
+            },
+        }
+        ```
+    See `packages/core/openvox/cli/commands/run.py`.
+    **Lesson**: ANY module's logger.info() / logger.warning()
+    that you want visible in production logs needs an explicit
+    entry in the uvicorn log_config — `disable_existing_loggers=
+    False` is necessary but NOT sufficient.
+
+88. **Subprocess stderr buffer flushes only on process exit.**
+    Reading a subprocess's stderr log file while the subprocess
+    is STILL RUNNING shows whatever has been flushed to the OS
+    so far — buffered writes are still in the subprocess's
+    libc stdio buffer. The `logger.info()` call has happened,
+    but its bytes haven't crossed the kernel boundary yet.
+    *Fix*: `proc.terminate()` + `proc.wait()` BEFORE reading
+    the log file. The buffer flushes on graceful shutdown.
+    **Lesson**: any test that asserts on subprocess output
+    must stop the subprocess first. Mid-run reads are unreliable
+    for anything except polling /health-style probes (which
+    don't depend on log output).
+
+89. **Shared `'a'`-mode log file across multiple subprocesses
+    has confusing file-handle inheritance behaviour.**
+    `subprocess.Popen(stderr=open(path, "a"))` opens a NEW file
+    handle in the parent. Each subprocess inherits a DIFFERENT
+    FD pointing at the same file. When the parent (test process)
+    reads the file path AFTER the subprocesses stop, what it
+    sees depends on OS-specific append-mode semantics + which
+    FD flushed last. We saw the second daemon's log entries
+    silently missing from a shared `daemon.stderr.log`.
+    *Fix*: give each subprocess its own log file. Either
+    `daemon.d1.stderr.log` / `daemon.d2.stderr.log` via a `label`
+    parameter, or `tempfile.NamedTemporaryFile`. Truncate-mode
+    (`"w"`) is fine when each subprocess has its own file.
+    **Lesson**: do NOT share log files across subprocesses
+    with `'a'` mode. The file-system layer makes it look like
+    it works; sometimes it doesn't.
+
+90. **Hatch doesn't ship sibling files alongside the package.**
+    `[tool.hatch.build.targets.wheel] packages = ["openvox"]`
+    only includes files UNDER `openvox/`. If you have project-
+    level config files (`alembic.ini`) or scripts directories
+    (`alembic/`) at the SAME level as `openvox/`, they don't
+    end up in the wheel. The runtime daemon then fails on a
+    fresh `pip install` because the file it needs at runtime
+    isn't there.
+    *Fix*: explicit `[tool.hatch.build.targets.wheel.force-
+    include]` block listing each sibling path:
+        ```
+        [tool.hatch.build.targets.wheel.force-include]
+        "alembic" = "alembic"
+        "alembic.ini" = "alembic.ini"
+        ```
+    Also add to `[tool.hatch.build.targets.sdist].include` for
+    source-installs to work. Verify by `python -m zipfile -l`
+    on the built wheel before publishing.
+    **Lesson**: any file the runtime needs that isn't a .py
+    inside the package directory needs explicit force-include.
+    Test by building the wheel + listing its contents BEFORE
+    you publish.
+
+91. **Alembic `autogenerate` defaults silently miss schema
+    changes.**
+    Out of the box, `alembic revision --autogenerate` doesn't
+    compare column TYPES or server-side DEFAULT clauses against
+    the model definitions. A change like `VARCHAR(50)` →
+    `VARCHAR(100)` or `DEFAULT 'silero'` → `DEFAULT 'none'`
+    is silently ignored. autogenerate produces an empty
+    migration; the model and the DB schema drift apart.
+    *Fix*: in `alembic/env.py::do_run_migrations`:
+        ```
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,
+            compare_server_default=True,
+        )
+        ```
+    Both default `False`; both should be `True` for any project
+    that takes its schema seriously.
+    **Lesson**: Alembic's autogenerate is a power tool with
+    safety knobs OFF by default. Turn them on at project setup
+    time so you don't discover the misalignment 6 months in.
+
 ---
 
 ## 9. Known constraints / environment quirks

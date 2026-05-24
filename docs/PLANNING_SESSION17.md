@@ -49,13 +49,16 @@ Three decisions that shape this plan:
 
 | Phase | Goal | Calendar | Status |
 |---|---|---|---|
-| **1** | Real pytest suite — promote `/tmp` + Phase 4 mocks into a proper harness | ~3 days | Pending |
-| **2** | Playwright E2E walk: install → wizard → create agent → test voice → verify audio | ~2 days | Pending |
-| **3** | Alembic migrations replace `Base.metadata.create_all()` | ~2 days | Pending |
-| **4** | Provider error messages mention the wizard, not just `.env` | ~1 day | Pending |
-| **5** | Install matrix closure — Homebrew sha256 + macOS/Linux/Windows daemon smoke tests | ~2 days | Pending |
-| **6** | CI matrix hardening — multi-OS, coverage reporting, PR comments | ~1 day | Pending |
-| **Total** | | **~11 days single-track**, +20-30% real-world buffer → ~2 weeks | |
+| **1** | Real pytest suite — promote `/tmp` + Phase 4 mocks into a proper harness | ~3 days | ✓ Done (PR #3) |
+| **2** | Playwright E2E walk: install → wizard → create agent → test voice → verify audio | ~2 days | ✓ Done (PR #4) — HTTP-only deviation; Playwright deferred |
+| **3** | Alembic migrations replace `Base.metadata.create_all()` | ~2 days | ✓ Done (PR #6) |
+| **4** | Provider error messages mention the wizard, not just `.env` | ~1 day | ✓ Done (PR #5) |
+| **5** | Install matrix closure — Homebrew sha256 + macOS/Linux/Windows daemon smoke tests | ~2 days | **Pending** |
+| **6** | CI matrix hardening — multi-OS, coverage reporting, PR comments | ~1 day | **Pending** |
+| **Total** | | **~11 days single-track**, +20-30% real-world buffer → ~2 weeks | **4 of 6 done** |
+
+PRs stacked, merge order: 3 → 4 → 5 → 6. v0.2.0 release planned
+after merge.
 
 Each phase committable as 1-2 PRs. Project shippable after every phase
 (no half-states that brick the daemon).
