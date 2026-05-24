@@ -176,6 +176,40 @@ Logs go to `~/.openvox/logs/openvox.log` on all three.
 > services stop when you log out (or when SSH disconnects). For always-
 > on operation across logouts, run `loginctl enable-linger $USER` once.
 
+### What a healthy macOS install looks like
+
+The three checkpoints below are what a fresh `pipx install openvox-core
+&& openvox start` should produce on macOS. They're also the screenshots
+the v0.2.0 smoke test in [`PLANNING_SESSION17.md` §Phase 5](./PLANNING_SESSION17.md)
+asks for, captured against v0.1.8.
+
+**1. CLI flow.** `openvox version` → `openvox start` (prints PID, log
+paths, and the dashboard URL) → `openvox status` (confirms the PID is
+alive) → `ls ~/Library/LaunchAgents/com.openvox.*` (the launchd plist
+exists, so the daemon auto-starts on login).
+
+![Terminal showing openvox version, start, status, and the
+LaunchAgent plist on disk](./images/install-macos/terminal-daemon-running.png)
+
+**2. Landing page.** Visit <http://localhost:8000> — the marketing
+landing renders, dashboard nav lights up, and the BytePlus/OpenAI/etc.
+provider chips confirm the registry registered cleanly.
+
+![OpenVox landing page at localhost:8000](./images/install-macos/landing-page.png)
+
+**3. Dashboard.** <http://localhost:8000/dashboard/agents> shows the
+seeded Setup Assistant agent — confirms the SQLite DB is initialised,
+migrations ran, and the template auto-seeded.
+
+![Dashboard /agents page showing Setup Assistant](./images/install-macos/dashboard-agents.png)
+
+If any of the three diverges from these (no PID on `status`, blank
+dashboard, missing Setup Assistant), the
+[Phase 4 wizard error messages](../README.md#troubleshooting) and
+`openvox logs` will tell you which startup step broke. The most common
+miss is `OPENVOX_INSECURE_TLS=true` for users on corporate proxies —
+see [bug #11 in `CLAUDE.md`](../CLAUDE.md#tls--network).
+
 ---
 
 ## Configuration
