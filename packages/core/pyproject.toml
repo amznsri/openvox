@@ -109,6 +109,10 @@ dev = [
   "pytest>=8.3.0",
   "pytest-asyncio>=0.24.0",
   "pytest-cov>=5.0.0",
+  # respx mocks outbound httpx calls. Used by the provider unit
+  # tests so they can't accidentally hit real BytePlus / OpenAI /
+  # etc. APIs (which would cost money + flake the suite).
+  "respx>=0.21.0",
   "ruff>=0.6.0",
   "mypy>=1.11.0",
 ]
@@ -195,3 +199,79 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Markers used by the test suite. `strict-markers` makes a typo in
+# a marker name (`@pytest.mark.itnegration`) hard-error instead of
+# silently being a no-op.
+markers = [
+    "slow: tests that take >1s individually (skip locally with -m 'not slow')",
+    "integration: tests that talk to a real subsystem (DB beyond fixture, real subprocess, etc.)",
+    "network: tests that hit a real external API (NOT respx-mocked); off by default in CI",
+    "e2e: full-stack tests that spawn the daemon + browser (Phase 2)",
+]
+addopts = [
+    "--strict-markers",
+    # Skip network tests by default — they cost money + flake.
+    # To run them locally: `pytest -m network`.
+    "-m", "not network",
+]
+
+# ── Coverage ───────────────────────────────────────────────────────
+# Run with: `pytest --cov=openvox` (already wired via pytest-cov dev dep).
+#
+# Threshold is intentionally moderate (60%) — the goal isn't 100%
+# coverage of every line, it's catching the load-bearing-but-easy-
+# to-regress paths (hydration, secrets, providers, setup skills).
+# Provider modules + telephony glue are intentionally NOT chased to
+# high coverage because they're mostly thin HTTP wrappers whose
+# value is verified via the e2e Playwright walk (Phase 2).
+
+[tool.coverage.run]
+source = ["openvox"]
+branch = true
+omit = [
+    # Skip files that are mostly conditional imports / runtime config —
+    # high noise, low signal for unit-test coverage.
+    "openvox/cli/__main__.py",
+    "openvox/api/ws/*",  # WebSocket handlers — covered by e2e Phase 2
+    "openvox/telephony/*",  # Phone integrations — needs real Twilio sandbox
+]
+
+[tool.coverage.report]
+# REGRESSION GUARD, not an aspirational target.
+#
+# Current measured coverage after Phase 1 (PLANNING_SESSION17.md):
+#   ~30% line / 20 branch. The number is held down by:
+#
+#     * Provider HTTP wrappers (~20 files in providers/openai_compat
+#       and providers/byteplus) — 0% covered because they're thin
+#       request-builders verified by the e2e Playwright walk
+#       (Phase 2) and the eval harness, not by unit tests.
+#     * Telephony glue (telephony/* + api/routes/telephony.py) —
+#       requires real Twilio / Telegram sandboxes; covered by
+#       manual TESTPLAN runs, not pytest.
+#     * Skills other than setup.py — workflow-specific business
+#       logic exercised end-to-end via real agent runs.
+#
+# The MODULES we DID cover are at 80%+:
+#     openvox/secrets.py             94%
+#     openvox/utils/text.py          90%
+#     openvox/cli/daemon/*           ~85%
+#
+# Phase 2 (E2E Playwright) raises overall coverage by ~10 points
+# because the daemon process exercises every API route. Phase 6 (CI
+# matrix hardening) is when we should consider bumping this gate.
+# For now: 25% catches a real regression (someone deleting tests)
+# without false-positiving on a phase-2-deferred coverage gap.
+fail_under = 25
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    # Pragma blocks — for "this can't easily be tested" code paths.
+    "pragma: no cover",
+    # Defensive imports / typing-only blocks.
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    # Abstract methods.
+    "raise NotImplementedError",
+    "@abstractmethod",
+]
