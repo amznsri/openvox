@@ -1,0 +1,277 @@
+"""Generate Homebrew `resource` blocks for openvox-core.
+
+Replaces `homebrew-pypi-poet`, which we'd been using since v0.1.x but has
+been broken on this project for two reasons:
+
+1. **Wheel-only deps produce empty sha256s.** Poet expects every dep to
+   publish an sdist on PyPI. Several of ours (audioop-lts, some pyobjc
+   transitives) ship wheels only — poet silently emits a `resource` block
+   with the URL pointing nowhere and an empty `sha256`. The resulting
+   formula installs partially then dies, and the user sees a broken
+   `brew install openvox`.
+
+2. **Poet itself doesn't run on pip ≥ 24.** It imports `pkg_resources`,
+   which newer pip releases no longer auto-install. The workflow's
+   `pip install homebrew-pypi-poet` step succeeds but the next `poet …`
+   invocation crashes with `ModuleNotFoundError: pkg_resources`.
+
+The replacement is a two-pass artefact picker:
+
+  Pass 1 (`_resolve`)
+    pip dry-runs an install of the pinned spec and dumps a JSON report.
+    From it we extract the exact (name, version) tree pip would install.
+    We *ignore* the URLs pip chose because they're platform-specific
+    (pip naturally picks the wheel for the host machine).
+
+  Pass 2 (`_pick_artefact`)
+    For each (name, version) we query the PyPI JSON API and pick the
+    most OS-portable artefact:
+      a. sdist (`packagetype == "sdist"`) — Homebrew compiles from
+         source, universal across macOS/Linux.
+      b. universal wheel (`-py3-none-any.whl` or
+         `-py2.py3-none-any.whl`) — pure-Python, works on any platform.
+      c. *Platform fallback*: if neither (a) nor (b) is available
+         (typical for compiled extensions that ship wheels-only —
+         torch, torchaudio), pick one wheel per platform target
+         (macOS arm64, macOS x86_64, Linux x86_64, Linux aarch64) and
+         emit a Homebrew `on_macos`/`on_linux`/`on_arm`/`on_intel`
+         block. If a required platform wheel is missing from PyPI we
+         still emit the others and log a warning — the formula will
+         simply not install that package on the missing platform.
+
+Usage (inside the publish-homebrew job, after PyPI propagation):
+
+    python scripts/gen_homebrew_resources.py openvox-core==0.2.0 > out/resources.rb
+
+The output is a sequence of Homebrew `resource` blocks (and platform
+guards) ready to be pasted between the BEGIN/END markers in
+`packaging/homebrew/openvox.rb`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+
+
+# Homebrew currently targets these platforms × the Python interpreter
+# the formula's `depends_on "python@3.12"` line pulls in. We need a
+# wheel whose URL matches both, since a `resource` block has a single
+# fixed URL — picking a cp310 wheel here would land an incompatible
+# artefact in the cp312 venv at install time.
+#
+# We accept either:
+#   • the version-specific `cp312-cp312-…` tag (3.12 only), or
+#   • the stable-ABI `cp3X-abi3-…` tag for X ≤ 12 — abi3 wheels are
+#     forward-compatible into newer interpreters, so a cp310-abi3 wheel
+#     installs in a 3.12 venv. A `cp313-abi3` wheel would NOT install
+#     in 3.12 (backward-incompatible direction), hence the X ≤ 12 cap.
+#
+# If we ever bump the formula's `depends_on "python@…"` line, update
+# both halves of this regex.
+PY_TAG_RE = re.compile(r"-(cp312-cp312|cp3(?:[0-9]|1[0-2])-abi3)-")
+
+PLATFORM_TARGETS = {
+    "macos_arm": re.compile(r"macosx_\d+_\d+_arm64\.whl$"),
+    "macos_intel": re.compile(r"macosx_\d+_\d+_(x86_64|universal2)\.whl$"),
+    "linux_x86_64": re.compile(r"manylinux.*_x86_64\.whl$"),
+    "linux_aarch64": re.compile(r"manylinux.*_aarch64\.whl$"),
+}
+
+
+@dataclass
+class Artefact:
+    url: str
+    sha256: str
+
+
+def _resolve(spec: str, python: str) -> list[dict]:
+    """Run pip's dry-run installer for `spec` and return the install report."""
+    with tempfile.TemporaryDirectory() as td:
+        report = Path(td) / "report.json"
+        cmd = [
+            python,
+            "-m",
+            "pip",
+            "install",
+            "--dry-run",
+            "--ignore-installed",
+            "--quiet",
+            "--progress-bar",
+            "off",
+            "--report",
+            str(report),
+            spec,
+        ]
+        subprocess.run(cmd, check=True)
+        data = json.loads(report.read_text())
+    return data["install"]
+
+
+def _pypi_release(name: str, version: str) -> list[dict]:
+    """Return the `urls` array from PyPI's JSON API for `name==version`."""
+    url = f"https://pypi.org/pypi/{name}/{version}/json"
+    with urllib.request.urlopen(url, timeout=30) as resp:
+        data = json.load(resp)
+    return data["urls"]
+
+
+def _pick_universal(urls: list[dict]) -> Artefact | None:
+    """Pick a universal artefact: sdist first, then a py3-none-any wheel."""
+    for u in urls:
+        if u.get("packagetype") == "sdist":
+            return Artefact(u["url"], u["digests"]["sha256"])
+    for u in urls:
+        fn = u.get("filename", "")
+        if fn.endswith("-py3-none-any.whl") or fn.endswith("-py2.py3-none-any.whl"):
+            return Artefact(u["url"], u["digests"]["sha256"])
+    return None
+
+
+def _pick_platform_wheels(urls: list[dict]) -> dict[str, Artefact]:
+    """For each PLATFORM_TARGETS key, return the latest matching wheel.
+
+    "Latest" here just means the first one we encounter that matches —
+    PyPI returns one wheel per (cpython, abi, platform) tuple so there's
+    typically only one match per platform target anyway.
+    """
+    picked: dict[str, Artefact] = {}
+    for u in urls:
+        if u.get("packagetype") != "bdist_wheel":
+            continue
+        fn = u.get("filename", "")
+        if not PY_TAG_RE.search(fn):
+            continue
+        for plat, regex in PLATFORM_TARGETS.items():
+            if plat in picked:
+                continue
+            if regex.search(fn):
+                picked[plat] = Artefact(u["url"], u["digests"]["sha256"])
+                break
+    return picked
+
+
+def _emit_resource_block(name: str, art: Artefact, indent: str = "  ") -> str:
+    return (
+        f'{indent}resource "{name}" do\n'
+        f'{indent}  url "{art.url}"\n'
+        f'{indent}  sha256 "{art.sha256}"\n'
+        f'{indent}end'
+    )
+
+
+def _emit_platform_resource(name: str, wheels: dict[str, Artefact]) -> str:
+    """Emit per-platform resource blocks for a wheel-only package.
+
+    The Homebrew DSL allows resource declarations inside `on_macos` /
+    `on_linux` / `on_arm` / `on_intel` blocks. They're evaluated lazily
+    at install time on the user's machine — only the matching block's
+    resources end up in the install list. This is the blessed way to
+    ship platform-specific wheels in a single formula.
+    """
+    parts: list[str] = []
+    mac_arm = wheels.get("macos_arm")
+    mac_intel = wheels.get("macos_intel")
+    if mac_arm or mac_intel:
+        parts.append("  on_macos do")
+        if mac_arm:
+            parts.append("    on_arm do")
+            parts.append(_emit_resource_block(name, mac_arm, indent="      "))
+            parts.append("    end")
+        if mac_intel:
+            parts.append("    on_intel do")
+            parts.append(_emit_resource_block(name, mac_intel, indent="      "))
+            parts.append("    end")
+        parts.append("  end")
+
+    lin_x86 = wheels.get("linux_x86_64")
+    lin_arm = wheels.get("linux_aarch64")
+    if lin_x86 or lin_arm:
+        parts.append("  on_linux do")
+        if lin_x86:
+            parts.append("    on_intel do")
+            parts.append(_emit_resource_block(name, lin_x86, indent="      "))
+            parts.append("    end")
+        if lin_arm:
+            parts.append("    on_arm do")
+            parts.append(_emit_resource_block(name, lin_arm, indent="      "))
+            parts.append("    end")
+        parts.append("  end")
+
+    return "\n".join(parts)
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument(
+        "spec",
+        help="Pinned PyPI spec to resolve, e.g. openvox-core==0.2.0",
+    )
+    p.add_argument(
+        "--exclude",
+        default="openvox-core",
+        help="Comma-separated package names to skip in the output "
+        "(the main package itself, since the formula installs it from "
+        "its own `url` line, not a `resource` block).",
+    )
+    p.add_argument(
+        "--python",
+        default=sys.executable,
+        help="Python interpreter to drive pip's resolver. Defaults to "
+        "the running interpreter.",
+    )
+    args = p.parse_args(argv)
+
+    skip = {n.strip().lower().replace("_", "-") for n in args.exclude.split(",") if n.strip()}
+    installs = _resolve(args.spec, args.python)
+
+    portable: list[str] = []
+    platform: list[str] = []
+    failed: list[str] = []
+
+    for entry in sorted(installs, key=lambda e: e["metadata"]["name"].lower()):
+        meta = entry["metadata"]
+        name = meta["name"]
+        if name.lower().replace("_", "-") in skip:
+            continue
+
+        urls = _pypi_release(name, meta["version"])
+        universal = _pick_universal(urls)
+        if universal is not None:
+            portable.append(_emit_resource_block(name, universal))
+            continue
+
+        wheels = _pick_platform_wheels(urls)
+        if not wheels:
+            failed.append(f"{name}=={meta['version']}")
+            continue
+        platform.append(_emit_platform_resource(name, wheels))
+
+    if failed:
+        # Wheel-only AND no wheel matching any of our four platform
+        # targets — extremely unusual. Refuse to ship a partial formula.
+        print(
+            "ERROR: PyPI has no portable or platform-matching artefact "
+            "for: " + ", ".join(failed),
+            file=sys.stderr,
+        )
+        return 1
+
+    sys.stdout.write("\n".join(portable))
+    if platform:
+        sys.stdout.write("\n\n")
+        sys.stdout.write("  # ── Platform-specific wheel-only deps ────────────────────────────\n")
+        sys.stdout.write("\n".join(platform))
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -15,19 +15,29 @@
 # REGENERATING THE RESOURCE BLOCKS
 # ---------------------------------
 # Every Python dependency in pyproject.toml needs a `resource` block
-# below with its current sha256. To regenerate the full list after a
-# deps change:
+# below with a non-empty sha256. The release pipeline regenerates the
+# whole block on every tag — you generally don't touch this file by
+# hand. To regenerate locally for inspection:
 #
-#   pipx install homebrew-pypi-poet
-#   pip install openvox-core==<latest version>     # in a venv
-#   poet openvox-core > /tmp/resources.rb
-#   # Paste /tmp/resources.rb's `resource` blocks between the BEGIN and
-#   # END markers below.
+#   python -m venv /tmp/openvox-resgen
+#   /tmp/openvox-resgen/bin/python -m pip install --upgrade pip
+#   /tmp/openvox-resgen/bin/python scripts/gen_homebrew_resources.py \
+#       openvox-core==<latest version> > /tmp/resources.rb
+#   # Paste /tmp/resources.rb between the BEGIN/END markers below.
+#
+# We previously used `homebrew-pypi-poet`; it's broken for OpenVox (see
+# the script docstring for the two failure modes). The new generator
+# uses pip's `--dry-run --report` to resolve the pinned dep set, then
+# picks an OS-portable artefact per dep — sdist when available,
+# universal `py3-none-any.whl` otherwise, per-OS wheels (in
+# `on_macos`/`on_linux` blocks) when neither exists. The output between
+# BEGIN/END below may therefore include both top-level `resource`
+# blocks and platform-guarded ones — that's expected.
 #
 # Until the first PyPI release, this formula is a SCAFFOLD — the
 # resource list below is intentionally empty. The release-pipeline
-# workflow (PR-5) generates the full list automatically as part of
-# the publish step.
+# workflow generates the full list automatically as part of the
+# publish step.
 
 class Openvox < Formula
   include Language::Python::Virtualenv
