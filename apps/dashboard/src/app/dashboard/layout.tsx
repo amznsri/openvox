@@ -1,5 +1,6 @@
 import { Sidebar } from "@/components/nav/sidebar";
 import { Topbar } from "@/components/nav/topbar";
+import { SetupBanner } from "@/components/setup-banner";
 import { SetupGate } from "@/components/setup-gate";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -11,6 +12,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <SetupGate />
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0">
+        {/* Yellow banner shown when setup isn't complete AND the user
+            isn't already on the setup page. Belt-and-braces with
+            SetupGate: catches the edge cases where the gate's
+            redirect doesn't fire (partial keys saved, key deleted
+            mid-session, manually-bypassed gate). */}
+        <SetupBanner />
         <Topbar />
         <main className="flex-1 overflow-y-auto">{children}</main>
       </div>

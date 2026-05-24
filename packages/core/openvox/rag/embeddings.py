@@ -31,7 +31,10 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
     if not s.byteplus_llm_api_key:
         raise RuntimeError(
             "BYTEPLUS_LLM_API_KEY is required for document embeddings. "
-            "Set it in .env and restart the core service."
+            "Add a BytePlus LLM API key via the dashboard setup wizard "
+            "(http://localhost:8000/dashboard/setup), or set "
+            "BYTEPLUS_LLM_API_KEY in your .env file. Either way, "
+            "restart the core service after configuring."
         )
 
     # The Ark embeddings endpoint accepts batched input. Strip empty strings
