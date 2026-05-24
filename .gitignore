@@ -17,6 +17,11 @@ build/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+# pytest-cov scratch files — generated on every `pytest --cov` run
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 .venv/
 venv/
 env/
