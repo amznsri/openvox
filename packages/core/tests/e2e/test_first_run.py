@@ -61,11 +61,17 @@ class _DaemonSpawn:
     tmp_home: Path
 
 
-def _spawn_daemon(tmp_home: Path, port: int) -> _DaemonSpawn:
+def _spawn_daemon(tmp_home: Path, port: int, label: str = "d") -> _DaemonSpawn:
     """Spawn a daemon process pointing at the given tempdir + port.
 
     Returns immediately with a handle; caller is responsible for
     waiting on /health and tearing the proc down.
+
+    Each daemon gets its OWN log files (suffixed with ``label``)
+    so cross-test-helper assertions can target a SPECIFIC daemon's
+    output without grepping through merged logs. Use distinct
+    labels per daemon: e.g. _spawn_daemon(tmp, port, label="d1")
+    + _spawn_daemon(tmp, port, label="d2").
     """
     env = {
         "PATH": os.environ.get("PATH", ""),
@@ -73,7 +79,8 @@ def _spawn_daemon(tmp_home: Path, port: int) -> _DaemonSpawn:
         "DATA_DIR": str(tmp_home),
         "DATABASE_URL": f"sqlite+aiosqlite:///{tmp_home}/openvox.db",
         "OPENVOX_AUTH": "disabled",
-        "LOG_LEVEL": "warning",
+        # INFO level — Phase 4.2's hydration log assertion needs it.
+        "LOG_LEVEL": "info",
     }
     for v in ("LANG", "LC_ALL", "LC_CTYPE", "TZ"):
         if v in os.environ:
@@ -83,8 +90,8 @@ def _spawn_daemon(tmp_home: Path, port: int) -> _DaemonSpawn:
         [sys.executable, "-m", "openvox.cli", "run",
          "--no-browser", "--port", str(port), "--host", "127.0.0.1"],
         env=env,
-        stdout=open(tmp_home / "daemon.stdout.log", "a"),
-        stderr=open(tmp_home / "daemon.stderr.log", "a"),
+        stdout=open(tmp_home / f"daemon.{label}.stdout.log", "w"),
+        stderr=open(tmp_home / f"daemon.{label}.stderr.log", "w"),
     )
     return _DaemonSpawn(proc=proc, base_url=f"http://127.0.0.1:{port}", tmp_home=tmp_home)
 
@@ -140,7 +147,7 @@ def test_first_run_wizard_to_synthesize_end_to_end(tmp_path: Path) -> None:
     port = _pick_free_port()
 
     # ─── Phase A: fresh daemon, no keys ────────────────────────────
-    d1 = _spawn_daemon(tmp_home, port)
+    d1 = _spawn_daemon(tmp_home, port, label="d1")
     try:
         assert _wait_for_health(d1.base_url), "first daemon never became healthy"
 
@@ -212,7 +219,7 @@ def test_first_run_wizard_to_synthesize_end_to_end(tmp_path: Path) -> None:
     # values because register_builtins ran before hydration.
     # If either is regressed, the synth call here returns the SAME
     # "TTS unavailable" error as before.
-    d2 = _spawn_daemon(tmp_home, port)
+    d2 = _spawn_daemon(tmp_home, port, label="d2")
     try:
         assert _wait_for_health(d2.base_url), "second daemon never became healthy"
 
@@ -261,3 +268,24 @@ def test_first_run_wizard_to_synthesize_end_to_end(tmp_path: Path) -> None:
         # The real BytePlus API would 401 on our fake key; that's fine.
     finally:
         _stop(d2)
+
+    # Phase 4.2 verification: the hydration log line must be visible
+    # in the daemon's stderr log. Without this, operators debugging
+    # "did my keys actually get loaded?" have no signal in
+    # `openvox logs`. The fix lives in openvox/cli/commands/run.py —
+    # a custom uvicorn log_config that registers a handler for the
+    # openvox.* logger hierarchy.
+    #
+    # Read AFTER _stop(d2) — the subprocess buffers stderr writes,
+    # so the log only flushes on graceful shutdown. Reading mid-run
+    # would miss the line and produce a spurious failure.
+    # Read d2's log specifically — d1 had no keys to hydrate so its
+    # log won't contain the line we're asserting on.
+    log = (tmp_home / "daemon.d2.stderr.log").read_text()
+    assert "hydrated" in log.lower(), (
+        "hydration INFO log line did not appear in daemon stderr. "
+        "Either run.py's log_config is gone, or uvicorn's log_config "
+        "now disables openvox.* loggers (which would also regress "
+        "operator debugging). See Phase 4.2 in PLANNING_SESSION17.md.\n"
+        f"--- daemon stderr (last 1500 chars) ---\n{log[-1500:]}"
+    )

@@ -146,11 +146,11 @@ async def _hydrate_secrets_into_env() -> None:
         # already-cached Settings instance keeps the empty values it
         # was constructed with.
         _get_settings.cache_clear()
-        # print() in addition to logger.info() because uvicorn's
-        # logging-config dictConfig() at startup can suppress module-
-        # level INFO loggers — we want this confirmation visible no
-        # matter what.
-        print(f"openvox: hydrated {len(hydrated)} secrets from encrypted store: {', '.join(hydrated)}", flush=True)
+        # Phase 4: now visible in `openvox logs` because run.py
+        # calls logging.basicConfig() before uvicorn boots, and
+        # uvicorn's dictConfig has disable_existing_loggers=False.
+        # The print() workaround that lived here in v0.1.6-v0.1.8 is
+        # gone; logger.info() is the canonical path.
         logger.info("hydrated %d secrets from encrypted store: %s",
                     len(hydrated), ", ".join(hydrated))
 

@@ -115,8 +115,11 @@ def running_daemon(tmp_path: Path) -> Iterator[DaemonHandle]:
         "DATA_DIR": str(home),
         "DATABASE_URL": f"sqlite+aiosqlite:///{home}/openvox.db",
         "OPENVOX_AUTH": "disabled",
-        # Reduce log noise during tests.
-        "LOG_LEVEL": "warning",
+        # INFO level so we can assert on lifecycle log lines (e.g. the
+        # "hydrated N secrets from encrypted store" message). WARNING
+        # would filter those out. Phase 4.2 added log-presence
+        # assertions for operator-debugging signals.
+        "LOG_LEVEL": "info",
     }
     # On macOS we need a few more env vars or python's locale init can fail.
     for passthrough_var in ("LANG", "LC_ALL", "LC_CTYPE", "TZ"):

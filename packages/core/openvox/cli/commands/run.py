@@ -123,6 +123,71 @@ def run_cmd(
             daemon=True,
         ).start()
 
+    # Configure uvicorn's logging via an explicit dictConfig that
+    # ALSO registers handlers for the `openvox.*` logger hierarchy.
+    # Without this, our module-level loggers (created via
+    # `logger = logging.getLogger(__name__)`) have no handler
+    # attached after uvicorn's own dictConfig runs, so INFO messages
+    # like "hydrated N secrets from encrypted store" silently
+    # disappear — leaving operators with no way to confirm via
+    # `openvox logs` that hydration actually ran. This was surfaced
+    # by the v0.1.7 incident where we couldn't tell from the log
+    # alone whether the secrets bridge had fired.
+    #
+    # We copy uvicorn's default LOGGING_CONFIG and add a single
+    # "openvox" logger entry that routes INFO+ to the same default
+    # stderr handler. `disable_existing_loggers=False` preserves
+    # any third-party loggers that have already been configured.
+    log_level_upper = settings.log_level.upper()
+    log_config = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {
+                "()": "uvicorn.logging.DefaultFormatter",
+                "fmt": "%(levelprefix)s %(message)s",
+                "use_colors": None,
+            },
+            "access": {
+                "()": "uvicorn.logging.AccessFormatter",
+                "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+            },
+        },
+        "handlers": {
+            "default": {
+                "formatter": "default",
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stderr",
+            },
+            "access": {
+                "formatter": "access",
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stdout",
+            },
+        },
+        "loggers": {
+            # uvicorn defaults — preserved verbatim from
+            # uvicorn.config.LOGGING_CONFIG.
+            "uvicorn": {
+                "handlers": ["default"], "level": log_level_upper,
+                "propagate": False,
+            },
+            "uvicorn.error": {"level": log_level_upper},
+            "uvicorn.access": {
+                "handlers": ["access"], "level": log_level_upper,
+                "propagate": False,
+            },
+            # Our addition: every openvox.* module-level logger
+            # routes to the same default handler at the same level.
+            # This is the single line that makes "hydrated..."
+            # appear in `openvox logs`.
+            "openvox": {
+                "handlers": ["default"], "level": log_level_upper,
+                "propagate": False,
+            },
+        },
+    }
+
     # Run uvicorn — blocks the main thread until Ctrl-C.
     # No reload flag: code-changes-during-runtime is a dev-mode
     # responsibility; production / personal use restarts via the
@@ -131,7 +196,7 @@ def run_cmd(
         app,
         host=host,
         port=effective_port,
-        log_level=settings.log_level,
+        log_config=log_config,
         ws="websockets",
         reload=False,
     )
