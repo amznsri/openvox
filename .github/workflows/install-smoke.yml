@@ -1,0 +1,160 @@
+# Install-matrix smoke tests.
+#
+# Phase 5 of PLANNING_SESSION17.md asked for evidence that the pipx-
+# install + daemon path works on each supported OS. We covered macOS
+# manually (docs/install.md → "What a healthy macOS install looks
+# like"). Linux's covered by scripts/smoke_linux.sh which lives in the
+# repo for any contributor to run locally. Windows is the gap this
+# workflow plugs — GitHub Actions hosts free windows-latest runners
+# (no licence needed for public repos), so we don't need anyone to own
+# a Windows box to verify the install path.
+#
+# Triggered by `workflow_dispatch` only — we do NOT run on every PR
+# because (a) it's a slow runner image, (b) we don't have a regression
+# we're guarding against, this is more "did the release-day install
+# actually work". Re-run after every published release to make sure
+# `pip install openvox-core==<latest>` is still sound on Windows.
+#
+# Inputs:
+#   version  Defaults to "latest" → resolves to whatever PyPI's index
+#            currently has. Pass an explicit "0.2.0" to pin.
+#   source   "pypi" (default) or "branch" — the latter installs the
+#            current ref's source instead of from PyPI. Useful when you
+#            want to verify a fix BEFORE cutting the release.
+
+name: install-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'PyPI version to install (e.g. "0.2.0"), or "latest".'
+        required: false
+        default: 'latest'
+      source:
+        description: 'Install from "pypi" or "branch" source.'
+        required: false
+        default: 'pypi'
+        type: choice
+        options:
+          - pypi
+          - branch
+
+permissions:
+  contents: read
+
+jobs:
+  windows-daemon:
+    name: windows daemon smoke (py3.12)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install nssm (Windows daemon backend)
+        # `openvox start` on Windows resolves nssm.exe via
+        # `shutil.which("nssm.exe")`. The wheel doesn't yet bundle the
+        # nssm binary (see pyproject.toml "Windows nssm.exe bundling
+        # is still pending"), so we install it system-wide here via
+        # chocolatey — the same instruction the README points users
+        # at as the manual workaround.
+        run: choco install nssm -y --no-progress
+        shell: pwsh
+
+      - name: Install openvox-core
+        # Two install paths so the workflow stays useful both pre- and
+        # post-release. PyPI for verifying a published release, branch
+        # for verifying a fix before tagging.
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          if ("${{ inputs.source }}" -eq "branch") {
+            Write-Host "Installing from packages/core source"
+            python -m pip install ./packages/core
+          } else {
+            $spec = "openvox-core"
+            if ("${{ inputs.version }}" -ne "latest") {
+              $spec = "openvox-core==${{ inputs.version }}"
+            }
+            Write-Host "Installing $spec from PyPI"
+            python -m pip install $spec
+          }
+
+      - name: openvox version
+        # Sanity check — also confirms the bin shim landed on PATH and
+        # the lazy-import refactor (Session 16) didn't regress
+        # (a broken import would crash here before any daemon code).
+        shell: pwsh
+        run: openvox version
+
+      - name: openvox start (daemon)
+        # Daemon-mode start. On Windows this:
+        #   1. Calls nssm.exe install OpenVoxDaemon ... openvox run ...
+        #   2. Configures auto-start, stdout/stderr redirect to
+        #      %USERPROFILE%/.openvox/logs/openvox.log
+        #   3. Calls nssm.exe start OpenVoxDaemon
+        # If step 1 fails (e.g. nssm path resolution), we still want
+        # the logs from the subsequent steps to point at the cause.
+        shell: pwsh
+        run: openvox start --port 8000
+
+      - name: Wait for /health
+        # nssm-managed service startup is asynchronous; the previous
+        # step exits as soon as `nssm start` returns. Poll /health
+        # until 200 or 30s — whichever comes first. Cleaner than a
+        # blind `Start-Sleep -Seconds 10` and the failure surface
+        # tells us exactly which way it went sideways.
+        shell: pwsh
+        run: |
+          $deadline = (Get-Date).AddSeconds(30)
+          while ((Get-Date) -lt $deadline) {
+            try {
+              $r = Invoke-WebRequest -Uri http://localhost:8000/health -UseBasicParsing -TimeoutSec 2
+              if ($r.StatusCode -eq 200) {
+                Write-Host "✓ /health returned 200"
+                Write-Host $r.Content
+                exit 0
+              }
+            } catch {
+              Start-Sleep -Milliseconds 500
+            }
+          }
+          Write-Host "::error::/health never returned 200 within 30s"
+          exit 1
+
+      - name: openvox status
+        # Should report Running with a PID. If the wait-for-health
+        # step passed but status reports stopped, we've found a
+        # nssm-status / actual-process discrepancy worth chasing.
+        shell: pwsh
+        run: openvox status
+
+      - name: openvox stop
+        # Clean shutdown of nssm-managed service + nssm remove.
+        # We're not asserting on the output because nssm's status
+        # message format isn't stable across versions.
+        shell: pwsh
+        run: openvox stop
+        # Stop on its own shouldn't fail, but if it does, we still
+        # want the logs from the next step rather than the runner
+        # tearing down with an open service.
+        if: always()
+
+      - name: Upload daemon logs
+        # The launcher writes both daemon stdout (uvicorn) and stderr
+        # (Python tracebacks + nssm errors) under
+        # $USERPROFILE\.openvox\logs\. Upload regardless of success —
+        # on failure they're the only debugging trail; on success
+        # they're the proof-of-life that the workflow asked for.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openvox-windows-logs
+          path: |
+            ~/.openvox/logs/
+          if-no-files-found: warn
+          retention-days: 14
