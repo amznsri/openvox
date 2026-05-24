@@ -1636,6 +1636,43 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     broken release is multiple version-burnt PyPI uploads and
     a frustrated user.
 
+83. **A Python wheel is NOT a WinGet "portable zip" installer.**
+    Phase 4 PR-4 designed the WinGet manifests to point at the
+    `.whl` URL with `InstallerType: zip` +
+    `NestedInstallerType: portable` + `RelativeFilePath: Scripts\
+    openvox.exe`. The wheel IS a zip, so the upload validated.
+    But on actual install, Microsoft's bot extracted the zip and
+    failed with:
+        `APPINSTALLER_CLI_ERROR_NESTEDINSTALLER_NOT_FOUND`
+        `Unable to locate nested installer at ...\Scripts\openvox.exe`
+    Reason: pip's `openvox.exe` shim is generated AT INSTALL TIME
+    by the `console_scripts` entry-point machinery. The wheel is
+    pure platform-agnostic source — there's no Windows .exe inside
+    to extract. WinGet's portable installer doesn't run pip, so
+    the .exe is never created.
+    *Fix*: there isn't a workable wheel-as-WinGet path. The two
+    real options are:
+      a) PyInstaller-package a self-contained `openvox.exe` (~50-100
+         MB) that bundles Python + all deps; ship THAT as the
+         WinGet artefact. Adds a separate CI step + Windows runner.
+         Triggers SmartScreen warnings without a code-signing cert
+         ($300-400/yr).
+      b) Tell Windows users to `pip install openvox-core` from
+         PowerShell — pip generates openvox.exe correctly. This
+         is what `docs/install.md` says today.
+    The Phase 4 PR-4 WinGet manifests + the workflow's
+    publish-winget job are kept in the repo but the job is
+    gated on a `PYINSTALLER_BUILT` actions variable that doesn't
+    exist anywhere — effectively a kill-switch until option (a)
+    is implemented.
+    **Lesson**: before designing a packaging path for a foreign
+    package manager (WinGet, Homebrew core, apt, etc.), verify
+    the package manager's installer types ACTUALLY match what
+    your source artefact contains. WinGet portable expects an
+    .exe; Homebrew formula resources expect sdist URLs; apt
+    expects .deb. The shape of your artefact must match BEFORE
+    writing manifests, not after.
+
 ---
 
 ## 9. Known constraints / environment quirks

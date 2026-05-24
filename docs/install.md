@@ -102,19 +102,30 @@ Upgrade with the usual `brew upgrade openvox`.
 
 ---
 
-## Path D — WinGet
+## Path D — WinGet (not yet supported)
 
-```powershell
-winget install OpenVox.OpenVox
-```
-
-OpenVox is packaged as a "portable zip" — winget extracts the Python
-wheel and registers `openvox.exe` on `$PATH`. No MSI, no UAC prompt,
-no code-signing dance.
-
-> **Daemon mode on Windows** uses NSSM (Non-Sucking Service Manager).
-> The nssm.exe binary is bundled with the wheel; you do not need to
-> `choco install nssm` separately.
+> **Status (May 2026):** WinGet support is **deferred**. An earlier
+> attempt to package the Python wheel as a WinGet portable zip didn't
+> work — WinGet's portable installer extracts the zip and looks for a
+> runnable `.exe` inside, but pip's `openvox.exe` shim is generated
+> at install-time and isn't in the wheel.
+>
+> Proper WinGet support needs a PyInstaller-packaged self-contained
+> `openvox.exe` (~50-100 MB) and ideally a code-signing certificate to
+> avoid Windows SmartScreen warnings. Tracked as a follow-up.
+>
+> **Today's Windows install path: use [Path A — PyPI](#path-a--pypi)**
+> in PowerShell:
+>
+> ```powershell
+> pip install openvox-core
+> ```
+>
+> pip generates `openvox.exe` correctly on Windows. Daemon mode
+> (`openvox start`) is also wired for Windows via NSSM but hasn't
+> been smoke-tested on a real Windows machine — please
+> [file an issue](https://github.com/amznsri/openvox/issues) if
+> something doesn't work.
 
 ---
 
