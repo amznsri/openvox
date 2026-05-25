@@ -176,8 +176,16 @@ export const api = {
     http<JobRunRecord[]>(`/api/v1/jobs/${id}/runs`),
 
   // MCP — probe a server config without saving it.
+  // Backend may return `error: string` even with a successful HTTP
+  // response when the MCP server itself failed to connect (npx
+  // not found, OAuth keys missing, etc.). Caller should check
+  // `error` before celebrating a 0-tools response as success.
   mcpProbe: (cfg: McpServerConfig) =>
-    http<{ tools: { id: string; display_name: string; description: string }[]; count: number }>(
+    http<{
+      tools: { id: string; display_name: string; description: string }[];
+      count: number;
+      error: string | null;
+    }>(
       "/api/v1/mcp/probe",
       { method: "POST", body: JSON.stringify(cfg) },
     ),
