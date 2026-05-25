@@ -558,10 +558,53 @@ function McpPanel({
   const [envText, setEnvText] = useState("");
   const [probing, setProbing] = useState(false);
   const [probeResult, setProbeResult] = useState<string>("");
+  // When set, the form is editing an existing entry at this index
+  // instead of staging a new one. The Add button becomes Save and a
+  // Cancel button appears. Real-user UX bug we're fixing: the only
+  // way to change env vars on an existing entry used to be delete
+  // + re-add through the same form (which was confusingly pre-
+  // filled with github example placeholders the user mistook for
+  // real values).
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
   // Catalogue modal state. We fetch the curated list lazily on first
   // open so cold loads of the agent edit page aren't slowed down.
   const [catalogueOpen, setCatalogueOpen] = useState(false);
   const [catalogue, setCatalogue] = useState<McpCatalogueEntry[] | null>(null);
+
+  function envToText(env: Record<string, string> | undefined): string {
+    if (!env) return "";
+    return Object.entries(env)
+      .map(([k, v]) => `${k}=${v}`)
+      .join("\n");
+  }
+
+  function startEdit(idx: number) {
+    const entry = value[idx];
+    if (!entry) return;
+    setDraft({
+      name: entry.name,
+      transport: entry.transport,
+      command: entry.command || "",
+      args: entry.args || [],
+      env: { ...(entry.env || {}) },
+      url: entry.url || "",
+    });
+    setArgsText((entry.args || []).join(" "));
+    setEnvText(envToText(entry.env));
+    setEditingIndex(idx);
+    setProbeResult(`Editing "${entry.name}" — change values, then Probe + Save.`);
+    // Scroll the form into view so it's obvious what changed.
+    queueMicrotask(() => {
+      document
+        .querySelector("[data-mcp-form-anchor]")
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }
+
+  function cancelEdit() {
+    reset();
+    setEditingIndex(null);
+  }
 
   async function openCatalogue() {
     setCatalogueOpen(true);
@@ -597,6 +640,7 @@ function McpPanel({
     setArgsText("");
     setEnvText("");
     setProbeResult("");
+    setEditingIndex(null);
   }
 
   function parseDraft(): McpServerConfig {
@@ -638,7 +682,15 @@ function McpPanel({
       setProbeResult("Name is required");
       return;
     }
-    onChange([...(value || []), cfg]);
+    if (editingIndex !== null) {
+      // Replace mode — overwrite the entry at editingIndex.
+      const next = [...value];
+      next[editingIndex] = cfg;
+      onChange(next);
+    } else {
+      // Append mode — original behaviour.
+      onChange([...(value || []), cfg]);
+    }
     reset();
   }
 
@@ -646,6 +698,14 @@ function McpPanel({
     const next = [...value];
     next.splice(idx, 1);
     onChange(next);
+    // If we were editing the entry that's being deleted, clear the
+    // form too. Otherwise reflect the index shift: anything above
+    // the deleted index moves down one.
+    if (editingIndex === idx) {
+      cancelEdit();
+    } else if (editingIndex !== null && editingIndex > idx) {
+      setEditingIndex(editingIndex - 1);
+    }
   }
 
   return (
@@ -677,7 +737,11 @@ function McpPanel({
             {value.map((cfg, i) => (
               <div
                 key={i}
-                className="flex items-center gap-3 px-3 py-2 rounded-md border border-border/60"
+                className={`flex items-center gap-3 px-3 py-2 rounded-md border ${
+                  editingIndex === i
+                    ? "border-violet-400/60 bg-violet-500/5"
+                    : "border-border/60"
+                }`}
               >
                 <Wand2 className="h-4 w-4 text-violet-300 shrink-0" />
                 <div className="flex-1 min-w-0">
@@ -689,6 +753,15 @@ function McpPanel({
                   </div>
                 </div>
                 <Badge variant="default">{cfg.transport}</Badge>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => startEdit(i)}
+                  disabled={editingIndex === i}
+                  title="Edit this server (change command, args, env)"
+                >
+                  Edit
+                </Button>
                 <Button variant="ghost" size="icon" onClick={() => remove(i)}>
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
@@ -697,9 +770,13 @@ function McpPanel({
           </div>
         )}
 
-        <div className="space-y-3 border-t border-border/60 pt-4">
+        <div data-mcp-form-anchor className="space-y-3 border-t border-border/60 pt-4">
           <div className="flex items-center justify-between">
-            <div className="text-sm font-medium text-foreground">Add a server</div>
+            <div className="text-sm font-medium text-foreground">
+              {editingIndex !== null
+                ? `Edit server #${editingIndex + 1}`
+                : "Add a server"}
+            </div>
             <Button variant="outline" size="sm" onClick={openCatalogue}>
               <Sparkles className="h-3.5 w-3.5" />
               Browse catalogue
@@ -709,7 +786,7 @@ function McpPanel({
             <div>
               <Label>Name</Label>
               <Input
-                placeholder="github"
+                placeholder="e.g. github"
                 value={draft.name}
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
               />
@@ -733,7 +810,7 @@ function McpPanel({
               <div>
                 <Label>Command</Label>
                 <Input
-                  placeholder="npx"
+                  placeholder="e.g. npx"
                   value={draft.command || ""}
                   onChange={(e) => setDraft({ ...draft, command: e.target.value })}
                 />
@@ -741,7 +818,7 @@ function McpPanel({
               <div>
                 <Label>Args (space-separated)</Label>
                 <Input
-                  placeholder="-y @modelcontextprotocol/server-github"
+                  placeholder="e.g. -y @modelcontextprotocol/server-github"
                   value={argsText}
                   onChange={(e) => setArgsText(e.target.value)}
                 />
@@ -750,7 +827,7 @@ function McpPanel({
                 <Label>Env (KEY=VALUE per line)</Label>
                 <Textarea
                   rows={3}
-                  placeholder="GITHUB_PERSONAL_ACCESS_TOKEN=ghp_..."
+                  placeholder="e.g. GITHUB_PERSONAL_ACCESS_TOKEN=ghp_..."
                   value={envText}
                   onChange={(e) => setEnvText(e.target.value)}
                   className="font-mono text-xs"
@@ -761,7 +838,7 @@ function McpPanel({
             <div>
               <Label>URL</Label>
               <Input
-                placeholder="https://my-mcp.example.com/sse"
+                placeholder="e.g. https://my-mcp.example.com/sse"
                 value={draft.url || ""}
                 onChange={(e) => setDraft({ ...draft, url: e.target.value })}
               />
@@ -774,9 +851,23 @@ function McpPanel({
               Probe
             </Button>
             <Button variant="gradient" onClick={add} disabled={probing}>
-              <Plus className="h-4 w-4" />
-              Add
+              {editingIndex !== null ? (
+                <>
+                  <Save className="h-4 w-4" />
+                  Save changes
+                </>
+              ) : (
+                <>
+                  <Plus className="h-4 w-4" />
+                  Add
+                </>
+              )}
             </Button>
+            {editingIndex !== null && (
+              <Button variant="ghost" onClick={cancelEdit}>
+                Cancel
+              </Button>
+            )}
             {probeResult && (
               <div
                 className={`text-xs ${
