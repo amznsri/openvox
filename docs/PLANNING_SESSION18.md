@@ -314,22 +314,25 @@ same one-click pattern as Phase 1's Google OAuth where possible.
   (Phase 3).
 - `docs/integrations/crm.md` — HubSpot / Salesforce setup (Phase 5).
 
-### Decision points (open at planning time)
+### Decisions (settled at planning time)
 
-1. **Phase 1 — keep MCP as fallback or remove?** Recommendation:
-   keep as a "for power users with their own Google Cloud project"
-   path. Some users prefer it for compliance reasons (their own
-   OAuth app = their own audit trail). Cost: one extra MCP tab
-   subsection.
+1. **Phase 1 — MCP path retained as power-user alternative.** Native
+   OAuth becomes the productivity templates' default, but MCP-based
+   Gmail / Calendar stays wired in `templates.py` as an alternative
+   the user can switch to via the MCP tab. Use case: compliance-
+   conscious orgs that want their own OAuth audit trail, or users
+   already running the MCP servers. Documented in
+   `docs/integrations/google.md`.
 
-2. **Phase 3 — Realtime model selection.** OpenAI publishes multiple
-   Realtime models (`gpt-4o-realtime-preview`, mini variants).
-   Recommendation: default to mini for cost, expose model selector
-   on the agent's Voice tab.
+2. **Phase 3 — Default S2S to `gpt-4o-realtime`** (not the mini
+   variant). Quality leads cost in voice-agent UX; mini stays
+   available via the Voice-tab model selector for cost-sensitive
+   agents.
 
-3. **Phase 5 — HubSpot vs Salesforce default.** Recommendation:
-   HubSpot. Free tier is generous and the MCP server is more
-   mature.
+3. **Phase 5 — HubSpot is the SDR template's default.** Free tier
+   is generous + the community MCP server is more mature than the
+   Salesforce one. Salesforce stays as a documented alternative
+   via the catalogue.
 
 ---
 
