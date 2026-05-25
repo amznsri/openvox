@@ -114,16 +114,25 @@ class Openvox < Formula
              target.to_s
     end
 
+    # Wheels need a sibling-dir to copy into. Homebrew's cache stores
+    # downloads as `<sha>--<original-filename>`, and pip's wheel
+    # filename parser refuses anything with that prefix
+    # ("wrong number of parts" — pip expects exactly
+    # `name-version-python-abi-platform.whl`). We copy each cached
+    # wheel to a canonical-named file under buildpath/_wheels/ and
+    # pip-install from there.
+    wheel_stage = buildpath/"_wheels"
+    wheel_stage.mkpath
+
     resources.each do |r|
       if r.url.end_with?(".whl")
-        # Wheel: brew's standard `r.stage` block unpacks the wheel
-        # into a dir (wheels are zips); pip then refuses the dir
-        # because of --no-binary :all: in its build path. Skip
-        # stage and install directly from the cached download.
         r.fetch
-        install_into_venv.call(r.cached_download)
+        whl = wheel_stage/File.basename(r.url)
+        cp r.cached_download, whl
+        install_into_venv.call(whl)
       else
-        # Sdist: standard stage and install.
+        # Sdist: standard stage and install. The stage block extracts
+        # the .tar.gz into a temp dir and cd's there before yielding.
         r.stage do
           install_into_venv.call(Pathname.pwd)
         end
