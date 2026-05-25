@@ -22,7 +22,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from openvox.mcp import list_mcp_tools
+from openvox.mcp import probe_mcp_server
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -44,12 +44,25 @@ class ProbeRequest(BaseModel):
 @router.post("/probe")
 async def probe(req: ProbeRequest) -> dict[str, Any]:
     """Connect to a single MCP server, list its tools, then disconnect.
-    Returns `{tools: [...]}` on success or raises 400 with the error."""
+
+    Returns ``{tools: [...], count: N, error: str|None}``.
+
+    Successful probe → ``error == None``, ``count > 0``, ``tools``
+    populated. Connect-failed → ``error`` carries a human-friendly
+    explanation (e.g. "command not found: 'npx'. Make sure the
+    binary is on the daemon's PATH..."), ``count == 0``. The
+    dashboard's Probe button reads ``error`` to surface a real
+    message in the badge area instead of a silent green-check-zero.
+
+    Only raises 400 on unexpected exceptions (the actual code path
+    inside `probe_mcp_server` catches connect failures and returns
+    them in the response).
+    """
     try:
-        tools = await list_mcp_tools(req.model_dump())
+        result = await probe_mcp_server(req.model_dump())
     except Exception as e:
         raise HTTPException(400, f"probe failed: {e}") from e
-    return {"tools": tools, "count": len(tools)}
+    return result
 
 
 @router.get("/catalogue")

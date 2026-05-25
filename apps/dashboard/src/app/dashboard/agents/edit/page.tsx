@@ -619,12 +619,26 @@ function McpPanel({
     setProbeResult("");
     try {
       const r = await api.mcpProbe(parseDraft());
-      setProbeResult(
-        `✓ ${r.count} tool${r.count === 1 ? "" : "s"} — ${r.tools
-          .slice(0, 5)
-          .map((t) => t.display_name)
-          .join(", ")}${r.tools.length > 5 ? "…" : ""}`,
-      );
+      // Backend may now return an `error` field even with a 200
+      // response — when the MCP server failed to connect but the
+      // probe handler itself didn't crash (e.g. npx not found,
+      // OAuth credentials missing, etc.). Show that verbatim
+      // instead of the misleading "0 tools" green-check we used
+      // to render.
+      if (r.error && r.count === 0) {
+        setProbeResult(`✗ ${r.error}`);
+      } else if (r.count === 0) {
+        setProbeResult(
+          "✗ 0 tools — server connected but exposed no tools",
+        );
+      } else {
+        setProbeResult(
+          `✓ ${r.count} tool${r.count === 1 ? "" : "s"} — ${r.tools
+            .slice(0, 5)
+            .map((t) => t.display_name)
+            .join(", ")}${r.tools.length > 5 ? "…" : ""}`,
+        );
+      }
     } catch (e) {
       setProbeResult(`✗ ${(e as Error).message}`);
     } finally {

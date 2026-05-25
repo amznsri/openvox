@@ -9,9 +9,21 @@ built-in skills.
 
 Public API:
     build_mcp_skills(configs)  → (skills, manager)
-    list_mcp_tools(config)     → quick inspection helper for the dashboard
+    list_mcp_tools(config)     → tools-only inspection helper
+    probe_mcp_server(config)   → tools + error inspection helper
+                                  (used by the dashboard Probe button)
 """
 
-from openvox.mcp.bridge import MCPSessionManager, build_mcp_skills, list_mcp_tools
+from openvox.mcp.bridge import (
+    MCPSessionManager,
+    build_mcp_skills,
+    list_mcp_tools,
+    probe_mcp_server,
+)
 
-__all__ = ["MCPSessionManager", "build_mcp_skills", "list_mcp_tools"]
+__all__ = [
+    "MCPSessionManager",
+    "build_mcp_skills",
+    "list_mcp_tools",
+    "probe_mcp_server",
+]
