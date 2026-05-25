@@ -20,6 +20,7 @@ something actually breaks.
 """
 from __future__ import annotations
 
+import os
 import plistlib
 import re
 import shutil
@@ -31,6 +32,44 @@ from typing import Any
 from openvox.cli.daemon.base import DaemonBackend, DaemonStatus
 
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
+
+# Default PATH segments to ensure are always present so the daemon can
+# find common tool installs even if `openvox start` was invoked from a
+# shell with a stripped PATH. /opt/homebrew/bin is critical for macOS
+# users running brewed `node` / `npx` — without it, every MCP server
+# that spawns via `npx` fails with `[Errno 2] No such file or
+# directory`.
+_DEFAULT_PATH_SEGMENTS = (
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+)
+
+
+def _resolved_path() -> str:
+    """Compose a PATH value to bake into the plist.
+
+    Strategy: prefer the launching shell's PATH (so a user who's set
+    up their own toolchain at, say, ~/.cargo/bin or /opt/pkg/env/active/bin
+    keeps it under the daemon). Then ensure the standard PATH segments
+    above are present so we don't depend on the shell having them.
+    """
+    seen: set[str] = set()
+    parts: list[str] = []
+    shell_path = os.environ.get("PATH", "")
+    for segment in shell_path.split(os.pathsep):
+        if segment and segment not in seen:
+            parts.append(segment)
+            seen.add(segment)
+    for segment in _DEFAULT_PATH_SEGMENTS:
+        if segment not in seen:
+            parts.append(segment)
+            seen.add(segment)
+    return os.pathsep.join(parts)
 
 
 class LaunchdBackend(DaemonBackend):
@@ -82,12 +121,33 @@ class LaunchdBackend(DaemonBackend):
             # `openvox stop` triggers a SIGTERM that uvicorn handles
             # gracefully and exits 0, so we don't fight ourselves.
             "KeepAlive": {"SuccessfulExit": False},
-            "WorkingDirectory": str(Path.home() / ".openvox"),
+            # Bake the launching shell's PATH (plus standard segments)
+            # into the daemon's env. launchd's default PATH is
+            # `/usr/bin:/bin:/usr/sbin:/sbin` — no /opt/homebrew/bin,
+            # no ~/.local/bin — so any subprocess the daemon spawns
+            # (especially MCP servers via `npx -y …`) fails with
+            # `[Errno 2] No such file or directory`. This eats all
+            # MCP integrations silently on a fresh install. See
+            # `_resolved_path()` for the construction logic.
+            "EnvironmentVariables": {
+                "PATH": _resolved_path(),
+                # HOME is normally inherited by user-mode LaunchAgents,
+                # but set it explicitly for belt-and-braces — MCP
+                # servers like @gongrzhe/server-gmail-autoauth-mcp
+                # look for credentials at `~/.gmail-mcp/...` which
+                # requires HOME to be set correctly.
+                "HOME": str(Path.home()),
+            },
             "StandardOutPath": str(self.log_path),
             "StandardErrorPath": str(self.error_log_path),
             # Prevent crash-restart loops from spinning up CPU.
             "ThrottleInterval": 10,
         }
+        # WorkingDirectory intentionally NOT set here — it used to be
+        # `~/.openvox/` but that combined with the (CWD-relative)
+        # default database_url created a nested .openvox/.openvox/
+        # DB path. The companion fix to config.py makes the DB path
+        # absolute, so daemon CWD no longer matters.
 
         # If a prior version is loaded, launchd keeps it in memory even
         # after we overwrite the plist file. Unload first so the new
