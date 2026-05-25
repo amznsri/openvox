@@ -38,6 +38,11 @@ env/
 *.swp
 .DS_Store
 
+# Claude Code — per-developer local config (launch.json for the preview
+# server, settings.local.json for permission grants). These shouldn't
+# travel with the repo; each contributor's setup is their own.
+.claude/
+
 # Local data (local-first)
 data/
 *.db
