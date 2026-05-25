@@ -435,3 +435,66 @@ class ProviderKey(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
     )
+
+
+class OAuthToken(Base):
+    """OAuth 2.0 tokens for third-party integrations (Google, etc.).
+
+    Separate table from ``provider_keys`` because the lifecycle is
+    different:
+      - ProviderKey: long-lived static API key, set once via the wizard,
+        no automatic refresh, ResolveOrder = env → store.
+      - OAuthToken: short-lived access token + long-lived refresh token,
+        rotates on every use, NO env-var fallback (the user has to
+        complete the OAuth browser dance once per integration).
+
+    Composite primary key on (provider, user_email) so a single user
+    can connect multiple Google accounts to OpenVox if they want
+    (e.g. one for personal Gmail, one for work).
+
+    Encrypted with the same Fernet key as ProviderKey — see
+    ``openvox/secrets.py`` / ``openvox/oauth/store.py``.
+
+    Phase 1 of PLANNING_SESSION18.md introduces this for the native
+    Google OAuth flow that replaces the MCP-server-based Gmail /
+    Calendar integration with a one-click "Connect Gmail" button.
+    """
+
+    __tablename__ = "oauth_tokens"
+
+    # e.g. "google", "microsoft", "github". Lower-case, no whitespace.
+    provider: Mapped[str] = mapped_column(String(50), primary_key=True)
+    # The signed-in user identity at the upstream provider. For Google
+    # this is the email address ("alice@example.com"); for other IdPs
+    # could be a username or sub claim. Composite key with provider
+    # so the user can have multiple connected accounts.
+    user_email: Mapped[str] = mapped_column(String(320), primary_key=True)
+
+    # Fernet ciphertext blobs. Access token is short-lived (~1 hour
+    # for Google); refresh token is long-lived (until revoked).
+    encrypted_access_token: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_refresh_token: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Token endpoint to call when refresh is needed. Stored alongside
+    # the tokens because each provider has its own URL.
+    token_uri: Mapped[str] = mapped_column(String(500), nullable=False)
+    # The OAuth client_id that minted these tokens. Stored so the
+    # refresh request can include it — required by Google.
+    client_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    # JSON array of granted scopes ("https://www.googleapis.com/auth/...").
+    # Skills check `scopes` before invoking an operation that needs
+    # one (e.g. send_email needs gmail.send).
+    scopes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # When the access token expires. Use timezone-aware datetimes —
+    # SQLite stores as TEXT, Postgres as TIMESTAMPTZ; SQLAlchemy
+    # handles both via DateTime(timezone=True).
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow,
+    )
