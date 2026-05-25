@@ -124,15 +124,25 @@ def _safe_id(s: str) -> str:
 
 def _make_skill(server_name: str, session: Any, tool: Any) -> BaseSkill:
     skill_id = f"mcp__{_safe_id(server_name)}__{_safe_id(tool.name)}"
-    description = (tool.description or "").strip() or f"MCP tool {tool.name} on server {server_name}"
-    parameters = tool.inputSchema or {"type": "object", "properties": {}}
+    # Capture under different names so the class body below can reference
+    # them safely. Python class-body scope has a footgun: an assignment
+    # like `description = description[:1000]` inside the class body tries
+    # to look up `description` in the class's local scope (not yet
+    # populated by THIS assignment) — class bodies don't see enclosing
+    # function locals, so the lookup raises NameError. Was eating EVERY
+    # tool the MCP server returned silently — Probe always showed 0
+    # tools. Fixed: rename outer vars + use clean RHS in the class body.
+    desc_str = (
+        (tool.description or "").strip()
+        or f"MCP tool {tool.name} on server {server_name}"
+    )[:1000]
+    params_dict = tool.inputSchema or {"type": "object", "properties": {}}
 
     class _MCPSkill(BaseSkill):
         id = skill_id  # type: ignore[misc]
         display_name = f"{server_name}: {tool.name}"
-        # Limit description to keep the LLM tool-spec compact.
-        description = description[:1000]  # type: ignore[misc]
-        parameters = parameters  # type: ignore[misc]
+        description = desc_str  # type: ignore[misc]
+        parameters = params_dict  # type: ignore[misc]
 
         async def run(self, args: dict[str, Any], ctx: SkillContext) -> Any:
             try:
