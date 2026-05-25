@@ -168,7 +168,36 @@
       </div>
     </section>
 
-    <!-- 2. BUILD BY VOICE — THE DEMO -->
+    <!-- 2. PROBLEM -->
+    <section class="slide">
+      <span class="kicker">The problem</span>
+      <h2>Voice agents are <span class="gradient">stuck</span>.</h2>
+      <div class="grid grid-2" style="margin-top: 30px; gap: 18px;">
+        <div class="card" style="padding: 28px;">
+          <div class="label">Closed SaaS</div>
+          <h3 style="font-size: 24px;">Fast to start. Expensive forever.</h3>
+          <p style="font-size: 16px; margin-top: 10px;">
+            Vapi / Retell / Bland charge per minute, lock you to their providers,
+            and keep your audio on their servers. Margins collapse the moment you
+            scale.
+          </p>
+        </div>
+        <div class="card" style="padding: 28px;">
+          <div class="label">Low-level OSS</div>
+          <h3 style="font-size: 24px;">Flexible. And months of wiring.</h3>
+          <p style="font-size: 16px; margin-top: 10px;">
+            LiveKit Agents / Pipecat give you primitives. You build the dashboard,
+            the templates, the evals, the scheduler, the multi-channel routing —
+            before your first agent says hello.
+          </p>
+        </div>
+      </div>
+      <p class="sub" style="margin-top: 32px; font-size: 24px; color: var(--fg);">
+        No middle. <span class="gradient">Until now.</span>
+      </p>
+    </section>
+
+    <!-- 3. BUILD BY VOICE — THE DEMO -->
     <section class="slide">
       <span class="kicker">Build by voice</span>
       <h2>Tell OpenVox <span class="gradient">what you want</span>.</h2>
@@ -236,7 +265,7 @@
       </div>
     </section>
 
-    <!-- 6. OBSERVABILITY + EVALS COMBINED -->
+    <!-- 7. OBSERVABILITY + EVALS COMBINED -->
     <section class="slide">
       <span class="kicker">Operate with confidence</span>
       <h2>See every call. <span class="gradient">Score every change.</span></h2>
@@ -245,17 +274,29 @@
         <div class="card">
           <div class="label">Replay</div>
           <h3>Hear every conversation</h3>
-          <p>Word-by-word transcript with audio. Catch the moment a user gave up.</p>
+          <p style="margin-bottom: 14px;">Word-by-word transcript with audio. Tool-call trace. Latency per turn.</p>
+          <div>
+            <span class="chip" style="font-size: 13px; padding: 4px 10px; margin: 0 4px 4px 0;">100% of sessions</span>
+            <span class="chip" style="font-size: 13px; padding: 4px 10px; margin: 0 4px 4px 0;">Audio + transcript</span>
+          </div>
         </div>
         <div class="card">
           <div class="label">Cost</div>
           <h3>Per-session bill</h3>
-          <p>STT, LLM, TTS billed against real provider rates. See "switch to X to save 64%."</p>
+          <p style="margin-bottom: 14px;">STT, LLM, TTS billed against real provider rates. What-if matrix shows cheapest combo.</p>
+          <div>
+            <span class="chip" style="font-size: 13px; padding: 4px 10px; margin: 0 4px 4px 0;">10+ providers</span>
+            <span class="chip" style="font-size: 13px; padding: 4px 10px; margin: 0 4px 4px 0;">"Switch &amp; save 64%"</span>
+          </div>
         </div>
         <div class="card">
           <div class="label">Evals</div>
           <h3>Score against personas</h3>
-          <p>Angry customer, confused elder, ESL speaker — built in. LLM-as-judge per criterion. Catches regressions before users do.</p>
+          <p style="margin-bottom: 14px;">LLM-as-judge per criterion. Re-run any saved recording against any agent version.</p>
+          <div>
+            <span class="chip" style="font-size: 13px; padding: 4px 10px; margin: 0 4px 4px 0;">5 built-in personas</span>
+            <span class="chip" style="font-size: 13px; padding: 4px 10px; margin: 0 4px 4px 0;">Per-criterion verdicts</span>
+          </div>
         </div>
       </div>
     </section>
@@ -277,31 +318,31 @@
       </div>
     </section>
 
-    <!-- 8. SCHEDULING -->
+    <!-- 9. SCHEDULING — proactive automation, framed as example agents users build -->
     <section class="slide">
-      <span class="kicker">Scheduling</span>
-      <h2>Or have it <span class="gradient">run on its own</span>.</h2>
-      <p class="sub">Voice agents that wake themselves up — to call, summarise, check, or notify. Cron, intervals, one-off runs, webhook triggers.</p>
+      <span class="kicker">Proactive automation</span>
+      <h2>Or have your agent <span class="gradient">act on its own</span>.</h2>
+      <p class="sub">Your voice agent isn't just reactive. With the built-in scheduler, it wakes itself up — to call, check, summarise, or notify. Four real agents people build:</p>
       <div class="grid grid-2" style="margin-top: 30px;">
         <div class="card">
-          <div class="label">Outbound</div>
-          <h3>"Call the top 20 leads every Monday 9am."</h3>
-          <p>Twilio dial-out + BANT scoring. Batched, scheduled, fully auto.</p>
+          <div class="label">Example agent</div>
+          <h3>The SDR that never sleeps</h3>
+          <p>"Every Monday 9am, call my top 20 leads, qualify them, log the result in HubSpot."</p>
         </div>
         <div class="card">
-          <div class="label">Summaries</div>
-          <h3>"Every night 8pm, summarise today's calls."</h3>
-          <p>LLM run against agent prompt, posted to email or Slack.</p>
+          <div class="label">Example agent</div>
+          <h3>The daily standup writer</h3>
+          <p>"Every night 8pm, summarise today's customer calls and post to Slack #cs-daily."</p>
         </div>
         <div class="card">
-          <div class="label">Checks</div>
-          <h3>"Every hour, check inventory and alert on low stock."</h3>
-          <p>Skill runs in background, agent notifies only when threshold hit.</p>
+          <div class="label">Example agent</div>
+          <h3>The inventory watcher</h3>
+          <p>"Every hour, check Shopify stock. Call the owner when any SKU drops below 10 units."</p>
         </div>
         <div class="card">
-          <div class="label">Webhooks</div>
-          <h3>"On Stripe charge, call the customer."</h3>
-          <p>Event-driven triggers. Any incoming webhook can kick off a voice flow.</p>
+          <div class="label">Example agent</div>
+          <h3>The welcome-call bot</h3>
+          <p>"When a new Stripe customer signs up, call them within five minutes to onboard."</p>
         </div>
       </div>
     </section>
@@ -311,7 +352,7 @@
   <div class="nav">
     <button id="prev">← Prev</button>
     <div class="progress"><div id="bar"></div></div>
-    <span id="counter">1 / 8</span>
+    <span id="counter">1 / 9</span>
     <button id="next">Next →</button>
   </div>
 
