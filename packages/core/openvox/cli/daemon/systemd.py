@@ -19,6 +19,7 @@ hint at the end of `install()` so the user knows.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -29,6 +30,36 @@ from openvox.cli.daemon.base import DaemonBackend, DaemonStatus
 
 USER_UNIT_DIR = Path.home() / ".config" / "systemd" / "user"
 UNIT_NAME = "openvox.service"
+
+# Standard Linux PATH segments to ensure are always present. Without
+# /usr/local/bin and ~/.local/bin (where pipx puts shims) the daemon
+# can fail to find subprocesses it spawns — most painfully `npx` for
+# MCP servers.
+_DEFAULT_PATH_SEGMENTS = (
+    "/usr/local/sbin",
+    "/usr/local/bin",
+    "/usr/sbin",
+    "/usr/bin",
+    "/sbin",
+    "/bin",
+)
+
+
+def _resolved_path() -> str:
+    """Same idea as the launchd version: prefer the launching shell's
+    PATH, append standard segments to defend against systemd's
+    minimal default Environment."""
+    seen: set[str] = set()
+    parts: list[str] = []
+    for segment in os.environ.get("PATH", "").split(os.pathsep):
+        if segment and segment not in seen:
+            parts.append(segment)
+            seen.add(segment)
+    for segment in _DEFAULT_PATH_SEGMENTS:
+        if segment not in seen:
+            parts.append(segment)
+            seen.add(segment)
+    return os.pathsep.join(parts)
 
 
 class SystemdBackend(DaemonBackend):
@@ -53,6 +84,18 @@ class SystemdBackend(DaemonBackend):
         # the systemd journal. We do this so `openvox logs` can tail the
         # same file across all three OSes without needing a
         # journalctl-vs-tail switch in the logs command.
+        #
+        # Environment=PATH=... is critical: systemd's default Environment
+        # is bare-minimum (`/usr/local/sbin:/usr/local/bin:/usr/sbin:
+        # /usr/bin:/sbin:/bin` on most distros, sometimes less). Without
+        # baking the launching shell's PATH in here, any subprocess
+        # the daemon spawns — particularly MCP servers that need
+        # `npx` from a user-level Node install — fails to find the
+        # binary. Mirror the launchd backend's `_resolved_path()`
+        # logic.
+        # WorkingDirectory dropped — the (now absolute) database_url
+        # in config.py means daemon CWD no longer affects where the
+        # DB lives.
         return (
             "[Unit]\n"
             "Description=OpenVox voice agent daemon\n"
@@ -61,7 +104,8 @@ class SystemdBackend(DaemonBackend):
             "[Service]\n"
             "Type=simple\n"
             f"ExecStart={self._openvox_path()} run --no-browser --port {port} --host {host}\n"
-            f"WorkingDirectory={Path.home()}/.openvox\n"
+            f"Environment=PATH={_resolved_path()}\n"
+            f"Environment=HOME={Path.home()}\n"
             f"StandardOutput=append:{self.log_path}\n"
             f"StandardError=append:{self.error_log_path}\n"
             "Restart=on-failure\n"
