@@ -23,21 +23,32 @@ The replacement is a two-pass artefact picker:
     We *ignore* the URLs pip chose because they're platform-specific
     (pip naturally picks the wheel for the host machine).
 
-  Pass 2 (`_pick_artefact`)
-    For each (name, version) we query the PyPI JSON API and pick the
-    most OS-portable artefact:
-      a. sdist (`packagetype == "sdist"`) — Homebrew compiles from
-         source, universal across macOS/Linux.
-      b. universal wheel (`-py3-none-any.whl` or
-         `-py2.py3-none-any.whl`) — pure-Python, works on any platform.
-      c. *Platform fallback*: if neither (a) nor (b) is available
-         (typical for compiled extensions that ship wheels-only —
-         torch, torchaudio), pick one wheel per platform target
-         (macOS arm64, macOS x86_64, Linux x86_64, Linux aarch64) and
-         emit a Homebrew `on_macos`/`on_linux`/`on_arm`/`on_intel`
-         block. If a required platform wheel is missing from PyPI we
-         still emit the others and log a warning — the formula will
-         simply not install that package on the missing platform.
+  Pass 2 (`_pick_artefact`) — **wheel-first** ordering
+    For each (name, version) we query the PyPI JSON API and pick a
+    binary artefact in this priority order:
+
+      a. *Universal wheel* (`-py3-none-any.whl` or
+         `-py2.py3-none-any.whl`) — pure-Python, one URL works on
+         every OS, brew unpacks and we're done. No compilation.
+
+      b. *Per-OS wheels* — compiled deps like numpy, cryptography,
+         bcrypt, pydantic-core, asyncpg don't have a universal wheel
+         but DO publish per-(OS, arch) wheels. We emit a Homebrew
+         `on_macos`/`on_linux`/`on_arm`/`on_intel` block grouping
+         the matching wheels so brew picks the right one at install
+         time. Still no compilation.
+
+      c. *sdist fallback* — only if neither (a) nor (b) exists. This
+         triggers a from-source compile at brew install time, which
+         is precisely what we're trying to avoid for the bulk path.
+
+    The earlier version of this script preferred sdists (step c
+    above used to be step a). That was conservative — sdists are
+    universal and audit-clean — but it meant scipy / numpy /
+    cryptography all ran their full source build during
+    `brew install openvox`, which on a stock M-series macOS took
+    20-40 min total and often hard-failed at scipy (missing Fortran).
+    Wheel-first drops the same install to ~1 min total.
 
 Usage (inside the publish-homebrew job, after PyPI propagation):
 
@@ -131,14 +142,31 @@ def _pypi_release(name: str, version: str) -> list[dict]:
     return data["urls"]
 
 
-def _pick_universal(urls: list[dict]) -> Artefact | None:
-    """Pick a universal artefact: sdist first, then a py3-none-any wheel."""
-    for u in urls:
-        if u.get("packagetype") == "sdist":
-            return Artefact(u["url"], u["digests"]["sha256"])
+def _pick_universal_wheel(urls: list[dict]) -> Artefact | None:
+    """Return a py3-none-any / py2.py3-none-any wheel if one exists.
+
+    Universal wheels work on every OS + Python version (Python ≥ 3
+    in our case — the formula's `depends_on "python@3.12"` is the
+    only constraint). Always our first choice: no compile, no
+    per-OS block, single URL.
+    """
     for u in urls:
         fn = u.get("filename", "")
         if fn.endswith("-py3-none-any.whl") or fn.endswith("-py2.py3-none-any.whl"):
+            return Artefact(u["url"], u["digests"]["sha256"])
+    return None
+
+
+def _pick_sdist(urls: list[dict]) -> Artefact | None:
+    """Return the sdist if one exists.
+
+    Only reached when neither (a) a universal wheel nor (b) a
+    matching per-OS wheel was found. Causes a from-source compile
+    at brew install time — fine for header-only / pure-Python
+    packages without a wheel, slow for C-extension packages.
+    """
+    for u in urls:
+        if u.get("packagetype") == "sdist":
             return Artefact(u["url"], u["digests"]["sha256"])
     return None
 
@@ -253,6 +281,7 @@ def main(argv: list[str] | None = None) -> int:
 
     portable: list[str] = []
     platform: list[str] = []
+    sdist_blocks: list[str] = []
     failed: list[str] = []
 
     for entry in sorted(installs, key=lambda e: e["metadata"]["name"].lower()):
@@ -262,16 +291,29 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         urls = _pypi_release(name, meta["version"])
-        universal = _pick_universal(urls)
-        if universal is not None:
-            portable.append(_emit_resource_block(name, universal))
+
+        # Pass a: universal pure-Python wheel — best case, single URL,
+        # no compile.
+        uw = _pick_universal_wheel(urls)
+        if uw is not None:
+            portable.append(_emit_resource_block(name, uw))
             continue
 
+        # Pass b: per-OS wheels — compiled deps grouped in
+        # on_macos/on_linux blocks. Still no compile at install time.
         wheels = _pick_platform_wheels(urls)
-        if not wheels:
-            failed.append(f"{name}=={meta['version']}")
+        if wheels:
+            platform.append(_emit_platform_resource(name, wheels))
             continue
-        platform.append(_emit_platform_resource(name, wheels))
+
+        # Pass c: sdist fallback — last resort, will compile at brew
+        # install time.
+        sdist = _pick_sdist(urls)
+        if sdist is not None:
+            sdist_blocks.append(_emit_resource_block(name, sdist))
+            continue
+
+        failed.append(f"{name}=={meta['version']}")
 
     if failed:
         # Wheel-only AND no wheel matching any of our four platform
@@ -286,8 +328,12 @@ def main(argv: list[str] | None = None) -> int:
     sys.stdout.write("\n".join(portable))
     if platform:
         sys.stdout.write("\n\n")
-        sys.stdout.write("  # ── Platform-specific wheel-only deps ────────────────────────────\n")
+        sys.stdout.write("  # ── Per-OS wheels (compiled deps; no source build at install time) ──\n")
         sys.stdout.write("\n".join(platform))
+    if sdist_blocks:
+        sys.stdout.write("\n\n")
+        sys.stdout.write("  # ── Sdist fallback (compiled from source by brew at install time) ───\n")
+        sys.stdout.write("\n".join(sdist_blocks))
     sys.stdout.write("\n")
     return 0
 
