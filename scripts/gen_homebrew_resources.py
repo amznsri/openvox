@@ -203,41 +203,53 @@ def _emit_resource_block(name: str, art: Artefact, indent: str = "  ") -> str:
     )
 
 
-def _emit_platform_resource(name: str, wheels: dict[str, Artefact]) -> str:
-    """Emit per-platform resource blocks for a wheel-only package.
+def _emit_platform_section(
+    platform_wheels: list[tuple[str, dict[str, Artefact]]],
+) -> str:
+    """Emit a single on_macos + on_linux block containing all per-OS wheels.
 
-    The Homebrew DSL allows resource declarations inside `on_macos` /
-    `on_linux` / `on_arm` / `on_intel` blocks. They're evaluated lazily
-    at install time on the user's machine — only the matching block's
-    resources end up in the install list. This is the blessed way to
-    ship platform-specific wheels in a single formula.
+    `brew style` enforces "There can only be one on_macos block in a
+    formula." So we collect ALL packages' per-OS wheels here and group
+    them by (os, arch) — one `on_macos { on_arm {…}, on_intel {…} }`
+    block holding every macOS-targeted resource, and same for on_linux.
     """
+    # Group: arch_key -> list of "resource ... end" strings already
+    # indented to live inside `on_<os> { on_<arch> { … } }`.
+    buckets: dict[str, list[str]] = {
+        "macos_arm": [],
+        "macos_intel": [],
+        "linux_x86_64": [],
+        "linux_aarch64": [],
+    }
+    for name, wheels in platform_wheels:
+        for arch_key, art in wheels.items():
+            buckets[arch_key].append(_emit_resource_block(name, art, indent="      "))
+
     parts: list[str] = []
-    mac_arm = wheels.get("macos_arm")
-    mac_intel = wheels.get("macos_intel")
-    if mac_arm or mac_intel:
+
+    has_mac = bool(buckets["macos_arm"] or buckets["macos_intel"])
+    if has_mac:
         parts.append("  on_macos do")
-        if mac_arm:
+        if buckets["macos_arm"]:
             parts.append("    on_arm do")
-            parts.append(_emit_resource_block(name, mac_arm, indent="      "))
+            parts.extend(buckets["macos_arm"])
             parts.append("    end")
-        if mac_intel:
+        if buckets["macos_intel"]:
             parts.append("    on_intel do")
-            parts.append(_emit_resource_block(name, mac_intel, indent="      "))
+            parts.extend(buckets["macos_intel"])
             parts.append("    end")
         parts.append("  end")
 
-    lin_x86 = wheels.get("linux_x86_64")
-    lin_arm = wheels.get("linux_aarch64")
-    if lin_x86 or lin_arm:
+    has_linux = bool(buckets["linux_x86_64"] or buckets["linux_aarch64"])
+    if has_linux:
         parts.append("  on_linux do")
-        if lin_x86:
+        if buckets["linux_x86_64"]:
             parts.append("    on_intel do")
-            parts.append(_emit_resource_block(name, lin_x86, indent="      "))
+            parts.extend(buckets["linux_x86_64"])
             parts.append("    end")
-        if lin_arm:
+        if buckets["linux_aarch64"]:
             parts.append("    on_arm do")
-            parts.append(_emit_resource_block(name, lin_arm, indent="      "))
+            parts.extend(buckets["linux_aarch64"])
             parts.append("    end")
         parts.append("  end")
 
@@ -280,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
     installs = _resolve(args.spec, args.python, args.pip_arg)
 
     portable: list[str] = []
-    platform: list[str] = []
+    platform_wheels: list[tuple[str, dict[str, Artefact]]] = []
     sdist_blocks: list[str] = []
     failed: list[str] = []
 
@@ -299,11 +311,12 @@ def main(argv: list[str] | None = None) -> int:
             portable.append(_emit_resource_block(name, uw))
             continue
 
-        # Pass b: per-OS wheels — compiled deps grouped in
-        # on_macos/on_linux blocks. Still no compile at install time.
+        # Pass b: per-OS wheels — compiled deps. We collect here,
+        # then emit ONE on_macos / on_linux block at the end
+        # (brew style enforces a single block per OS per formula).
         wheels = _pick_platform_wheels(urls)
         if wheels:
-            platform.append(_emit_platform_resource(name, wheels))
+            platform_wheels.append((name, wheels))
             continue
 
         # Pass c: sdist fallback — last resort, will compile at brew
@@ -325,15 +338,27 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    sys.stdout.write("\n".join(portable))
-    if platform:
-        sys.stdout.write("\n\n")
-        sys.stdout.write("  # ── Per-OS wheels (compiled deps; no source build at install time) ──\n")
-        sys.stdout.write("\n".join(platform))
+    # Output order matters for `brew style`: platform blocks (on_macos
+    # / on_linux) must come BEFORE top-level `resource` declarations.
+    # FormulaAudit/ComponentsOrder enforces this.
+    sections: list[str] = []
+    if platform_wheels:
+        sections.append(
+            "  # ── Per-OS wheels (compiled deps; no source build at install time) ──\n"
+            + _emit_platform_section(platform_wheels)
+        )
+    if portable:
+        sections.append(
+            "  # ── Universal wheels (pure-Python, one URL for every OS) ───────────\n"
+            + "\n".join(portable)
+        )
     if sdist_blocks:
-        sys.stdout.write("\n\n")
-        sys.stdout.write("  # ── Sdist fallback (compiled from source by brew at install time) ───\n")
-        sys.stdout.write("\n".join(sdist_blocks))
+        sections.append(
+            "  # ── Sdist fallback (compiled from source by brew at install time) ───\n"
+            + "\n".join(sdist_blocks)
+        )
+
+    sys.stdout.write("\n\n".join(sections))
     sys.stdout.write("\n")
     return 0
 
