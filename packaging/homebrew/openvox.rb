@@ -87,22 +87,23 @@ class Openvox < Formula
     # Build-isolation stays ON so sdists that need setuptools /
     # hatchling pick up their build backend from PyPI at install
     # time (default pip behaviour, no flag needed).
+    # `opt_libexec/bin/python` (no version suffix) is the PEP-668-
+    # friendly framework wrapper for python@3.12 — the one Homebrew's
+    # own Virtualenv helper uses internally. Using the explicit path
+    # (rather than the formula name "python@3.12" or even the
+    # executable name "python3.12") avoids any PATH-resolution
+    # surprise during `brew install`: the v0.2.3 form
+    # `virtualenv_create(libexec, "python@3.12")` blew up because
+    # brew tried to invoke `python@3.12` as a binary — that's a
+    # FORMULA name, not an executable name.
+    parent_python = Formula["python@3.12"].opt_libexec/"bin/python"
+    venv_python = libexec/"bin/python"
+
     # virtualenv_create populates libexec/ with the venv. We don't keep
     # a handle on the returned Virtualenv object because we install
     # resources directly via pip below — its helper methods would
     # re-introduce --no-binary :all:.
-    virtualenv_create(libexec, "python@3.12")
-
-    # `virtualenv_create` runs `python -m venv` with --without-pip, so
-    # the venv has no pip. We invoke the parent python's pip with
-    # `--python=<venv-python>` to install into the venv — same form
-    # Homebrew's own `Virtualenv#system_pip` helper uses.
-    # `opt_libexec/bin/python` (no version suffix) is the same handle
-    # Homebrew's own Virtualenv helper uses — it points at python@3.12's
-    # PEP-668-friendly framework wrapper, which is the one allowed to
-    # install into venvs created from it.
-    parent_python = Formula["python@3.12"].opt_libexec/"bin/python"
-    venv_python = libexec/"bin/python"
+    virtualenv_create(libexec, parent_python.to_s)
 
     install_into_venv = lambda do |target|
       system parent_python, "-m", "pip",
