@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>OpenVox — Open-source Voice Agent Platform</title>
+  <style>
+    :root {
+      --bg: #0b0c10;
+      --bg-2: #14151c;
+      --fg: #e8e9ee;
+      --muted: #9aa0ad;
+      --line: #262834;
+      --accent: #7c5cff;
+      --accent-2: #4dd8ff;
+      --chip: #1c1e29;
+      --good: #4ade80;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      background: var(--bg); color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+      font-size: 18px; line-height: 1.55; overflow: hidden;
+    }
+    body { display: flex; flex-direction: column; }
+    .deck { flex: 1; position: relative; overflow: hidden; }
+    .slide {
+      position: absolute; inset: 0;
+      padding: 56px 88px;
+      display: none; flex-direction: column; justify-content: center;
+      animation: fade .25s ease-out;
+    }
+    .slide.active { display: flex; }
+    @keyframes fade { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+    .slide.cover {
+      background:
+        radial-gradient(ellipse at top left, rgba(124, 92, 255, .22), transparent 50%),
+        radial-gradient(ellipse at bottom right, rgba(77, 216, 255, .12), transparent 50%);
+    }
+
+    h1 { font-size: 64px; line-height: 1.05; margin: 0 0 16px; letter-spacing: -.02em; font-weight: 700; }
+    h2 { font-size: 40px; line-height: 1.1;  margin: 0 0 16px; letter-spacing: -.02em; font-weight: 700; }
+    h3 { font-size: 21px; line-height: 1.2;  margin: 0 0 8px;  font-weight: 600; color: var(--fg); }
+    p  { margin: 0 0 12px; color: var(--muted); font-size: 18px; max-width: 900px; }
+    em { color: var(--accent-2); font-style: normal; }
+    code { color: var(--fg); background: var(--chip); padding: 2px 6px; border-radius: 4px; font-size: .92em; }
+    .lead { color: var(--fg); font-size: 22px; max-width: 900px; line-height: 1.45; }
+
+    .kicker {
+      align-self: flex-start;   /* don't stretch in the column flex parent */
+      font-size: 12px; font-weight: 600;
+      letter-spacing: .14em; text-transform: uppercase; color: var(--accent);
+      padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px;
+      background: var(--bg-2); margin-bottom: 18px;
+    }
+    .gradient {
+      background: linear-gradient(120deg, var(--accent), var(--accent-2));
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+
+    .grid { display: grid; gap: 16px; }
+    .grid-2 { grid-template-columns: 1fr 1fr; }
+    .grid-3 { grid-template-columns: repeat(3, 1fr); }
+    .grid-4 { grid-template-columns: repeat(4, 1fr); }
+
+    .card {
+      background: var(--bg-2); border: 1px solid var(--line);
+      border-radius: 12px; padding: 16px 18px;
+    }
+    .card h3 { color: var(--fg); }
+    .card p { font-size: 15px; margin-bottom: 0; line-height: 1.5; }
+    .card .icon {
+      font-size: 11px; color: var(--accent); font-weight: 700;
+      letter-spacing: .14em; text-transform: uppercase; margin-bottom: 8px;
+    }
+
+    .chip {
+      display: inline-flex; align-items: center;
+      padding: 5px 11px; background: var(--chip); border: 1px solid var(--line);
+      border-radius: 999px; font-size: 13px; color: var(--fg); margin: 0 6px 6px 0;
+    }
+    .chip-accent { border-color: rgba(124, 92, 255, .5); color: var(--accent); }
+
+    pre {
+      background: #060708; border: 1px solid var(--line); border-radius: 10px;
+      padding: 16px 18px; color: var(--fg); font-size: 14px; line-height: 1.6;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      overflow: auto; margin: 0;
+    }
+    pre .cmt { color: var(--muted); }
+    pre .acc { color: var(--accent-2); }
+    pre .key { color: var(--accent); }
+
+    table { width: 100%; border-collapse: collapse; font-size: 15px; }
+    th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+    th {
+      color: var(--muted); font-weight: 600;
+      font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+    }
+    td { color: var(--fg); }
+    td.muted { color: var(--muted); }
+
+    .compare th { background: var(--bg-2); color: var(--fg); font-weight: 600; text-transform: none; letter-spacing: 0; font-size: 13px; }
+    .compare td.win  { color: var(--good); font-weight: 600; }
+    .compare td.dash { color: var(--muted); }
+
+    .nav {
+      flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 28px; border-top: 1px solid var(--line);
+      background: var(--bg); color: var(--muted); font-size: 13px;
+    }
+    .nav button {
+      background: var(--bg-2); color: var(--fg);
+      border: 1px solid var(--line); border-radius: 8px;
+      padding: 6px 12px; cursor: pointer;
+      font-family: inherit; font-size: 13px;
+    }
+    .nav button:hover { border-color: var(--accent); color: var(--accent); }
+    .progress { flex: 1; height: 3px; margin: 0 24px; background: var(--bg-2); border-radius: 999px; overflow: hidden; }
+    .progress > div { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .25s; }
+
+    .cover-meta {
+      display: flex; gap: 12px; align-items: center;
+      margin-top: 32px; color: var(--muted); font-size: 15px;
+    }
+    .dot { width: 4px; height: 4px; background: var(--muted); border-radius: 999px; }
+
+    .stat-row { display: flex; gap: 64px; margin-top: 16px; flex-wrap: wrap; }
+    .stat .num {
+      font-size: 64px; font-weight: 700; line-height: 1;
+      background: linear-gradient(120deg, var(--accent), var(--accent-2));
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .stat .label { color: var(--muted); font-size: 14px; max-width: 260px; margin-top: 8px; }
+
+    .two-col { display: grid; grid-template-columns: 1.2fr 1fr; gap: 36px; align-items: start; }
+
+    /* Architecture diagram */
+    .arch {
+      display: grid; grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px; margin-top: 18px;
+    }
+    .arch .layer {
+      background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .arch .layer .title { font-size: 11px; color: var(--accent); font-weight: 700; letter-spacing: .14em; text-transform: uppercase; margin-bottom: 6px; }
+    .arch .layer .body { font-size: 14px; color: var(--fg); line-height: 1.45; }
+    .arch .layer .sub  { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .arch .arrow { color: var(--muted); font-size: 18px; text-align: center; padding-top: 18px; }
+
+    @media (max-height: 720px) {
+      .slide { padding: 36px 64px; }
+      h1 { font-size: 52px; }
+      h2 { font-size: 32px; }
+      p, .lead { font-size: 16px; }
+      .stat .num { font-size: 48px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="deck" id="deck">
+
+    <!-- 1. COVER -->
+    <section class="slide cover active">
+      <span class="kicker">OpenVox</span>
+      <h1>Voice agents that <span class="gradient">actually ship</span>.</h1>
+      <p class="lead">
+        The open-source platform for building production voice agents.
+        Web, phone, WhatsApp, Telegram. 41 voices, 7 languages out of the box.
+        Bring your own LLM, STT, and TTS. Self-host on a laptop in 60 seconds.
+      </p>
+      <div class="cover-meta">
+        <span>Apache-2.0</span>
+        <span class="dot"></span>
+        <span>v0.2.5</span>
+        <span class="dot"></span>
+        <span>github.com/amznsri/openvox</span>
+      </div>
+    </section>
+
+    <!-- 2. THE PROBLEM -->
+    <section class="slide">
+      <span class="kicker">The market today</span>
+      <h2>You pick fast <em>or</em> flexible. Not both.</h2>
+      <p class="lead" style="margin-bottom: 24px;">
+        The voice-agent landscape splits between closed SaaS and low-level OSS.
+        Both leave you with painful trade-offs.
+      </p>
+      <table class="compare">
+        <thead>
+          <tr><th>Tier</th><th>Examples</th><th>Speed to first agent</th><th>Cost at scale</th><th>Data &amp; provider control</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Closed SaaS</strong></td>
+            <td class="muted">Vapi · Retell · Bland</td>
+            <td class="win">Minutes</td>
+            <td class="dash">Per-minute, vendor-locked</td>
+            <td class="dash">Their cloud, their providers</td>
+          </tr>
+          <tr>
+            <td><strong>Low-level OSS</strong></td>
+            <td class="muted">LiveKit Agents · Pipecat</td>
+            <td class="dash">Days–weeks</td>
+            <td class="win">Self-hosted, predictable</td>
+            <td class="win">Full</td>
+          </tr>
+          <tr style="background: rgba(124, 92, 255, .08);">
+            <td><strong>OpenVox</strong></td>
+            <td class="muted">This deck</td>
+            <td class="win">Minutes</td>
+            <td class="win">Self-hosted, predictable</td>
+            <td class="win">Full</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 3. WHAT OPENVOX IS -->
+    <section class="slide">
+      <span class="kicker">What OpenVox is</span>
+      <h2>The full stack, open-sourced.</h2>
+      <p class="lead">
+        Voice pipeline · dashboard · SDK · CLI · runnable templates · observability ·
+        scheduling. Every layer ships in one repo. Non-technical operators build a
+        working agent in five minutes; developers extend any piece in Python or TypeScript.
+      </p>
+      <div class="grid grid-3" style="margin-top: 24px;">
+        <div class="card">
+          <div class="icon">For operators</div>
+          <h3>Build by voice</h3>
+          <p>Describe your agent. The Setup Assistant picks a template, configures the voice, walks you through publishing.</p>
+        </div>
+        <div class="card">
+          <div class="icon">For developers</div>
+          <h3>Pluggable everywhere</h3>
+          <p>Skills, providers, templates, storage, telephony — every layer is a registered class. Drop a file, wire it in, done.</p>
+        </div>
+        <div class="card">
+          <div class="icon">For ops</div>
+          <h3>Self-hosted by default</h3>
+          <p>SQLite + filesystem out of the box. Audio + text travel only to providers you configure. No telemetry.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. KEY METRICS -->
+    <section class="slide">
+      <span class="kicker">By the numbers</span>
+      <h2>Production foundation, day one.</h2>
+      <div class="stat-row" style="margin-top: 24px;">
+        <div class="stat"><div class="num">&lt; 300<small style="font-size: 24px; color: var(--muted); margin-left: 6px;">ms</small></div><div class="label">end-to-end voice latency through sentence-level token streaming</div></div>
+        <div class="stat"><div class="num">41</div><div class="label">production voices in 7 first-class languages, pre-configured</div></div>
+        <div class="stat"><div class="num">29</div><div class="label">runnable templates — clone, edit prompt, publish</div></div>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="num">~45<small style="font-size: 24px; color: var(--muted); margin-left: 6px;">s</small></div><div class="label">curl-bash install on a clean Mac or Linux box</div></div>
+        <div class="stat"><div class="num">10+</div><div class="label">pluggable provider adapters per layer (LLM · STT · TTS)</div></div>
+        <div class="stat"><div class="num">6</div><div class="label">multi-channel surfaces from one agent: web · phone · WhatsApp · Telegram · WeChat · Lark</div></div>
+      </div>
+    </section>
+
+    <!-- 5. FEATURES GRID -->
+    <section class="slide">
+      <span class="kicker">What ships in the box</span>
+      <h2>Everything a voice agent needs.</h2>
+      <div class="grid grid-3" style="margin-top: 18px;">
+        <div class="card">
+          <div class="icon">Voice</div>
+          <h3>Sub-300 ms latency</h3>
+          <p>Sentence-level token streaming. STT → LLM → TTS, all async. Server-side interruption and barge-in built in.</p>
+        </div>
+        <div class="card">
+          <div class="icon">Languages</div>
+          <h3>41 voices, 7 languages</h3>
+          <p>EN · ZH · YUE · ES · ID · FR · HI ship pre-configured. Multilingual template auto-detects 51+ languages at runtime.</p>
+        </div>
+        <div class="card">
+          <div class="icon">Channels</div>
+          <h3>Multi-channel from day one</h3>
+          <p>One agent reaches web RTC, phone (Twilio), WhatsApp Business, Telegram, WeChat Work, Lark. One pipeline, every surface.</p>
+        </div>
+        <div class="card">
+          <div class="icon">Tooling</div>
+          <h3>Playground &amp; evals</h3>
+          <p>Talk to your agent in the browser. Replay any session. Score regressions with persona-based eval runner.</p>
+        </div>
+        <div class="card">
+          <div class="icon">Operations</div>
+          <h3>Built-in scheduler</h3>
+          <p>Cron / interval / one-off / webhook triggers. No external job runner. Simple-mode UI for non-technical scheduling.</p>
+        </div>
+        <div class="card">
+          <div class="icon">Compliance</div>
+          <h3>GDPR-aware</h3>
+          <p>Configurable retention, data residency, transcript-only mode, PII masking. Local-first means data stays where you put it.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6. ARCHITECTURE -->
+    <section class="slide">
+      <span class="kicker">Under the hood</span>
+      <h2>Async Python core, bundled Next.js dashboard.</h2>
+      <div class="arch">
+        <div class="layer">
+          <div class="title">Edge</div>
+          <div class="body">Browser · phone (Twilio) · WhatsApp · Telegram · WeChat · Lark</div>
+          <div class="sub">All channels feed the same pipeline</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="layer">
+          <div class="title">Voice pipeline (Python)</div>
+          <div class="body">FastAPI · async generators · sentence-level token streaming · Silero VAD · skill runner</div>
+          <div class="sub">STT · LLM · TTS · interruption · barge-in</div>
+        </div>
+      </div>
+      <div class="arch" style="margin-top: 12px;">
+        <div class="layer">
+          <div class="title">Storage</div>
+          <div class="body">SQLite (default) or Postgres · filesystem or S3 / GCS / OSS / TOS</div>
+          <div class="sub">Audio + transcripts stay local until you opt in</div>
+        </div>
+        <div class="arrow">↔</div>
+        <div class="layer">
+          <div class="title">Providers</div>
+          <div class="body">Per-layer adapters: Anthropic / OpenAI / BytePlus / Gemini / DeepSeek / ElevenLabs / Cartesia / Deepgram / AssemblyAI / Whisper</div>
+          <div class="sub">Swap per agent, mix per layer</div>
+        </div>
+      </div>
+      <p style="margin-top: 18px;">
+        Bundled dashboard (Next.js static export) served from the same FastAPI process at
+        <code>/dashboard</code>. One <code>openvox start</code> brings everything up.
+      </p>
+    </section>
+
+    <!-- 7. PROVIDER MATRIX -->
+    <section class="slide">
+      <span class="kicker">Provider-agnostic by design</span>
+      <h2>Mix and match per agent.</h2>
+      <p class="lead" style="margin-bottom: 18px;">
+        Every layer is a registered adapter. Swap providers in the dashboard or <code>.env</code> — per layer, per agent.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Layer</th><th>Adapters</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>LLM</strong></td>     <td>Anthropic · BytePlus · DeepSeek · Gemini · OpenAI · any OpenAI-compatible endpoint</td></tr>
+          <tr><td><strong>STT</strong></td>     <td>AssemblyAI · BytePlus · Deepgram · Whisper (local or hosted)</td></tr>
+          <tr><td><strong>TTS</strong></td>     <td>BytePlus · Cartesia · ElevenLabs · OpenAI TTS</td></tr>
+          <tr><td><strong>VAD</strong></td>     <td>Silero (local ONNX) · BytePlus VAD</td></tr>
+          <tr><td><strong>RTC</strong></td>     <td>Browser WebSocket (default) · BytePlus RTC</td></tr>
+          <tr><td><strong>Phone</strong></td>   <td>Twilio</td></tr>
+          <tr><td><strong>Chat</strong></td>    <td>WhatsApp Business · Telegram · WeChat Work · Lark</td></tr>
+          <tr><td><strong>Storage</strong></td> <td>Local FS · AWS S3 · MinIO · BytePlus TOS · GCS · Alibaba OSS</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 8. TEMPLATES -->
+    <section class="slide">
+      <span class="kicker">Pre-built and editable</span>
+      <h2>29 templates ready to clone.</h2>
+      <p class="lead" style="margin-bottom: 18px;">
+        Every template is fully editable — change the prompt, swap the voice, attach docs, add skills, publish.
+      </p>
+      <div class="grid grid-4">
+        <div class="card"><div class="icon">Support</div><p style="color: var(--fg);">E-commerce<br/>Multilingual (51+)<br/>Hotline (7 langs)</p></div>
+        <div class="card"><div class="icon">Productivity</div><p style="color: var(--fg);">Email assistant<br/>Calendar scheduler<br/>Executive assistant</p></div>
+        <div class="card"><div class="icon">Sales</div><p style="color: var(--fg);">Outbound SDR<br/>Telesales (7 langs)<br/>Reactivation (7 langs)</p></div>
+        <div class="card"><div class="icon">Knowledge</div><p style="color: var(--fg);">Document Q&amp;A (RAG)<br/>Receptionist w/ bookings</p></div>
+        <div class="card"><div class="icon">Education</div><p style="color: var(--fg);">Science &amp; math tutor<br/>Worked-example calculator</p></div>
+        <div class="card"><div class="icon">Finance</div><p style="color: var(--fg);">Stock analyst<br/>Live quotes + indicators</p></div>
+        <div class="card"><div class="icon">Analytics</div><p style="color: var(--fg);">Voice analyzer<br/>Sentiment · profanity · summary</p></div>
+        <div class="card"><div class="icon">Meta</div><p style="color: var(--fg);">Setup Assistant<br/>Build agents by voice</p></div>
+      </div>
+    </section>
+
+    <!-- 9. INSTALL -->
+    <section class="slide">
+      <span class="kicker">Install</span>
+      <h2>One command. ~45 seconds.</h2>
+      <pre style="max-width: 980px; margin-top: 8px;"><span class="cmt"># macOS or Linux</span>
+<span class="key">curl</span> -fsSL https://github.com/amznsri/openvox/releases/latest/download/install.sh | <span class="key">bash</span>
+<span class="key">openvox</span> start                       <span class="cmt"># daemon + dashboard auto-opens at localhost:8000</span></pre>
+      <p style="margin-top: 18px;">
+        Detects Python 3.11+, picks <code>pipx</code> (or a venv fallback), drops <code>openvox</code> on PATH.
+        First-run wizard at <code>http://localhost:8000/dashboard/setup</code> handles API keys end-to-end.
+      </p>
+      <p style="color: var(--muted); margin-top: 18px; font-size: 14px;">
+        Alternative paths: <code>pipx install openvox-core</code> · <code>brew install amznsri/openvox/openvox</code> · <code>winget install OpenVox.OpenVox</code>
+      </p>
+    </section>
+
+    <!-- 10. BUILD BY VOICE -->
+    <section class="slide">
+      <span class="kicker">Five-minute first agent</span>
+      <h2>Build by talking.</h2>
+      <div class="two-col" style="margin-top: 12px;">
+        <div>
+          <p class="lead" style="color: var(--fg);">
+            The Setup Assistant is itself an OpenVox agent. Describe what you want,
+            it picks a template, names it, configures the voice, attaches example
+            skills, walks you through publishing.
+          </p>
+          <p style="margin-top: 16px;">
+            <span class="chip chip-accent">No prompt engineering</span>
+            <span class="chip chip-accent">Voice or text input</span>
+            <span class="chip chip-accent">Hybrid handoff</span>
+          </p>
+          <p style="margin-top: 24px; color: var(--muted);">
+            Prefer to type? Dashboard form, REST API, <code>openvox</code> CLI, or
+            the TypeScript / Python SDK — same agents, same skills, same templates.
+          </p>
+        </div>
+        <pre><span class="cmt"># a real Setup Assistant flow</span>
+<span class="acc">You</span>:    "I run a salon. People call to
+         book appointments."
+
+<span class="acc">Agent</span>:  "Got it — Receptionist template
+         fits. Naming it Acme Salon.
+         Default voice ok?"
+
+<span class="acc">You</span>:    "yes, but use my Gmail and
+         Calendar."
+
+<span class="acc">Agent</span>:  "Wired. Greeting set to
+         'Acme Salon, how can I help?'
+         Ready to publish?"
+
+<span class="acc">You</span>:    "publish."
+
+<span class="cmt"># live agent at /dashboard/agents</span></pre>
+      </div>
+    </section>
+
+    <!-- 11. EXTENSIBILITY -->
+    <section class="slide">
+      <span class="kicker">Extending OpenVox</span>
+      <h2>Three plug points. All Python or TypeScript.</h2>
+      <div class="grid grid-3" style="margin-top: 18px;">
+        <div class="card">
+          <div class="icon">Skill</div>
+          <h3>Drop a Python file</h3>
+          <p>Subclass <code>BaseSkill</code> with id, description, JSON-schema parameters, and an async <code>run()</code>. Hot-reloaded from <code>~/.openvox/skills/</code>.</p>
+        </div>
+        <div class="card">
+          <div class="icon">Provider</div>
+          <h3>Custom STT / LLM / TTS</h3>
+          <p>Subclass the matching <code>Provider</code> base. Register via the <code>openvox.providers</code> entry point. The dashboard picks it up automatically.</p>
+        </div>
+        <div class="card">
+          <div class="icon">Template</div>
+          <h3>Ship a starter</h3>
+          <p>Add a dict to <code>routes/templates.py</code>. New users see it in the Templates gallery, ready to clone with prompt + voice + skills pre-configured.</p>
+        </div>
+      </div>
+      <p style="margin-top: 24px;">
+        Plus <strong>Model Context Protocol</strong>: connect any MCP server — Slack, GitHub, Notion, HubSpot, Salesforce, Stripe — as agent tools. Curated catalogue ships in the box.
+      </p>
+    </section>
+
+    <!-- 12. SELF-HOSTED & PRIVACY -->
+    <section class="slide">
+      <span class="kicker">Local-first by default</span>
+      <h2>Your audio, your transcripts, your servers.</h2>
+      <div class="two-col" style="margin-top: 12px;">
+        <div>
+          <p class="lead" style="color: var(--fg);">
+            OpenVox runs on a laptop with SQLite and the local filesystem.
+            Audio and transcripts only leave your machine when they hit a provider
+            <em>you</em> configured.
+          </p>
+          <p>
+            Want to go fully on-device? Local Whisper + Ollama + Piper covers
+            STT + LLM + TTS without a network hop. The same agents, with no third
+            party seeing the audio.
+          </p>
+          <p>
+            Production scale up: Postgres, S3-compatible storage, OpenTelemetry
+            instrumentation, structured logs. Same single binary.
+          </p>
+        </div>
+        <div>
+          <div class="card" style="margin-bottom: 12px;">
+            <div class="icon">Privacy controls</div>
+            <p style="color: var(--fg);">Transcript-only mode · PII masking · configurable retention · data-residency-aware storage backends</p>
+          </div>
+          <div class="card" style="margin-bottom: 12px;">
+            <div class="icon">Compliance</div>
+            <p style="color: var(--fg);">GDPR-aware schema · audit logs · session-level redaction · no outbound telemetry</p>
+          </div>
+          <div class="card">
+            <div class="icon">Deployment</div>
+            <p style="color: var(--fg);">Single Python wheel · Docker Compose · systemd / launchd / Windows Service daemons</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 13. CLOSE -->
+    <section class="slide cover">
+      <span class="kicker">Get started</span>
+      <h2>Build your first voice agent in <span class="gradient">five minutes</span>.</h2>
+      <p class="lead" style="margin-bottom: 24px;">
+        Open-source, Apache-2.0, self-hosted. Production-quality voice agents
+        without the SaaS lock-in or the framework wiring.
+      </p>
+      <pre style="max-width: 980px;"><span class="key">curl</span> -fsSL https://github.com/amznsri/openvox/releases/latest/download/install.sh | <span class="key">bash</span>
+<span class="key">openvox</span> start</pre>
+      <div class="cover-meta">
+        <span>github.com/amznsri/openvox</span>
+        <span class="dot"></span>
+        <span>docs · templates · SDK</span>
+        <span class="dot"></span>
+        <span>Apache-2.0</span>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="nav">
+    <button id="prev">← Prev</button>
+    <div class="progress"><div id="bar"></div></div>
+    <span id="counter">1 / 13</span>
+    <button id="next">Next →</button>
+  </div>
+
+  <script>
+    (function () {
+      const slides = Array.from(document.querySelectorAll('.slide'));
+      const bar = document.getElementById('bar');
+      const counter = document.getElementById('counter');
+      const total = slides.length;
+      let idx = 0;
+
+      function show(i) {
+        idx = (i + total) % total;
+        slides.forEach((s, j) => s.classList.toggle('active', j === idx));
+        bar.style.width = ((idx + 1) / total * 100) + '%';
+        counter.textContent = (idx + 1) + ' / ' + total;
+        // Reflect in URL hash for deep-linking (silent)
+        history.replaceState(null, '', '#' + (idx + 1));
+      }
+
+      // Initial: read hash if present
+      const initial = parseInt(location.hash.slice(1), 10);
+      show(Number.isFinite(initial) && initial >= 1 && initial <= total ? initial - 1 : 0);
+
+      document.getElementById('prev').addEventListener('click', () => show(idx - 1));
+      document.getElementById('next').addEventListener('click', () => show(idx + 1));
+
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') {
+          e.preventDefault(); show(idx + 1);
+        } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+          e.preventDefault(); show(idx - 1);
+        } else if (e.key === 'Home') {
+          e.preventDefault(); show(0);
+        } else if (e.key === 'End') {
+          e.preventDefault(); show(total - 1);
+        } else if (e.key === 'f' && (e.metaKey || e.ctrlKey)) {
+          // leave Ctrl/Cmd-F alone for find
+        } else if (e.key === 'f') {
+          // Fullscreen toggle
+          if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+          else document.exitFullscreen();
+        }
+      });
+
+      // Click empty space on the right half to advance, left half to go back
+      document.getElementById('deck').addEventListener('click', (e) => {
+        if (e.target.closest('a, button, pre, table, .card')) return;
+        const w = window.innerWidth;
+        if (e.clientX > w / 2) show(idx + 1); else show(idx - 1);
+      });
+    })();
+  </script>
+</body>
+</html>
