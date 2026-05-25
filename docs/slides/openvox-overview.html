@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>OpenVox — Open-source Voice Agent Platform</title>
+  <title>OpenVox — Build a voice agent. Just by talking.</title>
   <style>
     :root {
       --bg: #0b0c10;
@@ -14,7 +14,6 @@
       --accent: #7c5cff;
       --accent-2: #4dd8ff;
       --chip: #1c1e29;
-      --good: #4ade80;
     }
     * { box-sizing: border-box; }
     html, body {
@@ -27,7 +26,7 @@
     .deck { flex: 1; position: relative; overflow: hidden; }
     .slide {
       position: absolute; inset: 0;
-      padding: 64px 96px;
+      padding: 72px 104px;
       display: none; flex-direction: column; justify-content: center;
       animation: fade .25s ease-out;
     }
@@ -36,14 +35,13 @@
 
     .slide.cover {
       background:
-        radial-gradient(ellipse at top left, rgba(124, 92, 255, .28), transparent 50%),
-        radial-gradient(ellipse at bottom right, rgba(77, 216, 255, .16), transparent 50%);
+        radial-gradient(ellipse at top left, rgba(124, 92, 255, .30), transparent 50%),
+        radial-gradient(ellipse at bottom right, rgba(77, 216, 255, .18), transparent 50%);
     }
 
-    h1 { font-size: 84px; line-height: 1.02; margin: 0 0 22px; letter-spacing: -.025em; font-weight: 700; }
-    h2 { font-size: 64px; line-height: 1.04; margin: 0 0 16px; letter-spacing: -.025em; font-weight: 700; }
-    .sub { color: var(--muted); font-size: 22px; max-width: 760px; margin: 0; }
-    em { color: var(--accent-2); font-style: normal; }
+    h1 { font-size: 88px; line-height: 1.02; margin: 0 0 24px; letter-spacing: -.025em; font-weight: 700; }
+    h2 { font-size: 68px; line-height: 1.04; margin: 0 0 18px; letter-spacing: -.025em; font-weight: 700; }
+    .sub { color: var(--muted); font-size: 22px; max-width: 820px; margin: 0; }
     .gradient {
       background: linear-gradient(120deg, var(--accent), var(--accent-2));
       -webkit-background-clip: text; background-clip: text; color: transparent;
@@ -59,13 +57,10 @@
 
     .chip {
       display: inline-flex; align-items: center;
-      padding: 8px 14px; background: var(--chip); border: 1px solid var(--line);
-      border-radius: 999px; font-size: 16px; color: var(--fg); margin: 0 8px 8px 0;
+      padding: 10px 18px; background: var(--chip); border: 1px solid var(--line);
+      border-radius: 999px; font-size: 18px; color: var(--fg); margin: 0 10px 10px 0;
     }
-    .chip.lg { padding: 10px 18px; font-size: 18px; }
-    .chip-accent { border-color: rgba(124, 92, 255, .5); color: var(--accent); }
 
-    .row { display: flex; flex-wrap: wrap; gap: 0; margin-top: 18px; }
     .grid { display: grid; gap: 14px; }
     .grid-2 { grid-template-columns: 1fr 1fr; }
     .grid-3 { grid-template-columns: repeat(3, 1fr); }
@@ -73,7 +68,7 @@
 
     .card {
       background: var(--bg-2); border: 1px solid var(--line);
-      border-radius: 14px; padding: 22px 22px;
+      border-radius: 14px; padding: 22px;
     }
     .card .label {
       font-size: 11px; color: var(--accent); font-weight: 700;
@@ -82,51 +77,34 @@
     .card h3 { font-size: 22px; margin: 0; font-weight: 600; color: var(--fg); }
     .card p  { font-size: 15px; margin: 8px 0 0; color: var(--muted); line-height: 1.45; }
 
-    /* Step-by-step flow */
-    .flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 16px; align-items: stretch; margin-top: 28px; }
-    .flow .step {
-      background: var(--bg-2); border: 1px solid var(--line);
-      border-radius: 14px; padding: 22px;
-    }
-    .flow .step .num {
-      width: 28px; height: 28px; border-radius: 999px;
-      background: linear-gradient(120deg, var(--accent), var(--accent-2));
-      color: #0b0c10; font-weight: 700; font-size: 14px;
-      display: flex; align-items: center; justify-content: center;
-      margin-bottom: 14px;
-    }
-    .flow .step strong { display: block; font-size: 18px; margin-bottom: 6px; color: var(--fg); }
-    .flow .step span { color: var(--muted); font-size: 14px; }
-    .flow .arrow { color: var(--muted); font-size: 24px; align-self: center; }
+    /* Build-by-voice chat — the killer slide */
+    .chat { background: var(--bg-2); border: 1px solid var(--line); border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 12px; max-width: 760px; }
+    .bubble { padding: 13px 18px; border-radius: 18px; font-size: 17px; max-width: 86%; line-height: 1.5; }
+    .bubble.user  { background: rgba(124, 92, 255, .14); border: 1px solid rgba(124, 92, 255, .45); color: var(--fg); align-self: flex-end; }
+    .bubble.agent { background: var(--chip); border: 1px solid var(--line); color: var(--fg); align-self: flex-start; }
+    .bubble .who { font-size: 11px; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; margin-bottom: 4px; }
 
-    /* Template gallery */
+    /* Templates */
     .templates { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 28px; }
     .templates .t {
       background: var(--bg-2); border: 1px solid var(--line);
       border-radius: 12px; padding: 18px;
       display: flex; flex-direction: column; gap: 4px;
     }
-    .templates .t .cat { font-size: 11px; color: var(--accent); font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+    .templates .t .cat  { font-size: 11px; color: var(--accent); font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
     .templates .t .name { font-size: 17px; color: var(--fg); font-weight: 600; }
     .templates .t .desc { font-size: 13px; color: var(--muted); margin-top: 2px; }
 
-    /* Chat mock for playground / setup assistant */
-    .chat { background: var(--bg-2); border: 1px solid var(--line); border-radius: 14px; padding: 22px; display: flex; flex-direction: column; gap: 12px; }
-    .bubble { padding: 12px 16px; border-radius: 16px; font-size: 16px; max-width: 88%; line-height: 1.45; }
-    .bubble.user { background: rgba(124, 92, 255, .12); border: 1px solid rgba(124, 92, 255, .45); color: var(--fg); align-self: flex-end; }
-    .bubble.agent { background: var(--chip); border: 1px solid var(--line); color: var(--fg); align-self: flex-start; }
-    .bubble .who { font-size: 11px; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; margin-bottom: 4px; }
-
-    /* Channel grid */
-    .channels { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-top: 28px; }
+    /* Channel tiles */
+    .channels { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-top: 32px; }
     .ch {
       background: var(--bg-2); border: 1px solid var(--line);
-      border-radius: 12px; padding: 22px 14px;
+      border-radius: 12px; padding: 24px 14px;
       text-align: center; color: var(--fg); font-weight: 600; font-size: 17px;
-      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      display: flex; flex-direction: column; align-items: center; gap: 10px;
     }
     .ch .ico {
-      width: 38px; height: 38px;
+      width: 42px; height: 42px;
       background: linear-gradient(120deg, var(--accent), var(--accent-2));
       border-radius: 12px;
       display: flex; align-items: center; justify-content: center;
@@ -134,14 +112,14 @@
     }
     .ch .tag { color: var(--muted); font-weight: 500; font-size: 13px; }
 
-    /* Stat */
-    .stats { display: flex; gap: 64px; margin-top: 36px; flex-wrap: wrap; }
+    /* Stats */
+    .stats { display: flex; gap: 72px; margin-top: 40px; flex-wrap: wrap; }
     .stat .num {
-      font-size: 72px; font-weight: 700; line-height: 1;
+      font-size: 80px; font-weight: 700; line-height: 1;
       background: linear-gradient(120deg, var(--accent), var(--accent-2));
       -webkit-background-clip: text; background-clip: text; color: transparent;
     }
-    .stat .lbl { color: var(--muted); font-size: 15px; max-width: 240px; margin-top: 8px; }
+    .stat .lbl { color: var(--muted); font-size: 15px; max-width: 240px; margin-top: 10px; }
 
     .nav {
       flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
@@ -159,16 +137,16 @@
 
     .cover-meta {
       display: flex; gap: 14px; align-items: center;
-      margin-top: 36px; color: var(--muted); font-size: 15px;
+      margin-top: 40px; color: var(--muted); font-size: 15px;
     }
     .dot { width: 4px; height: 4px; background: var(--muted); border-radius: 999px; }
 
     @media (max-height: 760px) {
-      .slide { padding: 44px 72px; }
+      .slide { padding: 48px 80px; }
       h1 { font-size: 64px; }
-      h2 { font-size: 48px; }
+      h2 { font-size: 50px; }
       .sub { font-size: 19px; }
-      .stat .num { font-size: 56px; }
+      .stat .num { font-size: 60px; }
     }
   </style>
 </head>
@@ -178,10 +156,10 @@
     <!-- 1. COVER -->
     <section class="slide cover active">
       <span class="kicker">OpenVox</span>
-      <h1>Voice agents that <span class="gradient">actually ship</span>.</h1>
+      <h1>A voice agent. <span class="gradient">For everyone.</span></h1>
       <p class="sub">
-        The open-source platform for building production voice agents.
-        Describe one in a sentence, ship it in five minutes.
+        Open-source platform where anyone — a founder, an operator, a developer —
+        builds their own voice agent. Just by talking to it.
       </p>
       <div class="cover-meta">
         <span>Apache-2.0</span>
@@ -190,43 +168,31 @@
       </div>
     </section>
 
-    <!-- 2. BUILD BY VOICE -->
+    <!-- 2. BUILD BY VOICE — THE DEMO -->
     <section class="slide">
       <span class="kicker">Build by voice</span>
-      <h2>Talk. <span class="gradient">We build it.</span></h2>
-      <p class="sub">No prompts, no YAML, no SDK. Describe what you want — OpenVox picks a template, configures the voice, and ships a working agent.</p>
-      <div class="flow">
-        <div class="step">
-          <div class="num">1</div>
-          <strong>Describe</strong>
-          <span>"I run a salon — people call to book appointments."</span>
-        </div>
-        <div class="arrow">→</div>
-        <div class="step">
-          <div class="num">2</div>
-          <strong>Configure</strong>
-          <span>Template, voice, greeting, calendar all wired automatically.</span>
-        </div>
-        <div class="arrow">→</div>
-        <div class="step">
-          <div class="num">3</div>
-          <strong>Publish</strong>
-          <span>Live on web, phone, and WhatsApp the moment you say "publish."</span>
-        </div>
+      <h2>Tell OpenVox <span class="gradient">what you want</span>.</h2>
+      <p class="sub">No prompts to write. No SDK to learn. Describe the agent you want — OpenVox builds it.</p>
+      <div class="chat" style="margin-top: 32px;">
+        <div class="bubble user"><div class="who">You</div>"I run a salon. People call to book appointments."</div>
+        <div class="bubble agent"><div class="who">OpenVox</div>"Got it — receptionist template fits. Naming it Acme Salon. Default voice okay?"</div>
+        <div class="bubble user"><div class="who">You</div>"Yes — and use my Google Calendar."</div>
+        <div class="bubble agent"><div class="who">OpenVox</div>"Wired. Greeting set to 'Acme Salon, how can I help?' Ready to publish?"</div>
+        <div class="bubble user"><div class="who">You</div>"Publish."</div>
       </div>
     </section>
 
-    <!-- 3. WHAT YOU CAN BUILD (TEMPLATES) -->
+    <!-- 3. TEMPLATES -->
     <section class="slide">
-      <span class="kicker">29 production templates</span>
-      <h2>Clone an agent. <span class="gradient">Edit. Ship.</span></h2>
-      <p class="sub">Every template is fully editable — swap the voice, the prompt, the skills, the channels.</p>
+      <span class="kicker">Pre-built starting points</span>
+      <h2>29 templates. <span class="gradient">Fully editable.</span></h2>
+      <p class="sub">Pick one, change the voice, swap the prompt, add a skill. Or describe a new one and let OpenVox configure it from scratch.</p>
       <div class="templates">
         <div class="t"><span class="cat">Support</span><span class="name">E-commerce</span><span class="desc">Order lookup, returns, ETA</span></div>
-        <div class="t"><span class="cat">Productivity</span><span class="name">Executive assistant</span><span class="desc">Gmail + Calendar wired</span></div>
-        <div class="t"><span class="cat">Sales</span><span class="name">Outbound SDR</span><span class="desc">Twilio dial-out + lead scoring</span></div>
-        <div class="t"><span class="cat">Knowledge</span><span class="name">Document Q&amp;A</span><span class="desc">RAG with embeddings or BM25</span></div>
-        <div class="t"><span class="cat">Hospitality</span><span class="name">Receptionist</span><span class="desc">In-app appointment bookings</span></div>
+        <div class="t"><span class="cat">Productivity</span><span class="name">Executive assistant</span><span class="desc">Gmail + Calendar</span></div>
+        <div class="t"><span class="cat">Sales</span><span class="name">Outbound SDR</span><span class="desc">Dial leads, score, book demos</span></div>
+        <div class="t"><span class="cat">Hospitality</span><span class="name">Receptionist</span><span class="desc">Appointments, info, FAQ</span></div>
+        <div class="t"><span class="cat">Knowledge</span><span class="name">Doc Q&amp;A</span><span class="desc">Answer from your PDFs</span></div>
         <div class="t"><span class="cat">Education</span><span class="name">Science tutor</span><span class="desc">Worked-example calculator</span></div>
         <div class="t"><span class="cat">Finance</span><span class="name">Stock analyst</span><span class="desc">Live quotes + indicators</span></div>
         <div class="t"><span class="cat">Analytics</span><span class="name">Voice analyzer</span><span class="desc">Sentiment + summary</span></div>
@@ -234,11 +200,11 @@
       <p style="margin-top: 22px; color: var(--muted); font-size: 14px;">… plus telesales, reactivation, hotline, multilingual support, email assistant, calendar scheduler, and 14 more.</p>
     </section>
 
-    <!-- 4. MULTI-CHANNEL -->
+    <!-- 4. CHANNELS -->
     <section class="slide">
-      <span class="kicker">One agent. Every surface.</span>
-      <h2>Reach customers <span class="gradient">where they are</span>.</h2>
-      <p class="sub">Same agent, same prompt, same skills — across web RTC, phone, and every major messenger.</p>
+      <span class="kicker">Multi-channel</span>
+      <h2>Connect to <span class="gradient">every channel</span>.</h2>
+      <p class="sub">Same agent, same prompt, same skills — across web, phone, and every major messenger.</p>
       <div class="channels">
         <div class="ch"><div class="ico">WEB</div>Browser<span class="tag">RTC</span></div>
         <div class="ch"><div class="ico">PHN</div>Phone<span class="tag">Twilio</span></div>
@@ -251,118 +217,92 @@
 
     <!-- 5. MULTILINGUAL -->
     <section class="slide">
-      <span class="kicker">Multilingual out of the box</span>
-      <h2>Speak <span class="gradient">your customer's language</span>.</h2>
-      <p class="sub">Seven first-class languages ship pre-configured. The multilingual template auto-detects 51+ languages at runtime and switches voices mid-call.</p>
+      <span class="kicker">Multilingual</span>
+      <h2>Speak <span class="gradient">51+ languages</span>.</h2>
+      <p class="sub">Seven languages ship pre-configured with 41 production voices. Auto-detect picks the right voice mid-conversation.</p>
       <div class="stats">
         <div class="stat"><div class="num">41</div><div class="lbl">production voices</div></div>
         <div class="stat"><div class="num">7</div><div class="lbl">pre-configured languages</div></div>
         <div class="stat"><div class="num">51+</div><div class="lbl">auto-detected at runtime</div></div>
       </div>
-      <div class="row" style="margin-top: 36px;">
-        <span class="chip lg">English</span>
-        <span class="chip lg">中文</span>
-        <span class="chip lg">粵語</span>
-        <span class="chip lg">Español</span>
-        <span class="chip lg">Bahasa</span>
-        <span class="chip lg">Français</span>
-        <span class="chip lg">हिन्दी</span>
+      <div style="margin-top: 40px;">
+        <span class="chip">English</span>
+        <span class="chip">中文</span>
+        <span class="chip">粵語</span>
+        <span class="chip">Español</span>
+        <span class="chip">Bahasa</span>
+        <span class="chip">Français</span>
+        <span class="chip">हिन्दी</span>
       </div>
     </section>
 
-    <!-- 6. PLAYGROUND -->
+    <!-- 6. OBSERVABILITY + EVALS COMBINED -->
     <section class="slide">
-      <span class="kicker">Live playground</span>
-      <h2>Talk to your agent. <span class="gradient">In the browser.</span></h2>
-      <p class="sub">No phone setup, no dev environment. Click the agent, hit the mic, hear it back.</p>
-      <div class="chat" style="max-width: 760px; margin-top: 28px;">
-        <div class="bubble user"><div class="who">You</div>"What's the status of order ORD-1001?"</div>
-        <div class="bubble agent"><div class="who">Agent · 280 ms</div>"Your wireless headphones shipped Tuesday on DHL — tracking JD0011223344, arrives in two days."</div>
-        <div class="bubble user"><div class="who">You</div>"Can I get them earlier?"</div>
-        <div class="bubble agent"><div class="who">Agent · 240 ms</div>"I can upgrade to next-day for $12. Want me to do that?"</div>
-      </div>
-    </section>
-
-    <!-- 7. OBSERVABILITY -->
-    <section class="slide">
-      <span class="kicker">Observability</span>
-      <h2>Replay every conversation. <span class="gradient">See the cost.</span></h2>
-      <p class="sub">Every session logs transcripts, tool calls, latency, and exact STT+LLM+TTS spend. Click a row, hear the audio, see the bill.</p>
+      <span class="kicker">Operate with confidence</span>
+      <h2>See every call. <span class="gradient">Score every change.</span></h2>
+      <p class="sub">Full transcripts, real cost breakdown, persona-based regression testing — without leaving the dashboard.</p>
       <div class="grid grid-3" style="margin-top: 28px;">
         <div class="card">
-          <div class="label">Transcripts</div>
-          <h3>Word-by-word replay</h3>
-          <p>Audio + tokens captured per turn. Catch the moment a user gave up.</p>
+          <div class="label">Replay</div>
+          <h3>Hear every conversation</h3>
+          <p>Word-by-word transcript with audio. Catch the moment a user gave up.</p>
         </div>
         <div class="card">
-          <div class="label">Cost breakdown</div>
-          <h3>Per-session pricing</h3>
-          <p>STT minutes, LLM tokens, TTS characters — billed against real provider rates.</p>
+          <div class="label">Cost</div>
+          <h3>Per-session bill</h3>
+          <p>STT, LLM, TTS billed against real provider rates. See "switch to X to save 64%."</p>
         </div>
         <div class="card">
-          <div class="label">What-if</div>
-          <h3>Switch providers, see savings</h3>
-          <p>"Use DeepSeek instead of GPT — save 64% on this call."</p>
+          <div class="label">Evals</div>
+          <h3>Score against personas</h3>
+          <p>Angry customer, confused elder, ESL speaker — built in. LLM-as-judge per criterion. Catches regressions before users do.</p>
         </div>
       </div>
     </section>
 
-    <!-- 8. EVALS -->
+    <!-- 7. SKILLS -->
     <section class="slide">
-      <span class="kicker">Evals</span>
-      <h2>Catch regressions <span class="gradient">before users do</span>.</h2>
-      <p class="sub">LLM-as-judge scoring against personas you define. Run them on every prompt change, every model swap.</p>
-      <div class="grid grid-3" style="margin-top: 28px;">
-        <div class="card">
-          <div class="label">Personas</div>
-          <h3>Five built in</h3>
-          <p>Angry customer · confused elder · ESL speaker · in-a-hurry · paranoid. Add your own.</p>
-        </div>
-        <div class="card">
-          <div class="label">Replay runner</div>
-          <h3>Real recordings</h3>
-          <p>Save a session as a recording. Re-run it against any agent version with one click.</p>
-        </div>
-        <div class="card">
-          <div class="label">Judge</div>
-          <h3>Per-criterion verdicts</h3>
-          <p>"Did the agent stay polite?" "Did it confirm the order number?" Per-test pass / fail.</p>
-        </div>
+      <span class="kicker">Skills</span>
+      <h2>Make it <span class="gradient">do anything</span>.</h2>
+      <p class="sub">Any API becomes a skill. Your agent reaches into the rest of your stack — and your documents.</p>
+      <div class="grid grid-4" style="margin-top: 30px;">
+        <div class="card"><div class="label">Calendar</div><p style="color: var(--fg); font-size: 16px;">Book, reschedule, find free slots</p></div>
+        <div class="card"><div class="label">Email</div><p style="color: var(--fg); font-size: 16px;">Read, draft, send via Gmail / Outlook</p></div>
+        <div class="card"><div class="label">CRM</div><p style="color: var(--fg); font-size: 16px;">Lookup, update, log via HubSpot / Salesforce</p></div>
+        <div class="card"><div class="label">Documents</div><p style="color: var(--fg); font-size: 16px;">Answer from your PDFs &amp; knowledge base</p></div>
+        <div class="card"><div class="label">Commerce</div><p style="color: var(--fg); font-size: 16px;">Orders, refunds, shipping, ETAs</p></div>
+        <div class="card"><div class="label">Messaging</div><p style="color: var(--fg); font-size: 16px;">Slack, Discord, Teams alerts</p></div>
+        <div class="card"><div class="label">Custom</div><p style="color: var(--fg); font-size: 16px;">Any REST or MCP endpoint, in Python</p></div>
+        <div class="card"><div class="label">SDK</div><p style="color: var(--fg); font-size: 16px;">TypeScript &amp; Python SDKs for developers</p></div>
       </div>
     </section>
 
-    <!-- 9. SKILLS + RAG + SCHEDULING (capabilities, not internals) -->
+    <!-- 8. SCHEDULING -->
     <section class="slide">
-      <span class="kicker">Make your agent do anything</span>
-      <h2>Skills, knowledge, and <span class="gradient">scheduled outreach</span>.</h2>
-      <div class="grid grid-3" style="margin-top: 28px;">
+      <span class="kicker">Scheduling</span>
+      <h2>Or have it <span class="gradient">run on its own</span>.</h2>
+      <p class="sub">Voice agents that wake themselves up — to call, summarise, check, or notify. Cron, intervals, one-off runs, webhook triggers.</p>
+      <div class="grid grid-2" style="margin-top: 30px;">
         <div class="card">
-          <div class="label">Skills</div>
-          <h3>Calls real systems</h3>
-          <p>Book appointments. Look up orders. Send emails. Quote prices. Trigger Slack alerts. Anything with an API.</p>
+          <div class="label">Outbound</div>
+          <h3>"Call the top 20 leads every Monday 9am."</h3>
+          <p>Twilio dial-out + BANT scoring. Batched, scheduled, fully auto.</p>
         </div>
         <div class="card">
-          <div class="label">Documents</div>
-          <h3>Reads your knowledge base</h3>
-          <p>Drop PDFs and policy docs in. Built-in RAG retrieves the right paragraph mid-call.</p>
+          <div class="label">Summaries</div>
+          <h3>"Every night 8pm, summarise today's calls."</h3>
+          <p>LLM run against agent prompt, posted to email or Slack.</p>
         </div>
         <div class="card">
-          <div class="label">Schedules</div>
-          <h3>Reaches out on its own</h3>
-          <p>"Every Monday 9am, call the top 20 leads." Cron, intervals, one-off runs, webhook triggers.</p>
+          <div class="label">Checks</div>
+          <h3>"Every hour, check inventory and alert on low stock."</h3>
+          <p>Skill runs in background, agent notifies only when threshold hit.</p>
         </div>
-      </div>
-    </section>
-
-    <!-- 10. CLOSE -->
-    <section class="slide cover">
-      <span class="kicker">Ready to ship</span>
-      <h1>Your first agent, <span class="gradient">in five minutes</span>.</h1>
-      <p class="sub">Open-source. Self-hosted. Apache-2.0. Bring your own keys — your data never leaves your servers.</p>
-      <div class="cover-meta">
-        <span>github.com/amznsri/openvox</span>
-        <span class="dot"></span>
-        <span>Try the live playground at localhost:8000</span>
+        <div class="card">
+          <div class="label">Webhooks</div>
+          <h3>"On Stripe charge, call the customer."</h3>
+          <p>Event-driven triggers. Any incoming webhook can kick off a voice flow.</p>
+        </div>
       </div>
     </section>
 
@@ -371,7 +311,7 @@
   <div class="nav">
     <button id="prev">← Prev</button>
     <div class="progress"><div id="bar"></div></div>
-    <span id="counter">1 / 10</span>
+    <span id="counter">1 / 8</span>
     <button id="next">Next →</button>
   </div>
 
@@ -413,7 +353,7 @@
       });
 
       document.getElementById('deck').addEventListener('click', (e) => {
-        if (e.target.closest('a, button, pre, table, .card, .chat, .bubble, .step, .ch, .t')) return;
+        if (e.target.closest('a, button, pre, table, .card, .chat, .bubble, .ch, .t')) return;
         const w = window.innerWidth;
         if (e.clientX > w / 2) show(idx + 1); else show(idx - 1);
       });
