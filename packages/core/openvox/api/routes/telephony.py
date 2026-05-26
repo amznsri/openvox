@@ -404,6 +404,40 @@ async def telegram_connect(req: TelegramConnectRequest, request: Request) -> dic
     bot_token = req.bot_token.strip()
     mode = req.mode if req.mode in {"polling", "webhook"} else "polling"
 
+    # ── Uniqueness guard ────────────────────────────────────────────
+    # A Telegram bot can have at most ONE consumer at the protocol
+    # level — `setWebhook` REPLACES the previous webhook URL/secret,
+    # and concurrent `getUpdates` pollers race for each update with
+    # no rhyme or reason. Letting the dashboard wire the same token
+    # to two agents was a silent footgun: the second connect would
+    # quietly "win" while the first agent lost its inbound traffic
+    # with no error surfaced.
+    #
+    # Refuse the connect when the same `bot_token` is already wired
+    # to a DIFFERENT agent. Re-connecting to the SAME agent is fine
+    # (that's the natural "edit channel config" flow — change
+    # `reply_mode`, swap `mode`, etc.).
+    from sqlalchemy import select
+    async with db_session() as s:
+        rows = (await s.execute(select(Agent))).scalars().all()
+        for other in rows:
+            if other.id == req.agent_id:
+                continue
+            cfg = (other.channels or {}).get("telegram") or {}
+            if cfg.get("bot_token") == bot_token:
+                # Snapshot the conflicting agent's display name before
+                # we exit the session, so the error message is useful.
+                conflict_name = other.name
+                conflict_id = other.id
+                raise HTTPException(
+                    409,
+                    "This Telegram bot is already connected to another agent "
+                    f"({conflict_name!r}, id={conflict_id[:8]}…). Telegram "
+                    "only lets one consumer own a bot at a time. "
+                    "Disconnect the existing agent first, or create a new "
+                    "bot via @BotFather.",
+                )
+
     # Both modes verify the token first — fast fail if it's invalid.
     # Wrap so an invalid token returns 400 (client error) rather than
     # 500. verify_bot itself raises RuntimeError on Telegram-side
