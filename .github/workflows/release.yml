@@ -187,6 +187,82 @@ jobs:
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
 
+  # ── End-to-end install verification ────────────────────────────────
+  # Why this job exists:
+  #   `publish-pypi` returns green the moment Twine's upload endpoint
+  #   accepts the wheel. But PyPI's SIMPLE INDEX (which `pip install`
+  #   actually reads) propagates separately — typically 30 s - 2 min
+  #   later. The user-facing signal "v0.2.x release succeeded" was
+  #   firing before that propagation completed, leading to:
+  #
+  #     $ pipx upgrade openvox-core    # ran the moment workflow was green
+  #     upgraded ... from 0.x to 0.(x-1)    # got the PREVIOUS version
+  #
+  #   This job blocks the overall workflow from completing until a
+  #   FRESH machine, with no caches involved, can actually
+  #   `pip install openvox-core==<new>` and run `openvox version`.
+  #
+  # Bonus: also catches a class of bugs where the upload succeeded
+  # but the wheel is somehow unusable on a clean install (e.g. CLAUDE.md
+  # §8 #76 — missing audioop-lts conditional dep, only visible on a
+  # fresh install). Previously this only surfaced when a real user
+  # reported a broken upgrade days later.
+  verify-pypi-install:
+    name: Verify fresh `pip install` works
+    needs: [build, publish-pypi]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Wait for PyPI simple index to show the new version
+        # `pip index versions` reads the SAME endpoint pip uses for
+        # actual installs, so once it sees the new version `pip install`
+        # is guaranteed to find it. Poll up to 5 min then give up —
+        # propagation usually completes in 30-120 s but Cloudflare
+        # cache invalidation has occasional 4-min outliers.
+        run: |
+          for i in $(seq 1 30); do
+            if pip index versions openvox-core 2>/dev/null | grep -q "${{ needs.build.outputs.version }}"; then
+              echo "✓ openvox-core ${{ needs.build.outputs.version }} is visible in the simple index"
+              exit 0
+            fi
+            echo "PyPI simple index doesn't show ${{ needs.build.outputs.version }} yet (attempt $i/30)"
+            sleep 10
+          done
+          echo "::error::PyPI never indexed ${{ needs.build.outputs.version }} within 5 min"
+          exit 1
+
+      - name: Install the just-published version into a fresh venv
+        # Fresh venv + --no-cache-dir + --index-url=https://pypi.org/simple
+        # so we're testing exactly what a real user's `pipx install`
+        # does, not whatever the runner's pip caches might hold.
+        run: |
+          python -m venv /tmp/verify-venv
+          /tmp/verify-venv/bin/pip install --no-cache-dir \
+            --index-url https://pypi.org/simple/ \
+            "openvox-core==${{ needs.build.outputs.version }}"
+
+      - name: Smoke-check the CLI
+        # Three asserts: CLI launches, reports the right version
+        # string, and the wheel actually shipped its dashboard
+        # bundle (catches a regression class where _dashboard/ is
+        # missing from the wheel — would silently break the
+        # `localhost:8000/dashboard` route on every install).
+        run: |
+          VER=$(/tmp/verify-venv/bin/openvox version | awk '{print $NF}')
+          echo "openvox CLI reports: $VER"
+          test "$VER" = "${{ needs.build.outputs.version }}"
+          /tmp/verify-venv/bin/python -c "
+          from importlib.resources import files
+          import openvox
+          dash = files('openvox') / '_dashboard'
+          assert dash.is_dir(), 'wheel missing _dashboard/'
+          assert (dash / 'index.html').is_file(), 'wheel missing _dashboard/index.html'
+          print('✓ dashboard bundle present in wheel')
+          "
+
   # ── GitHub Release: attach wheel + sdist + install.sh + checksums ──
   publish-github-release:
     name: Attach assets to GitHub Release

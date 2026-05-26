@@ -2014,6 +2014,63 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     The CI job covers (1) cheaply; (2) and (3) require code review
     discipline + the existing query-param convention.
 
+### Release-signal vs install-readiness gap (Session 18)
+
+94. **"Release workflow green" ≠ "users can upgrade right now"**
+    extends #74 to the user-facing case. v0.2.8 surfaced this:
+    the release run reported `OVERALL: success` (Twine upload
+    returned 200, GitHub release assets attached, Homebrew tap
+    updated). The user ran `pipx upgrade openvox-core` within ~60s
+    and got 0.2.7 back — PyPI had accepted the wheel but its
+    simple index hadn't propagated yet:
+        $ pipx upgrade openvox-core
+        upgraded package openvox-core from 0.1.8 to 0.2.7
+        $ openvox version
+        openvox 0.2.7   # not 0.2.8 despite "release succeeded"
+    `pip index versions openvox-core` confirmed the new version
+    appeared on PyPI's simple index ~2 minutes after the workflow
+    closed.
+    Bug #74 fixed this for the in-workflow case (the
+    `publish-homebrew` job needs PyPI to be indexed before it
+    can `pip install openvox-core==<new>` to feed
+    homebrew-pypi-poet). The user-facing signal was unfixed —
+    the workflow declared itself "complete" before any of its
+    artefacts were actually installable on a fresh machine.
+    *Fix*: NEW `verify-pypi-install` job in `release.yml`, runs
+    after `publish-pypi` and BEFORE the overall workflow can be
+    marked complete:
+      1. Poll `pip index versions openvox-core` until the new
+         version appears (up to 5 min, same budget as the
+         homebrew job's existing wait).
+      2. Create a clean Python 3.12 venv on the runner.
+      3. `pip install --no-cache-dir --index-url https://pypi.org/simple/
+         openvox-core==<new>` — exercises EXACTLY the path a
+         real user's pipx hits.
+      4. `openvox version` and assert the string matches `<new>`.
+      5. Assert `_dashboard/index.html` is in the installed
+         package (bonus regression catch for the wheel-bundling
+         step — see force-include block in pyproject.toml).
+    If any of these fail, the overall workflow conclusion is
+    "failure" — so the user's interpretation of "workflow green
+    = run pipx upgrade now" becomes correct again.
+    **Bonus catches**:
+      - Wheel uploaded but missing critical files (force-include
+        regression). Surfaces in step 5.
+      - Wheel imports break on fresh install (e.g. CLAUDE.md #76's
+        audioop-lts case where the package looked fine in the
+        editable dev install but the wheel was missing the
+        conditional dependency). Surfaces in step 4.
+    **Lesson — generalisation of #74**: any release pipeline that
+    ends with a "publish" step needs a separate "verify the
+    published artefact is consumable" step AFTER it. Twine
+    returning 200 is necessary but not sufficient. The right
+    end-state assertion is "a fresh machine, with no caches, can
+    install and run the published version."
+    Same pattern worth replicating for the Homebrew tap (fresh
+    `brew install` smoke after the tap PR merges) and the
+    install.sh script (curl-bash smoke on a clean container).
+    Filed as a follow-up.
+
 ---
 
 ## 9. Known constraints / environment quirks
