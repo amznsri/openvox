@@ -573,9 +573,49 @@ Important file pointers:
     strict dependency order. Dashboard `destroy()` also gained
     try/catch with alert + explicit `mutate("agents")` invalidation.
 
+- **Session 18 — Phase 1: Native Google OAuth** (2026-05-26): five
+  PRs landed (#27 → #32) replacing the MCP-server-based Gmail /
+  Calendar path with a one-click Connect-Gmail flow backed by an
+  encrypted token store. Productivity-template UX collapses from
+  "create your own Cloud OAuth client + paste credentials into the
+  MCP tab" to "click Connect Gmail → consent → done".
+  - **#27 — Encrypted OAuth token store** (`openvox/oauth/store.py`
+    + `OAuthToken` model + `0002_oauth_tokens.py` migration).
+    Composite PK `(provider, user_email)` so a user can connect
+    personal@gmail and work@gmail simultaneously. Fernet-shared key
+    with `secrets.py` — one machine key protects everything.
+  - **#28 — Google OAuth flow routes**. PKCE Desktop App flow,
+    `GET /api/v1/integrations/google/start` (302 to consent),
+    `GET /oauth/google/callback` (root-mounted so the URI matches
+    Cloud Console registration character-for-character), `GET
+    /status`, `DELETE /{email}/disconnect`. In-process state cache
+    with 10-min TTL + lazy eviction.
+  - **#29 — Native Gmail + Calendar skills**. 9 skills:
+    `list_emails / read_email / send_email / search_contacts_in_gmail`
+    + `list / create / update / delete_calendar_event` +
+    `find_free_time`. Each takes optional `user_email` with auto-
+    disambiguation. `ensure_fresh_access_token()` helper handles
+    refresh transparently.
+  - **#31 — MCP-bootstrap fix for text transports**. New shared
+    helper `openvox.mcp.open_agent_mcp(servers)` async-context.
+    `/turn` + Telegram inbound now boot MCP per turn — voice WS
+    was already doing this. Fixes the user-visible "Gmail works
+    over voice but not over Telegram" bug (CLAUDE.md §8 #92).
+  - **#32 — Dashboard Integrations tab + template migration**.
+    `/dashboard/integrations/` page with per-account scope badges,
+    disconnect button, multi-account UX. Email-assistant /
+    calendar-scheduler / executive-assistant templates default to
+    the native skills; MCP variants preserved as power-user
+    alternative.
+  - Released as **v0.2.6** to PyPI + brew + WinGet.
+  - **Phase 1.7 — Google OAuth verification** (1-2 wks turnaround)
+    still pending; only test-users can use the Connect Gmail flow
+    until verification completes.
+
 ### 🚧 In progress
-- (none — Session 11 wrapped. Three Session 9 items still gated on
-  external dependencies; see PLANNING_NEXT.md.)
+- (none — Session 18 Phase 1 wrapped. Phases 2–5 next: People API,
+  Speech-to-Speech via OpenAI Realtime, GTM polish, CRM via MCP.
+  See `docs/PLANNING_SESSION18.md`.)
 
 ### ⏳ Pending / roadmap
 - **Speech-to-Speech (S2S)** — placeholder. OpenAI Realtime works today as alternative.
