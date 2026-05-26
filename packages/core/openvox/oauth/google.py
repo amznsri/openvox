@@ -389,6 +389,62 @@ async def refresh_access_token(refresh_token: str) -> dict[str, Any]:
         return resp.json()
 
 
+async def ensure_fresh_access_token(user_email: str) -> str:
+    """Return a valid access_token for ``(google, user_email)``.
+
+    Looks up the stored bundle. If it's expired (per ``is_expired``'s
+    60-second clock-skew window), runs the refresh flow and writes
+    the new bundle back to the store. Returns the access_token the
+    caller should put in the ``Authorization: Bearer …`` header.
+
+    Raises ``LookupError`` if no integration is connected for the
+    user, ``RuntimeError`` on protocol errors (which the skill layer
+    should surface to the user as "your Google integration is broken,
+    please reconnect").
+
+    This is the helper every native Gmail / Calendar skill calls
+    before making an upstream API request — single place to put the
+    refresh logic so we never accidentally ship a stale token.
+    """
+    from openvox.oauth.store import get_oauth_token, set_oauth_token
+
+    bundle = await get_oauth_token("google", user_email)
+    if bundle is None:
+        raise LookupError(
+            f"No Google integration connected for {user_email}. "
+            "Visit the dashboard's Integrations tab to connect."
+        )
+    if not bundle.is_expired:
+        return bundle.access_token
+
+    # Stale → refresh. Google occasionally rotates the refresh_token
+    # itself in the response; if absent we re-persist the existing
+    # value so the bundle stays consistent.
+    logger.info("google access_token expired for %s — refreshing", user_email)
+    refresh_resp = await refresh_access_token(bundle.refresh_token)
+    new_access = refresh_resp.get("access_token") or ""
+    new_refresh = refresh_resp.get("refresh_token") or bundle.refresh_token
+    expires_in = int(refresh_resp.get("expires_in") or 0)
+    if not new_access:
+        raise RuntimeError(
+            f"Google refresh for {user_email} returned no access_token: {refresh_resp}"
+        )
+    new_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+
+    # Re-persist. set_oauth_token validates non-empty + re-encrypts.
+    await set_oauth_token(
+        provider="google",
+        user_email=user_email,
+        access_token=new_access,
+        refresh_token=new_refresh,
+        token_uri=bundle.token_uri,
+        client_id=bundle.client_id,
+        scopes=bundle.scopes,
+        expires_at=new_expires_at,
+    )
+    return new_access
+
+
 async def revoke_token(token: str) -> bool:
     """Tell Google to forget about this token.
 
