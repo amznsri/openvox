@@ -169,3 +169,51 @@ jobs:
             /private/var/folders/**/pytest-of-runner/**/daemon.*.log
           retention-days: 7
           if-no-files-found: ignore
+
+  dashboard-export-build:
+    # Catch Next.js static-export errors on every PR — before they
+    # hit the release pipeline's "Build wheel + sdist" step, which is
+    # where v0.2.6 blew up with the `useSearchParams()` Suspense-
+    # boundary regression on the new Integrations page.
+    #
+    # Why a dedicated job (vs folding into unit-tests):
+    #   - Different toolchain (Node, not Python) — no point setting
+    #     up Node on every Python matrix cell.
+    #   - Fast enough to gate on (one runner, ~45-90s end-to-end).
+    #   - Only triggered by `apps/dashboard/**` changes via the
+    #     `paths` filter on the workflow trigger above would be
+    #     cleaner, but the existing workflow runs on every PR so
+    #     the cost is acceptable for now. Optimisation candidate.
+    #
+    # What this catches that the dev workflow doesn't:
+    #   `next dev` is permissive about Suspense-around-search-params,
+    #   `output: 'export'` mode is NOT. The bug only manifests in the
+    #   second mode, which the release pipeline uses to bundle the
+    #   dashboard into the wheel. Catching it here means contributors
+    #   see the error in their PR run, not in a v0.2.x release tag.
+    name: dashboard export build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/dashboard/package-lock.json
+
+      - name: Install dashboard dependencies
+        working-directory: apps/dashboard
+        run: npm ci
+
+      - name: Build dashboard in static-export mode
+        # Same incantation as release.yml's "Build dashboard for
+        # static-export bundling" step. If THIS passes, that one
+        # passes (modulo node version drift — both pinned to 20).
+        # The trailing find / wc -l confirms artefacts landed.
+        working-directory: apps/dashboard
+        run: |
+          BUILD_OUTPUT=export npm run build
+          test -d out
+          test -f out/dashboard/integrations/index.html
+          echo "✓ dashboard exported; $(find out -type f | wc -l) files"

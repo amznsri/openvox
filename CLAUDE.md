@@ -1932,6 +1932,58 @@ Each entry is a real production bug we tracked down. Future-you, take note.
         `open_agent_mcp` is a likely-broken bring-up. Worth a
         grep-based AST check in pre-commit later.
 
+### Dev / build mode divergence (Session 18 release)
+
+93. **Next.js `useSearchParams()` works in `next dev` but breaks
+    `next build --output=export`** unless wrapped in `<Suspense>`.
+    v0.2.6's release pipeline failed at "Build wheel + sdist"
+    because the new `/dashboard/integrations/` page called
+    `useSearchParams()` at the top level of the default export.
+    `next dev` rendered it fine — the bug only surfaced when the
+    release workflow ran `BUILD_OUTPUT=export npm run build`:
+        ⨯ useSearchParams() should be wrapped in a suspense
+          boundary at page "/dashboard/integrations". Read more:
+          https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout
+        Error occurred prerendering page "/dashboard/integrations".
+    Cascaded — every downstream publish (PyPI / Homebrew / WinGet /
+    install.sh) skipped because the wheel never built. Required a
+    same-day v0.2.7 hotfix.
+    *Fix shape*: split the page into a thin default export that
+    wraps the original component in `<Suspense fallback={null}>`,
+    and a renamed inner component that's free to use
+    `useSearchParams` / `useRouter` / `usePathname`:
+        ```tsx
+        export default function IntegrationsPage() {
+          return (
+            <Suspense fallback={null}>
+              <IntegrationsPageInner />
+            </Suspense>
+          );
+        }
+        function IntegrationsPageInner() {
+          const search = useSearchParams();
+          // ...
+        }
+        ```
+    *Preventive CI*: new `dashboard-export-build` job in
+    `.github/workflows/test.yml` runs `BUILD_OUTPUT=export npm run
+    build` on every PR. Same toolchain as the release pipeline's
+    wheel-bundling step, so future Suspense-style regressions
+    fail loud BEFORE merge instead of at tag-push.
+    **Lesson — dev mode ≠ build mode for Next.js static export.**
+    Three classes of issue only surface under `output: 'export'`:
+      1. `useSearchParams` / `useParams` / `useRouter` without
+         `<Suspense>` — bails out of prerender.
+      2. Dynamic route params on pages that need runtime IDs (e.g.
+         `/dashboard/agents/[id]/edit`) — static export can't
+         resolve unknown IDs at build time. We work around this
+         today with query-param routing (`/dashboard/agents/edit/
+         ?id=…`) — see existing pages.
+      3. Server components that read cookies / headers — there's
+         no request to read from at build time.
+    The CI job covers (1) cheaply; (2) and (3) require code review
+    discipline + the existing query-param convention.
+
 ---
 
 ## 9. Known constraints / environment quirks
