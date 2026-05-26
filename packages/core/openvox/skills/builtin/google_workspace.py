@@ -67,6 +67,7 @@ logger = logging.getLogger(__name__)
 
 
 GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1"
+PEOPLE_BASE = "https://people.googleapis.com/v1"
 CALENDAR_BASE = "https://www.googleapis.com/calendar/v3"
 
 
@@ -421,6 +422,197 @@ class SendEmail(BaseSkill):
             "to": to,
             "subject": subject,
         }
+
+
+class ResolveContact(BaseSkill):
+    """Primary contact-resolution path: Google People API.
+
+    Calls `people.searchContacts` with the user's free-text query
+    (a name, partial name, or other hint) and returns the matched
+    entries with name + email + photo. The Executive Assistant's
+    prompt instructs the LLM to try this BEFORE
+    `search_contacts_in_gmail` because People API knows about
+    contacts the user has saved explicitly — including people
+    they've never exchanged email with (e.g. "my dentist" saved in
+    Contacts with phone + address but no email history).
+
+    Three-tier fallback chain (orchestrated by the prompt, not by
+    this skill — keep skills single-purpose):
+
+      1. `resolve_contact`        — Phase 2's People API path.
+      2. `search_contacts_in_gmail` — Phase 1's Gmail-history scrape;
+                                       works for accounts that have
+                                       email history but no Contacts.
+      3. ask the user                — fallback when neither source
+                                       produces a confident match.
+
+    Scope quirk: People API requires
+    ``https://www.googleapis.com/auth/contacts.readonly`` which was
+    added to ``DEFAULT_SCOPES`` in Phase 2.1. Users connected via
+    Phase 1 don't have it — the skill detects this 403 and returns
+    a clean error pointing at the Integrations tab.
+
+    Warm-up gotcha: People API's `searchContacts` runs against an
+    in-memory index that needs to be primed before it returns
+    relevant matches. Per Google's docs, calling with `query=""`
+    once per session warms it up. To keep the skill self-contained
+    we do the warmup INSIDE the call only when an initial search
+    returns empty — that's the only case where warmup matters in
+    practice. The retry costs ~200ms one time per cold session.
+    """
+
+    id = "resolve_contact"
+    display_name = "Resolve a contact name to an email (People API)"
+    description = (
+        "Look up a contact in the user's Google Contacts via the People "
+        "API. Returns name + email + photo for each match, sorted by "
+        "relevance. Use this BEFORE search_contacts_in_gmail when "
+        "resolving a name to an email — People API has explicit "
+        "contact records (e.g. 'my dentist') that Gmail history alone "
+        "won't surface."
+    )
+    parameters = {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "Free-text query — name, partial name, or other "
+                    "hint. e.g. 'John', 'John Doe', 'dentist'."
+                ),
+            },
+            "max_results": {
+                "type": "integer",
+                "default": 10,
+                "description": "Cap on results returned (default 10, max 30).",
+            },
+            "user_email": {"type": "string"},
+        },
+    }
+
+    async def run(self, args: dict[str, Any], ctx: SkillContext) -> Any:
+        email_addr = await _resolve_user_email(args.get("user_email"))
+        query = (args.get("query") or "").strip()
+        if not query:
+            raise ValueError("query is required")
+        max_results = max(1, min(int(args.get("max_results") or 10), 30))
+
+        try:
+            results = await _people_search(email_addr, query, max_results)
+        except RuntimeError as e:
+            # Scope missing (403) is the most common cause — surface a
+            # readable hint instead of the raw Google error text.
+            if "PERMISSION_DENIED" in str(e) or "403" in str(e):
+                raise RuntimeError(
+                    "Google Contacts (People API) access not granted on this "
+                    "integration. Open the dashboard Integrations tab, "
+                    "disconnect, then reconnect to grant the new "
+                    "contacts.readonly scope."
+                ) from e
+            raise
+
+        # Empty results — try the warmup-then-retry path once.
+        if not results:
+            logger.info("people: empty result for %r, warming up index", query)
+            await _people_warmup(email_addr)
+            results = await _people_search(email_addr, query, max_results)
+
+        return {
+            "account": email_addr,
+            "query": query,
+            "count": len(results),
+            "contacts": results,
+        }
+
+
+async def _people_search(
+    user_email: str, query: str, max_results: int
+) -> list[dict[str, Any]]:
+    """One round-trip to ``people:searchContacts``.
+
+    ``readMask`` is a Field Mask — the comma-separated list of person
+    fields we want back. Adding fields here is cheap (just a wider
+    response) so we ask for everything the LLM might find useful:
+    canonical display name, email + type label, photo URL.
+    """
+    body = await _google_request(
+        "GET",
+        f"{PEOPLE_BASE}/people:searchContacts",
+        user_email,
+        params={
+            "query": query,
+            "pageSize": max_results,
+            "readMask": "names,emailAddresses,photos,phoneNumbers,organizations",
+        },
+    )
+    out: list[dict[str, Any]] = []
+    for entry in body.get("results") or []:
+        person = entry.get("person") or {}
+        name = ""
+        for n in person.get("names") or []:
+            if n.get("displayName"):
+                name = n["displayName"]
+                break
+        emails = [
+            {"address": e.get("value"), "type": e.get("type", "")}
+            for e in person.get("emailAddresses") or []
+            if e.get("value")
+        ]
+        photo_url = ""
+        for ph in person.get("photos") or []:
+            if ph.get("url"):
+                photo_url = ph["url"]
+                break
+        # An entry without ANY email is useless for "schedule meeting
+        # with X" — skip it so the LLM doesn't have to filter.
+        if not emails:
+            continue
+        out.append(
+            {
+                "name": name,
+                "emails": emails,
+                "photo_url": photo_url,
+                # Useful when multiple people share a first name —
+                # the org / phone fields help the LLM ask "did you
+                # mean John from Acme or John from Beta?"
+                "organizations": [
+                    {"name": o.get("name"), "title": o.get("title")}
+                    for o in person.get("organizations") or []
+                    if o.get("name") or o.get("title")
+                ],
+            }
+        )
+    return out
+
+
+async def _people_warmup(user_email: str) -> None:
+    """Prime the People API search index for this user.
+
+    Google's docs:
+        "Before searching for contacts, the People API needs to warm
+        up its search service. The warmup process can take up to 30
+        seconds and only needs to happen once per user session."
+
+    In practice the warmup is fast (~200ms) and just consists of
+    calling ``searchContacts`` with an empty query. We swallow any
+    error here — if the warmup fails the worst case is that the
+    retry call still returns empty and the LLM falls through to the
+    Gmail-history skill.
+    """
+    try:
+        await _google_request(
+            "GET",
+            f"{PEOPLE_BASE}/people:searchContacts",
+            user_email,
+            params={
+                "query": "",
+                "pageSize": 1,
+                "readMask": "names",
+            },
+        )
+    except Exception as e:
+        logger.warning("people warmup failed (non-fatal): %s", e)
 
 
 class SearchContactsInGmail(BaseSkill):
@@ -916,7 +1108,8 @@ SKILLS = [
     ListEmails,
     ReadEmail,
     SendEmail,
-    SearchContactsInGmail,
+    ResolveContact,           # Phase 2 — People API (preferred)
+    SearchContactsInGmail,    # Phase 1 — Gmail-history scrape (fallback)
     ListCalendarEvents,
     CreateCalendarEvent,
     UpdateCalendarEvent,

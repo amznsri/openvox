@@ -594,6 +594,11 @@ _GMAIL_NATIVE_SKILLS = [
     "list_emails",
     "read_email",
     "send_email",
+    # Phase 2 — People API preferred path. The single-purpose
+    # Email Assistant template includes both contact-resolution
+    # skills so it can resolve "send John an email" without
+    # needing the Executive Assistant's calendar wiring.
+    "resolve_contact",
     "search_contacts_in_gmail",
     "get_time",
 ]
@@ -808,7 +813,9 @@ separate setup). Skills wired in:
     list_emails(query?, max_results?)
     read_email(message_id)
     send_email(to, subject, body, cc?, bcc?)
-    search_contacts_in_gmail(query)            # resolve names → emails
+  Contacts (resolve a name → email):
+    resolve_contact(query)                     # Google Contacts — PREFERRED
+    search_contacts_in_gmail(query)            # Gmail history — fallback
   Calendar:
     list_calendar_events(time_min?, time_max?, query?)
     create_calendar_event(summary, start, end, attendees?, ...)
@@ -846,15 +853,37 @@ Draft / send email:
 Schedule a meeting:
   1. Confirm title, duration, attendees, rough timeframe.
   2. **Resolve any attendee given by name only** (e.g. "John Doe"
-     with no email):
-       a. Call `search_contacts_in_gmail(query="John Doe")` — it
-          returns distinct senders matching the query, sorted by
-          frequency.
-       b. If one address dominates, that's your candidate.
-       c. **Always confirm with the user before booking**: "I found
+     with no email). Use this exact 3-tier fallback chain — DO NOT
+     skip steps, and DO NOT guess an address that none of the
+     skills returned:
+
+       a. **First try `resolve_contact(query="John Doe")`** — this
+          hits Google Contacts via the People API. It surfaces
+          people the user saved explicitly (their dentist, a
+          family member, a vendor) even if they've never exchanged
+          email. If exactly one result has a single email, that's
+          a strong match.
+
+       b. **If `resolve_contact` returned nothing** (count: 0), fall
+          back to `search_contacts_in_gmail(query="John Doe")`. This
+          scrapes Gmail history. People you correspond with regularly
+          come back here even if they're not in Contacts.
+
+       c. **If BOTH skills returned nothing**, ask the user for the
+          email outright. Don't fabricate.
+
+       d. **Always confirm with the user before booking**: "I found
           John Doe at john.doe@acme.com — is that the right John?"
-          If "no" or no Gmail history matches, ask the user for the
-          address outright. Don't guess.
+          If the skills returned multiple plausible matches (two
+          Johns, ambiguous query), surface BOTH and let the user
+          pick. Never silently pick one when the skill gave you
+          several.
+
+       Tip — disambiguating multiple Johns from `resolve_contact`:
+       the result includes `organizations` for each contact. If both
+       Johns have org names, mention them: "I found John at Acme
+       and John at Beta — which?"
+
   3. Call `find_free_time` with the duration and desired window.
   4. Propose 2-3 specific slots in natural language ("Tuesday at 2 PM").
   5. Wait for the user to pick.

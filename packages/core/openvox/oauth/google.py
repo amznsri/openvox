@@ -66,17 +66,27 @@ TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 USERINFO_ENDPOINT = "https://openidconnect.googleapis.com/v1/userinfo"
 REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke"
 
-# Default scopes covering Phase 1 use cases (Gmail read+send via .modify,
-# Calendar full access). Phase 2 will add contacts.readonly. We request
-# `openid email profile` so the userinfo endpoint resolves the account's
-# email address — that's the second half of the (provider, user_email)
-# composite key used by the token store.
+# Default scopes covering Phase 1 + Phase 2 use cases:
+#   - openid email profile           → userinfo (resolves user_email)
+#   - gmail.modify                   → list/read/send via the native skills
+#   - calendar                       → full calendar access
+#   - contacts.readonly              → People API name → email resolution
+#                                       (Phase 2; lets Executive Assistant
+#                                       answer "schedule with John Doe"
+#                                       even with no prior Gmail history)
+#
+# Phase 1 users who connected before this list expanded keep working
+# (their stored bundle still has the old scopes; their access_token
+# refreshes cleanly). Calls to People API skills will return a
+# "scope not granted, please reconnect" error in that case — the
+# dashboard's Integrations card surfaces this via the per-scope badges.
 DEFAULT_SCOPES = [
     "openid",
     "email",
     "profile",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/contacts.readonly",
 ]
 
 # How long an unconsented authorization URL stays valid in our memory.
