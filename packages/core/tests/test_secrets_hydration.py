@@ -133,6 +133,41 @@ async def test_hydration_multiple_providers(
     assert os.environ["ANTHROPIC_API_KEY"] == "an"
 
 
+# ── v0.2.12: Google OAuth client_id + client_secret hydration ───────
+# Phase 1 (Native Connect Gmail) added google_oauth_client_id +
+# google_oauth_client_secret to the settings; v0.2.12 added them to
+# the hydration mapping so users can paste them via the dashboard
+# Integrations form instead of editing the launchd plist.
+
+
+async def test_hydration_google_oauth_client_keys(isolated_db: Path) -> None:
+    """Google OAuth Client ID + Secret flow from the encrypted store
+    through to env vars + pydantic Settings."""
+    from openvox import secrets as secret_store
+    from openvox.api.app import _hydrate_secrets_into_env
+    from openvox.config import get_settings
+
+    await secret_store.set_provider_key(
+        "google", "oauth_client_id", "test-client-123.apps.googleusercontent.com"
+    )
+    await secret_store.set_provider_key(
+        "google", "oauth_client_secret", "GOCSPX-test-secret-value"
+    )
+
+    await _hydrate_secrets_into_env()
+
+    # Env vars set (this is what every downstream code path reads).
+    assert os.environ["GOOGLE_OAUTH_CLIENT_ID"].endswith(".googleusercontent.com")
+    assert os.environ["GOOGLE_OAUTH_CLIENT_SECRET"].startswith("GOCSPX-")
+
+    # Settings sees the new values after the cache bust — this is
+    # what Phase 1's `start_auth_flow()` reads when building the
+    # authorization URL.
+    s = get_settings()
+    assert s.google_oauth_client_id.endswith(".googleusercontent.com")
+    assert s.google_oauth_client_secret.startswith("GOCSPX-")
+
+
 # ── Bug #78 regression: settings cache busted after hydration ──────
 
 

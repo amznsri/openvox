@@ -36,6 +36,7 @@ import { api, type GoogleIntegrationAccount } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input, Label } from "@/components/ui/input";
 
 type GoogleStatus = {
   configured: boolean;
@@ -181,28 +182,13 @@ function GoogleCard({
         </p>
 
         {!configured && (
-          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
-            <div className="font-semibold mb-1">
-              Google OAuth client not configured
-            </div>
-            <div className="text-muted-foreground">
-              The maintainer needs to set{" "}
-              <code className="text-foreground">GOOGLE_OAUTH_CLIENT_ID</code>{" "}
-              and{" "}
-              <code className="text-foreground">GOOGLE_OAUTH_CLIENT_SECRET</code>{" "}
-              in <code className="text-foreground">.env</code>, or paste them
-              into the Settings page. See{" "}
-              <a
-                href="https://github.com/amznsri/openvox/blob/main/docs/integrations/google.md"
-                target="_blank"
-                rel="noreferrer"
-                className="underline text-foreground"
-              >
-                docs/integrations/google.md
-              </a>{" "}
-              for the 2-minute Cloud Console setup.
-            </div>
-          </div>
+          // Inline form for first-time OAuth client setup. Until v0.2.12
+          // this was a static warning + "paste them on the Settings
+          // page" hint — but the Settings page never had a Google
+          // section, leaving env-var-edit as the only working path.
+          // Now the form lives where it's needed: right above the
+          // Connect Gmail button it's gating.
+          <GoogleOAuthClientForm onSaved={onChanged} />
         )}
 
         {loading ? (
@@ -251,6 +237,128 @@ function GoogleCard({
     </Card>
   );
 }
+
+function GoogleOAuthClientForm({ onSaved }: { onSaved: () => void }) {
+  // Inline form for the maintainer's Google OAuth client credentials.
+  // Posts to /api/v1/admin/setup/keys with provider="google" — the
+  // generic key-store endpoint that every other provider also uses.
+  // On success the daemon's lifespan hydration (api/app.py:
+  // _hydrate_secrets_into_env) re-exports these as env vars on the
+  // NEXT restart, so we need to tell the user to restart for the
+  // change to take effect.
+  //
+  // Why not just store + auto-hydrate without restart? The Settings
+  // class uses pydantic-settings with an lru_cache — busted by
+  // _hydrate_secrets_into_env at lifespan-start ONCE. Hot-reloading
+  // mid-process would mean tearing down + re-bootstrapping every
+  // provider that already cached the (formerly empty) Google client.
+  // Cleaner to require a restart for now; auto-reload is a future
+  // refinement.
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [savedMsg, setSavedMsg] = useState<string | null>(null);
+
+  async function submit() {
+    setErr(null);
+    setSavedMsg(null);
+    const cid = clientId.trim();
+    const csec = clientSecret.trim();
+    if (!cid || !csec) {
+      setErr("Both fields are required.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.setupSaveKeys("google", {
+        oauth_client_id: cid,
+        oauth_client_secret: csec,
+      });
+      // Status won't flip to configured=true until the daemon
+      // restarts (see component docstring). Tell the user that
+      // explicitly — silent UX of "saved but button still
+      // disabled" would be confusing.
+      setSavedMsg(
+        "Saved. Restart the OpenVox daemon to load the new credentials, " +
+          "then refresh this page.",
+      );
+      setClientId("");
+      setClientSecret("");
+      onSaved();
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+      <div>
+        <div className="font-semibold text-sm mb-1">
+          Google OAuth client — one-time maintainer setup
+        </div>
+        <div className="text-xs text-muted-foreground leading-relaxed">
+          Paste the Client ID + Client Secret from your Google Cloud Console
+          Desktop App OAuth client. Same client works for Gmail + Calendar +
+          Contacts. See{" "}
+          <a
+            href="https://github.com/amznsri/openvox/blob/main/docs/integrations/google.md"
+            target="_blank"
+            rel="noreferrer"
+            className="underline hover:text-foreground"
+          >
+            docs/integrations/google.md
+          </a>{" "}
+          for the 2-minute Cloud Console walk-through. Stored encrypted at
+          rest in <code>~/.openvox/openvox.db</code>; never leaves this
+          machine.
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <Label className="text-xs">Client ID</Label>
+          <Input
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            placeholder="123-abc.apps.googleusercontent.com"
+            className="font-mono text-xs"
+            autoComplete="off"
+          />
+        </div>
+        <div>
+          <Label className="text-xs">Client Secret</Label>
+          <Input
+            value={clientSecret}
+            onChange={(e) => setClientSecret(e.target.value)}
+            placeholder="GOCSPX-..."
+            className="font-mono text-xs"
+            type="password"
+            autoComplete="off"
+          />
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <Button onClick={submit} disabled={busy} className="gap-2" size="sm">
+          {busy && <Loader2 className="h-3 w-3 animate-spin" />}
+          Save credentials
+        </Button>
+        {savedMsg && (
+          <div className="text-[11px] text-emerald-300 leading-snug">
+            {savedMsg}
+          </div>
+        )}
+        {err && (
+          <div className="text-[11px] text-rose-300 leading-snug">{err}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 
 function AccountRow({
   account,
