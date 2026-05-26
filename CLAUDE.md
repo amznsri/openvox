@@ -1822,6 +1822,76 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     safety knobs OFF by default. Turn them on at project setup
     time so you don't discover the misalignment 6 months in.
 
+### Transport asymmetry on MCP bootstrap (Session 18)
+
+92. **MCP tools invisible to Telegram / `/turn` because only the
+    voice WS bootstrapped `MCPSessionManager`.** Reported by a real
+    user: their Email Assistant agent had the Gmail MCP server
+    attached, worked perfectly in the Playground voice tab, but
+    over Telegram replied:
+        "Looks like the Gmail integration tools are not available
+         right now. You will need to add your Google OAuth client
+         credentials on this agent's MCP configuration tab first…"
+    The reply was literal — the LLM was reciting the system
+    prompt's fallback for missing tools because IT HAD NO MCP
+    TOOLS to call. Investigation:
+      - `api/ws/voice.py:_build_session` spawns
+        `MCPSessionManager(a.mcp_servers)`, lists each server's
+        tools, and hands them to the `SkillRunner` via
+        `extra_skills=…`. The LLM sees `mcp__gmail__list_emails`
+        alongside the built-in `get_time` skill. ✅
+      - `api/routes/agents.py:agent_text_turn` (Setup Assistant
+        text mode, the `/turn` endpoint) built
+        `SkillRunner(skill_ids=a.skills)` with NO MCP bootstrap. ❌
+      - `api/routes/telephony.py:_handle_telegram_update` — same
+        omission. ❌
+    For an agent whose `skills=["get_time"]` and `mcp_servers=
+    [<gmail-MCP>]` (i.e. EVERY productivity-template agent prior
+    to Phase 1.6's native-skill migration), text-mode transports
+    ran with one tool. LLM saw no Gmail tools → recited the
+    "configure MCP" fallback verbatim.
+    *Fix*: new shared helper `openvox.mcp.open_agent_mcp(servers)`
+    — an `@asynccontextmanager` that wraps `MCPSessionManager`'s
+    lifecycle with sensible failure semantics:
+      - empty / None config → yield `[]` (fast path, no subprocess)
+      - `__aenter__` raises → log + yield `[]` (turn proceeds
+        with built-in tools only — better than 500)
+      - inner block raises → teardown still fires (no leaked
+        subprocesses; teardown skipped only when `__aenter__`
+        itself never completed, to avoid double-fault)
+    Both text transports now wrap their LLM-skill loop in
+    `async with open_agent_mcp(mcp_servers) as mcp_extras:` and
+    pass `extra_skills=mcp_extras` to the SkillRunner.
+    **The voice WS path is deliberately NOT touched** — it
+    already does the right thing, and its `_build_session`
+    couples the manager lifetime to the entire WS rather than
+    one turn. Different lifecycle, separate implementation.
+    The ~7 lines of duplication are intentional.
+
+    **Lesson — joins the "every transport must do X" family**
+    alongside #46 (bounded tool loops in every text-mode
+    transport, not just the orchestrator) and #55 (every channel
+    must persist Session + Transcript, not just voice WS):
+      - **Adding a new transport is not "wire up `chat_stream`."**
+        It's wire up the full turn lifecycle, every piece of
+        which the voice WS already does:
+          1. Build the skill set including MCP bridges. (#92)
+          2. Cap the tool-call loop at `max_tool_iterations`. (#46)
+          3. Persist a `Session` row at start + finalize at end. (#55)
+          4. Persist a `Transcript` row per user + assistant turn. (#55)
+          5. Strip TTS-hostile sequences if synthesising audio. (#50)
+          6. `clean_for_tts` BEFORE sending to TTS. (#50)
+      - **Channel-bring-up checklist** lives implicitly in voice.py
+        + the orchestrator. Future transports (WhatsApp inbound,
+        WeChat audio bridge, S2S, etc.) MUST mirror the same
+        pattern. The shared helper `open_agent_mcp` is now the
+        canonical way to satisfy #1 of the checklist.
+      - **CI lint candidate**: any new file under
+        `api/routes/telephony.py`-style channel handlers that
+        builds a `SkillRunner` but doesn't reference
+        `open_agent_mcp` is a likely-broken bring-up. Worth a
+        grep-based AST check in pre-commit later.
+
 ---
 
 ## 9. Known constraints / environment quirks
