@@ -8,29 +8,45 @@ import {
   Bell,
   Bot,
   ChevronDown,
+  HelpCircle,
   LayoutDashboard,
   Loader2,
   Mic,
   MicOff,
+  Play,
   Plus,
+  Plug,
   Search,
   Sparkles,
   Wand2,
+  Zap,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { api, type Agent, type Skill, type Template } from "@/lib/api";
+import {
+  HELP_SECTIONS,
+  parseActionCommand,
+  type ActionMatch,
+} from "@/lib/command-actions";
 
 type Hit = {
-  // `page` = static dashboard tab destination. Added in v0.2.13's
-  // command-palette UX so the same top-bar input can navigate to
-  // /dashboard/agents, /dashboard/integrations, etc. without
-  // requiring a separate Cmd+K modal.
-  kind: "agent" | "template" | "skill" | "page";
+  // `page`   = static dashboard tab destination (v0.2.13).
+  // `action` = verb-driven command like "test <agent>" or
+  //            "create from template <X>" (v0.2.14 / Tier 2).
+  kind: "agent" | "template" | "skill" | "page" | "action";
   id: string;
   title: string;
   subtitle?: string;
-  href: string;
+  /** Pure-navigation hits set href. Action hits set `run` instead
+   *  (e.g. instantiate-then-redirect). Exactly one of the two is
+   *  present per Hit. */
+  href?: string;
+  run?: () => Promise<void> | void;
+  /** Action hits use this glyph so the renderer can distinguish
+   *  test-vs-create-vs-connect-vs-disconnect-vs-help without
+   *  reparsing the title. */
+  actionKind?: "test" | "create" | "connect" | "disconnect" | "help";
 };
 
 
@@ -197,8 +213,122 @@ export function Topbar({ title }: { title?: string }) {
   const { data: templates = [] } = useSWR<Template[]>("templates", () => api.listTemplates());
   const { data: skills = [] } = useSWR<Skill[]>("skills", () => api.listSkills());
 
+  // Parse the query as a Tier-2 action command. When this returns a
+  // match, the hits list switches into "action mode" — fuzzy-resolves
+  // the arg against agents / templates as appropriate, surfaces those
+  // as RUNNABLE hits (h.run instead of h.href). Tier 1 nav results
+  // are suppressed in action mode to keep focus.
+  const actionMatch: ActionMatch | null = useMemo(
+    () => parseActionCommand(q),
+    [q],
+  );
+
   const hits = useMemo<Hit[]>(() => {
     if (!q.trim()) return [];
+
+    // ── Action mode ─────────────────────────────────────────────
+    if (actionMatch) {
+      // Help is rendered separately in the popover — not via the
+      // hit list — so emit zero hits here.
+      if (actionMatch.kind === "help") return [];
+
+      if (actionMatch.kind === "connect_gmail") {
+        return [{
+          kind: "action",
+          actionKind: "connect",
+          id: "connect-gmail",
+          title: "Connect Gmail",
+          subtitle: "Open the Integrations tab",
+          href: "/dashboard/integrations",
+        }];
+      }
+
+      if (actionMatch.kind === "disconnect") {
+        const email = actionMatch.arg;
+        return [{
+          kind: "action",
+          actionKind: "disconnect",
+          id: `disconnect-${email}`,
+          title: `Disconnect ${email}`,
+          subtitle: "Open Integrations + focus this account (you confirm)",
+          href: `/dashboard/integrations?focus=${encodeURIComponent(email)}`,
+        }];
+      }
+
+      if (actionMatch.kind === "test_agent") {
+        // Fuzzy-resolve the agent name. Up to 5 matches; if none, a
+        // single "no match" hint hit (no run callback) lands so the
+        // popover doesn't look broken.
+        const ranked: { agent: Agent; s: number }[] = [];
+        for (const a of agents) {
+          const s = Math.max(
+            score(actionMatch.arg, a.name),
+            score(actionMatch.arg, a.description || ""),
+          );
+          if (s > 0) ranked.push({ agent: a, s });
+        }
+        ranked.sort((a, b) => b.s - a.s);
+        const top = ranked.slice(0, 5);
+        if (top.length === 0) {
+          return [{
+            kind: "action",
+            actionKind: "test",
+            id: "test-nomatch",
+            title: `No agent matches "${actionMatch.arg}"`,
+            subtitle: "Try a different name or open the Agents tab",
+            href: "/dashboard/agents",
+          }];
+        }
+        return top.map((m) => ({
+          kind: "action",
+          actionKind: "test",
+          id: `test-${m.agent.id}`,
+          title: `Test "${m.agent.name}"`,
+          subtitle: "Open in Playground",
+          // Playground reads ?agent=<id> in its config panel; existing
+          // behavior from Phase 1.6's Setup Assistant deeplink work.
+          href: `/dashboard/playground?agent=${m.agent.id}`,
+        }));
+      }
+
+      if (actionMatch.kind === "create_from_template") {
+        const ranked: { tpl: Template; s: number }[] = [];
+        for (const t of templates) {
+          const s = Math.max(
+            score(actionMatch.arg, t.name),
+            score(actionMatch.arg, t.tagline || ""),
+            score(actionMatch.arg, t.category || ""),
+          );
+          if (s > 0) ranked.push({ tpl: t, s });
+        }
+        ranked.sort((a, b) => b.s - a.s);
+        const top = ranked.slice(0, 5);
+        if (top.length === 0) {
+          return [{
+            kind: "action",
+            actionKind: "create",
+            id: "create-nomatch",
+            title: `No template matches "${actionMatch.arg}"`,
+            subtitle: "Try a different name or open the Templates tab",
+            href: "/dashboard/templates",
+          }];
+        }
+        return top.map((m) => ({
+          kind: "action",
+          actionKind: "create",
+          id: `create-${m.tpl.id}`,
+          title: `Create from "${m.tpl.name}"`,
+          subtitle: m.tpl.tagline || "Instantiate this template",
+          // Action runs API + redirects — see go(h) handler.
+          run: async () => {
+            const agent = await api.instantiateTemplate(m.tpl.id);
+            router.push(`/dashboard/agents/edit?id=${agent.id}`);
+          },
+        }));
+      }
+    }
+
+    // ── Tier 1 — pages + agents + templates + skills ────────────
     const out: { hit: Hit; s: number }[] = [];
     // Pages first — a single-word query like "agents" should jump to
     // the Agents tab rather than fuzzy-matching some agent named
@@ -241,7 +371,7 @@ export function Topbar({ title }: { title?: string }) {
     }
     out.sort((a, b) => b.s - a.s);
     return out.slice(0, 12).map((x) => x.hit);
-  }, [q, agents, templates, skills]);
+  }, [q, agents, templates, skills, actionMatch, router]);
 
   // Close the popover when clicking outside.
   useEffect(() => {
@@ -255,10 +385,30 @@ export function Topbar({ title }: { title?: string }) {
   // Reset highlight when the result list changes.
   useEffect(() => setActiveIdx(0), [hits.length, q]);
 
-  function go(h: Hit) {
+  // Tier 2 — action hits may run async work (e.g. instantiate a
+  // template + redirect). Show a spinner inline while it's pending
+  // so the user sees something happen + can't double-fire by hitting
+  // Enter twice. Errors land in `actionError` for inline display.
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  async function go(h: Hit) {
+    setActionError(null);
+    if (h.run) {
+      setActionBusy(true);
+      try {
+        await h.run();
+      } catch (e: any) {
+        setActionError(String(e?.message || e));
+        setActionBusy(false);
+        return;       // keep popover open so the user sees the error
+      }
+      setActionBusy(false);
+    } else if (h.href) {
+      router.push(h.href);
+    }
     setOpen(false);
     setQ("");
-    router.push(h.href);
   }
 
   function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -277,10 +427,23 @@ export function Topbar({ title }: { title?: string }) {
     }
   }
 
-  const IconFor = ({ kind }: { kind: Hit["kind"] }) => {
-    if (kind === "agent") return <Bot className="h-3.5 w-3.5 text-violet-300" />;
-    if (kind === "template") return <Sparkles className="h-3.5 w-3.5 text-cyan-300" />;
-    if (kind === "page") return <LayoutDashboard className="h-3.5 w-3.5 text-amber-300" />;
+  const IconFor = ({ hit }: { hit: Hit }) => {
+    if (hit.kind === "agent") return <Bot className="h-3.5 w-3.5 text-violet-300" />;
+    if (hit.kind === "template") return <Sparkles className="h-3.5 w-3.5 text-cyan-300" />;
+    if (hit.kind === "page") return <LayoutDashboard className="h-3.5 w-3.5 text-amber-300" />;
+    if (hit.kind === "skill") return <Wand2 className="h-3.5 w-3.5 text-emerald-300" />;
+    // Action hits — distinct icon per action so the renderer
+    // distinguishes test (Play) vs create (Plus) vs connect (Plug)
+    // vs disconnect (Plug-with-line-through is too niche, reuse Plug
+    // but use a warning hue) vs help (HelpCircle).
+    if (hit.kind === "action") {
+      if (hit.actionKind === "test") return <Play className="h-3.5 w-3.5 text-rose-300" />;
+      if (hit.actionKind === "create") return <Plus className="h-3.5 w-3.5 text-rose-300" />;
+      if (hit.actionKind === "connect") return <Plug className="h-3.5 w-3.5 text-rose-300" />;
+      if (hit.actionKind === "disconnect") return <Plug className="h-3.5 w-3.5 text-amber-300" />;
+      if (hit.actionKind === "help") return <HelpCircle className="h-3.5 w-3.5 text-rose-300" />;
+      return <Zap className="h-3.5 w-3.5 text-rose-300" />;
+    }
     return <Wand2 className="h-3.5 w-3.5 text-emerald-300" />;
   };
 
@@ -355,9 +518,44 @@ export function Topbar({ title }: { title?: string }) {
                 )}
               </div>
             )}
+            {actionError && (
+              // Action runs land their errors here so the popover
+              // stays open + the user sees what failed (e.g. the
+              // /api/v1/templates/<id>/instantiate request errored).
+              <div className="px-3 py-2 text-xs border-b border-border/40 text-rose-300">
+                {actionError}
+              </div>
+            )}
             {!q.trim() ? (
               <div className="px-3 py-4 text-sm text-muted-foreground">
-                Start typing or click the mic to search.
+                Start typing or click the mic to search. Type{" "}
+                <code className="px-1 py-0.5 rounded bg-muted/60 text-foreground text-[11px]">
+                  help
+                </code>{" "}
+                for the command list.
+              </div>
+            ) : actionMatch?.kind === "help" ? (
+              // Help mode — render the command reference instead of
+              // a hit list. Pure read-only; closes on Esc or outside-
+              // click via the existing handlers.
+              <div className="max-h-96 overflow-y-auto p-3 space-y-3">
+                {HELP_SECTIONS.map((sec) => (
+                  <div key={sec.title}>
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
+                      {sec.title}
+                    </div>
+                    <ul className="space-y-1">
+                      {sec.items.map((item, i) => (
+                        <li
+                          key={i}
+                          className="text-xs text-foreground/85 font-mono whitespace-pre"
+                        >
+                          {item}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
               </div>
             ) : hits.length === 0 ? (
               <div className="px-3 py-4 text-sm text-muted-foreground">
@@ -377,13 +575,19 @@ export function Topbar({ title }: { title?: string }) {
                       i === activeIdx ? "bg-muted/60" : "hover:bg-muted/40"
                     }`}
                   >
-                    <IconFor kind={h.kind} />
+                    <IconFor hit={h} />
                     <div className="min-w-0 flex-1">
                       <div className="truncate">{h.title}</div>
                       {h.subtitle && (
                         <div className="truncate text-xs text-muted-foreground">{h.subtitle}</div>
                       )}
                     </div>
+                    {actionBusy && i === activeIdx && (
+                      // Spinner shown next to the active action hit
+                      // while h.run is in-flight (e.g. instantiate
+                      // template).
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                    )}
                     <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
                       {h.kind}
                     </span>

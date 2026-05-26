@@ -19,7 +19,7 @@
  * refresh of the integrations page doesn't show stale messages.
  */
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import useSWR from "swr";
 import {
@@ -105,6 +105,7 @@ function IntegrationsPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search.toString()]);
 
+
   return (
     <div className="container py-8 space-y-6 max-w-4xl">
       <div>
@@ -158,6 +159,16 @@ function GoogleCard({
   const accounts = status?.accounts || [];
   const configured = status?.configured ?? false;
 
+  // ?focus=<email> deeplink. Lands the user from the command-palette's
+  // "Disconnect alice@example.com" action. The matching AccountRow
+  // scrolls into view + pulses for ~3s. Deliberately does NOT
+  // auto-click Disconnect — destructive writes need a real human
+  // click, especially because voice transcripts of email addresses
+  // are too lossy to trust ("alice at example dot com" → "[alice at
+  // example dot com]").
+  const search = useSearchParams();
+  const focusEmail = (search.get("focus") || "").trim().toLowerCase();
+
   const connect = () => {
     // The /start endpoint 302's to Google. Browser navigation handles
     // the redirect; the callback will bring us back here with
@@ -204,6 +215,10 @@ function GoogleCard({
                     key={account.user_email}
                     account={account}
                     onDisconnect={onChanged}
+                    focused={
+                      focusEmail.length > 0 &&
+                      account.user_email.toLowerCase() === focusEmail
+                    }
                   />
                 ))}
               </div>
@@ -363,12 +378,31 @@ function GoogleOAuthClientForm({ onSaved }: { onSaved: () => void }) {
 function AccountRow({
   account,
   onDisconnect,
+  focused,
 }: {
   account: GoogleIntegrationAccount;
   onDisconnect: () => void;
+  /** Set when arrived from the command palette's "Disconnect <email>"
+   *  action. Triggers a scroll-into-view + a brief pulse so the user
+   *  sees which row was deeplinked. Note: NEVER auto-clicks the
+   *  Disconnect button — voice transcripts of email addresses are
+   *  too lossy to trust on a destructive write. */
+  focused?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const [pulsing, setPulsing] = useState(false);
+
+  useEffect(() => {
+    if (!focused || !rowRef.current) return;
+    // Scroll the row into view + start the pulse. Pulse fades after
+    // ~3s so a refresh later doesn't leave the row stuck highlighted.
+    rowRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    setPulsing(true);
+    const t = setTimeout(() => setPulsing(false), 3000);
+    return () => clearTimeout(t);
+  }, [focused]);
 
   const handleDisconnect = async () => {
     if (
@@ -395,7 +429,14 @@ function AccountRow({
   const scopeBadges = scopeSummary(account.scopes);
 
   return (
-    <div className="rounded-md border border-border/40 bg-background/30 p-3">
+    <div
+      ref={rowRef}
+      className={`rounded-md border p-3 transition-all ${
+        pulsing
+          ? "border-amber-400/80 bg-amber-500/10 ring-2 ring-amber-400/40"
+          : "border-border/40 bg-background/30"
+      }`}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 mb-1">
