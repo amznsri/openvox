@@ -94,10 +94,15 @@ def test_start_auth_flow_builds_correct_url(tmp_openvox_home, monkeypatch):
     assert qs["code_challenge_method"] == "S256"
     assert qs["access_type"] == "offline"
     assert qs["prompt"] == "consent"
-    # Scopes are space-separated string. Gmail + Calendar must be in there.
+    # Scopes are space-separated string. Phase 1 + Phase 2 scopes all
+    # need to be in the default auth URL so a fresh connect gives the
+    # LLM access to Gmail, Calendar, AND People API in one consent.
     assert "gmail.modify" in qs["scope"]
     assert "calendar" in qs["scope"]
     assert "openid" in qs["scope"]
+    # Phase 2 — People API for `resolve_contact`. include_granted_scopes
+    # ensures existing Phase 1 connections merge this on re-auth.
+    assert "contacts.readonly" in qs["scope"]
     # State must be present and non-empty (CSRF guard).
     assert flow.state
     assert qs["state"] == flow.state
