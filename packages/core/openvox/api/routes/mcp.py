@@ -82,6 +82,15 @@ async def get_catalogue() -> list[dict[str, Any]]:
         docs_url        deep link to the upstream README
         icon            emoji for the card
         category        loose grouping ("crm", "devtools", ...)
+        setup_hint      (optional, Session 18 Phase 2.5) multi-line
+                        prose explaining out-of-band setup steps the
+                        env block can't capture — e.g. credentials
+                        FILES that must be placed at a specific
+                        path, or interactive `npx … auth` commands
+                        that must be run once before the MCP probe
+                        will return usable tools. The dashboard's
+                        Browse-catalogue modal renders this verbatim
+                        below the env-required list.
     """
     try:
         with _CATALOGUE_PATH.open("r", encoding="utf-8") as f:

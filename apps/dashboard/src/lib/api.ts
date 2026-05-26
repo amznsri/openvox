@@ -384,6 +384,12 @@ export type McpCatalogueEntry = {
   docs_url?: string;
   icon?: string;
   category?: string;
+  // Optional multi-line prose for out-of-band setup that the env block
+  // can't capture (credentials FILES at specific paths, interactive
+  // `npx … auth` commands, etc.). Rendered by the Browse-catalogue
+  // modal beneath the env-required list when present. Added in v0.2.9
+  // for the Gmail / Calendar MCPs which use file-based credentials.
+  setup_hint?: string;
 };
 
 export type Template = {

@@ -841,11 +841,40 @@ function McpPanel({
                 <Label>Env (KEY=VALUE per line)</Label>
                 <Textarea
                   rows={3}
-                  placeholder="e.g. GITHUB_PERSONAL_ACCESS_TOKEN=ghp_..."
+                  // The default placeholder shows the GitHub MCP pattern
+                  // because that's the most-asked-about server in the
+                  // catalogue. The Google Gmail/Calendar MCPs DO NOT
+                  // follow this pattern — they read OAuth keys from
+                  // ~/.gmail-mcp/gcp-oauth.keys.json (Gmail) or
+                  // GOOGLE_OAUTH_CREDENTIALS=/path/to/keys.json (Calendar),
+                  // and both require an interactive `npx … auth`
+                  // command first. The help text below tells the
+                  // user to skip env for those.
+                  placeholder="GITHUB_PERSONAL_ACCESS_TOKEN=ghp_..."
                   value={envText}
                   onChange={(e) => setEnvText(e.target.value)}
                   className="font-mono text-xs"
                 />
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  One <code>KEY=VALUE</code> per line. Note: the Google
+                  Gmail / Calendar MCPs use a credentials FILE, not env vars —{" "}
+                  <a
+                    className="underline hover:text-foreground"
+                    href="https://github.com/amznsri/openvox/blob/main/docs/integrations/google.md"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    see docs
+                  </a>
+                  . Or use the native Connect Gmail flow on the{" "}
+                  <a
+                    className="underline hover:text-foreground"
+                    href="/dashboard/integrations/"
+                  >
+                    Integrations tab
+                  </a>{" "}
+                  — no MCP needed.
+                </div>
               </div>
             </>
           ) : (
@@ -970,6 +999,16 @@ function McpPanel({
                                 {k}
                               </span>
                             ))}
+                          </div>
+                        )}
+                        {entry.setup_hint && (
+                          // Out-of-band setup explanation (credentials
+                          // files, interactive auth commands). Shown
+                          // verbatim from the catalogue entry. Kept
+                          // small + soft-coloured so it complements
+                          // (doesn't compete with) the tagline.
+                          <div className="mt-2 text-[11px] text-muted-foreground/90 leading-relaxed border-l-2 border-violet-500/40 pl-2 whitespace-pre-line">
+                            {entry.setup_hint}
                           </div>
                         )}
                       </div>
