@@ -28,6 +28,7 @@ from openvox.api.routes import (
     templates as templates_routes,
 )
 from openvox.api.routes.integrations import google as integrations_google
+from openvox import __version__
 from openvox.api.ws import twilio_stream as twilio_ws
 from openvox.api.ws import voice as voice_ws
 from openvox.config import get_settings
@@ -111,7 +112,7 @@ async def _hydrate_secrets_into_env() -> None:
         (("byteplus", "voice_api_key"), "BYTEPLUS_VOICE_API_KEY"),
         (("byteplus", "rtc_app_id"), "BYTEPLUS_RTC_APP_ID"),
         (("byteplus", "rtc_app_key"), "BYTEPLUS_RTC_APP_KEY"),
-        # OpenAI — single key serves LLM + TTS
+        # OpenAI — single key serves LLM + TTS + S2S (Realtime)
         (("openai", "api_key"), "OPENAI_API_KEY"),
         # Anthropic / Gemini / DeepSeek — LLM
         (("anthropic", "api_key"), "ANTHROPIC_API_KEY"),
@@ -125,6 +126,16 @@ async def _hydrate_secrets_into_env() -> None:
         # Telephony / channels
         (("twilio", "account_sid"), "TWILIO_ACCOUNT_SID"),
         (("twilio", "auth_token"), "TWILIO_AUTH_TOKEN"),
+        # Google OAuth client (Phase 1 Native Connect Gmail / Calendar /
+        # Contacts). Without these the dashboard's Integrations tab
+        # shows "Google OAuth client not configured" + a disabled
+        # Connect Gmail button. The maintainer typically pastes these
+        # via the dashboard Settings page (which writes to the
+        # encrypted store); the hydration step here re-exports them
+        # as env vars so `Settings.google_oauth_client_id/_secret`
+        # picks them up after the lru_cache bust below.
+        (("google", "oauth_client_id"), "GOOGLE_OAUTH_CLIENT_ID"),
+        (("google", "oauth_client_secret"), "GOOGLE_OAUTH_CLIENT_SECRET"),
     ]
 
     hydrated: list[str] = []
@@ -203,7 +214,13 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="OpenVox Core",
         description="Voice agent pipeline (STT + LLM + TTS + RTC + telephony).",
-        version="0.2.11",
+        # Single source of truth — `openvox/__init__.py:__version__`.
+        # Previously this was hardcoded and drifted out of sync with
+        # the package + pyproject.toml during the v0.2.6 → v0.2.10
+        # release sweep (CLAUDE.md v0.2.11 release notes). Reading
+        # from __version__ keeps it pinned to the same string that
+        # /health reports + that pip resolves at install time.
+        version=__version__,
         lifespan=_lifespan,
     )
     app.add_middleware(
