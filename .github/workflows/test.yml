@@ -199,12 +199,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
-          cache-dependency-path: apps/dashboard/package-lock.json
+          # No `cache: npm` here — apps/dashboard/package-lock.json is
+          # `.gitignore`d (see .gitignore:68) so setup-node@v4's cache
+          # config can't find a key to hash against. Same reason
+          # release.yml uses `npm install` without caching. Cost is
+          # ~30s of cold dependency install per PR run.
 
       - name: Install dashboard dependencies
+        # `npm install` (NOT `npm ci`) because there's no committed
+        # lockfile to install against — same convention as release.yml.
+        # Flags mirror release.yml exactly so this step is a faithful
+        # rehearsal of the wheel-bundling path.
         working-directory: apps/dashboard
-        run: npm ci
+        run: npm install --include=dev --ignore-scripts --no-audit --no-fund
 
       - name: Build dashboard in static-export mode
         # Same incantation as release.yml's "Build dashboard for
