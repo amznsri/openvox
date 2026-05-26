@@ -293,6 +293,23 @@ export const api = {
       body: JSON.stringify({ session_id: sessionId, name: name || "" }),
     }),
 
+  // ── OAuth integrations (Phase 1.2 / 1.5) ──────────────────────────
+  // Status: list connected Google accounts + whether OAuth client is
+  // configured at the deployment level (501 if not — wizard / .env).
+  googleIntegrationStatus: () =>
+    http<{ configured: boolean; accounts: GoogleIntegrationAccount[] }>(
+      "/api/v1/integrations/google/status",
+    ),
+  // Helpers that build the URLs the page navigates to. The /start
+  // endpoint 302's to Google's consent screen, so we navigate the
+  // browser directly rather than fetching JSON.
+  googleIntegrationStartUrl: () => `${BASE}/api/v1/integrations/google/start`,
+  disconnectGoogleIntegration: (email: string) =>
+    http<{ ok: boolean; email: string; revoke_succeeded: boolean | null }>(
+      `/api/v1/integrations/google/${encodeURIComponent(email)}/disconnect`,
+      { method: "DELETE" },
+    ),
+
   // ── Setup Assistant (Session 10) ──────────────────────────────────
   setupAssistantSingleton: () =>
     http<Agent>("/api/v1/templates/setup-assistant/singleton"),
@@ -344,6 +361,15 @@ export type McpServerConfig = {
   args?: string[];
   env?: Record<string, string>;
   url?: string;
+};
+
+export type GoogleIntegrationAccount = {
+  provider: string;          // always "google" today; future-proofing
+  user_email: string;
+  scopes: string[];
+  expires_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 };
 
 export type McpCatalogueEntry = {

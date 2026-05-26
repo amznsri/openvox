@@ -14,6 +14,7 @@ import {
   Mic,
   Github,
   Clock,
+  Link as LinkIcon,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -39,6 +40,11 @@ const sections = [
       { href: "/dashboard/schedules", label: "Schedules", icon: Clock },
       { href: "/dashboard/evals", label: "Evals", icon: ClipboardCheck },
       { href: "/dashboard/providers", label: "Providers", icon: Plug },
+      // Phase 1.5 — third-party OAuth integrations (Gmail, Calendar, …).
+      // Surfaced as a dedicated sidebar entry rather than buried in
+      // Settings because "connect my Gmail" is a first-class onboarding
+      // step for the productivity templates.
+      { href: "/dashboard/integrations", label: "Integrations", icon: LinkIcon },
       { href: "/dashboard/observability", label: "Observability", icon: BarChart3 },
       { href: "/dashboard/settings", label: "Settings", icon: Settings },
     ],
