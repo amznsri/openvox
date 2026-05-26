@@ -2071,6 +2071,59 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     install.sh script (curl-bash smoke on a clean container).
     Filed as a follow-up.
 
+### Foreign-key enforcement finally on (Session 18 — v0.2.12)
+
+95. **SQLite ran with `PRAGMA foreign_keys = OFF` for 20+ releases.**
+    Every `ForeignKey()` declaration in `models.py` was decorative
+    — even hard FK constraints (Session.agent_id, Transcript.session_id,
+    Document.agent_id, DocumentChunk.document_id, JobRun.job_id) were
+    being silently ignored at the DB level. The whole reason the
+    agent-delete route grew its 30-line manual cascade chain (bugs
+    #29 → #30 → #53) was that **the DB-level cascade was never
+    actually doing anything**. SQLite enforces FKs only when the
+    per-connection `foreign_keys` PRAGMA is on, and we never set it.
+    *Fix*: `db/session.py:_wire_sqlite_foreign_keys` adds an
+    `@event.listens_for(engine, "connect")` listener that issues
+    `PRAGMA foreign_keys = ON` on every new SQLite connection (skips
+    on other dialects). Verified by
+    `test_fk_cascade.py::test_sqlite_foreign_keys_pragma_is_on` which
+    reads the PRAGMA on a real connection from the pool.
+    *Migration 0003_fk_cascade.py* adds `ON DELETE CASCADE` to the
+    5 hard FKs via SQLite's "create new, copy rows, swap" idiom
+    (introspects the live schema via `PRAGMA table_info` so the
+    `_new` table mirrors whatever additive columns / quirks the
+    DB picked up across v0.1.x → v0.2.x).
+    The in-route manual cascade in `agents.py:delete_agent` stays
+    for now as belt-and-braces — but if the manual chain is ever
+    removed, the cascade tests in `test_fk_cascade.py` (which
+    delete via raw ORM, not the route) catch the regression.
+    **Lesson**: any DB with FK semantics needs the
+    "is enforcement actually on" check at engine setup. SQLite's
+    default-off is famous-enough that we shouldn't have missed it,
+    but the same trap exists in other databases too — MySQL has
+    `foreign_key_checks`, some Postgres configs disable triggers,
+    etc. A `SELECT * FROM <child> WHERE <fk_col>` returning rows
+    that don't exist in the parent is the diagnostic.
+
+### Tag-push trigger flake (Session 18 — A3 investigation)
+
+96. **GitHub Actions occasionally drops a `push: tags: ['v*']`
+    event without explanation.** Hit once in 20 releases: v0.2.10's
+    tag was successfully pushed (confirmed via `git ls-remote`) but
+    the `release.yml` workflow's run list never recorded the push
+    event. v0.2.6 → v0.2.9 + v0.2.11 onwards all fired automatically.
+    *Recovery*: manual `gh workflow run release.yml --ref vX.Y.Z
+    -f version=X.Y.Z` dispatches the same workflow. Worked
+    cleanly for v0.2.10. No data lost; the only cost is the
+    operator noticing + running the command.
+    *Why no fix is queued*: 1 missed event in 20 successful firings
+    is consistent with GitHub Actions transient-incident rates.
+    Adding a safety-net cron job that polls "is there a tag with
+    no corresponding workflow run?" is overkill for the cost.
+    The `workflow_dispatch` recovery is documented in the
+    `release.yml` docstring header so future operators know the
+    command without having to dig.
+
 ---
 
 ## 9. Known constraints / environment quirks

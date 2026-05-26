@@ -8,6 +8,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -142,7 +144,41 @@ def get_engine():
             future=True,
         )
         _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False, class_=AsyncSession)
+        _wire_sqlite_foreign_keys(_engine)
     return _engine
+
+
+def _wire_sqlite_foreign_keys(engine) -> None:
+    """Issue ``PRAGMA foreign_keys = ON`` on every new SQLite connection.
+
+    SQLite ships with foreign-key enforcement OFF by default — every
+    ``ForeignKey()`` declaration in ``models.py`` is purely
+    descriptive until this PRAGMA is set. D9 (v0.2.12) wires it up so
+    ``ondelete="CASCADE"`` actually fires when a parent row is
+    deleted. Before this PR, the in-route cascade chain in
+    ``agents.py:delete_agent`` was doing ALL the work; the FK
+    declarations were just documentation.
+
+    The event listener fires on every new physical connection (not
+    every connection-pool checkout — that would be wasteful). Pool
+    pre-ping is already on, so connection lifecycle is healthy.
+
+    Postgres / other engines ignore this — the check on
+    ``dialect.name == "sqlite"`` keeps the listener tightly scoped.
+    """
+    sync_engine = engine.sync_engine if hasattr(engine, "sync_engine") else engine
+
+    @event.listens_for(sync_engine, "connect")
+    def _on_connect(dbapi_connection, connection_record):  # noqa: ANN001
+        # `dialect.name` isn't available off the dbapi_connection alone;
+        # check the engine we closed over.
+        if sync_engine.dialect.name != "sqlite":
+            return
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys = ON")
+        finally:
+            cursor.close()
 
 
 async def init_db() -> None:

@@ -91,7 +91,9 @@ class Session(Base):
     __tablename__ = "sessions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id"), nullable=False)
+    agent_id: Mapped[str] = mapped_column(
+        ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
 
     # Channel: web | phone | whatsapp | telegram | api
     channel: Mapped[str] = mapped_column(String(20), default="web")
@@ -141,7 +143,9 @@ class Transcript(Base):
     __tablename__ = "transcripts"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
+    )
 
     role: Mapped[str] = mapped_column(String(20))  # user | assistant | system | tool
     text: Mapped[str] = mapped_column(Text)
@@ -192,7 +196,9 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id"), nullable=False)
+    agent_id: Mapped[str] = mapped_column(
+        ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
+    )
     name: Mapped[str] = mapped_column(String(300))
     mime_type: Mapped[str] = mapped_column(String(100), default="")
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
@@ -210,7 +216,13 @@ class DocumentChunk(Base):
     __tablename__ = "document_chunks"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), nullable=False)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    # Soft FK: redundant given document_id (cascading through Document
+    # → DocumentChunk already covers the "delete agent" path). Kept
+    # as a plain indexed String so the existing query patterns work
+    # unchanged. Promotion to a hard FK is a D9-v2 follow-up.
     agent_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     chunk_index: Mapped[int] = mapped_column(Integer, default=0)
     page: Mapped[int] = mapped_column(Integer, default=0)
@@ -279,7 +291,10 @@ class JobRun(Base):
     __tablename__ = "job_runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    job_id: Mapped[str] = mapped_column(ForeignKey("scheduled_jobs.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("scheduled_jobs.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="running")  # running|success|error
