@@ -243,6 +243,10 @@ async def agent_text_turn(agent_id: str, body: TurnRequest) -> dict[str, Any]:
             raise HTTPException(404, "agent not found")
         system_prompt = a.system_prompt
         skill_ids = list(a.skills or [])
+        # Capture mcp_servers as a plain list-of-dicts BEFORE we exit
+        # the session — JSON columns become detached lazy-load proxies
+        # otherwise and reading them outside the session raises.
+        mcp_servers = list(a.mcp_servers or [])
         llm_id = a.llm_provider
         llm_model = a.llm_model
         temperature = a.temperature
@@ -252,10 +256,59 @@ async def agent_text_turn(agent_id: str, body: TurnRequest) -> dict[str, Any]:
     if not isinstance(llm, LLMProvider) or not llm.is_available():
         raise HTTPException(400, f"LLM provider '{llm_id}' unavailable")
 
+    # Bootstrap any MCP servers this agent declared — see the
+    # ``open_agent_mcp`` docstring for the asymmetry-bug fix this
+    # solves. The rest of the turn runs inside the async-context so the
+    # MCP subprocesses get torn down on exit (success OR exception).
+    from openvox.mcp import open_agent_mcp
+
+    async with open_agent_mcp(mcp_servers) as mcp_extras:
+        return await _run_text_turn(
+            agent_id=agent_id,
+            body=body,
+            llm=llm,
+            llm_model=llm_model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            skill_ids=skill_ids,
+            mcp_extras=mcp_extras,
+        )
+
+
+async def _run_text_turn(
+    *,
+    agent_id: str,
+    body: "TurnRequest",
+    llm: "LLMProvider",
+    llm_model: str,
+    temperature: float,
+    max_tokens: int,
+    system_prompt: str,
+    skill_ids: list[str],
+    mcp_extras: list,
+) -> dict[str, Any]:
+    """Inner body of ``agent_text_turn`` — runs the LLM ↔ skill loop.
+
+    Pulled out so the outer handler can wrap it in the ``open_agent_mcp``
+    async-context cleanly; everything that touches the SkillRunner /
+    LLM lives in here.
+    """
+    import json
+
+    from openvox.providers.base import LLMConfig, LLMMessage
+    from openvox.skills import SkillContext
+    from openvox.skills.runner import SkillRunner
+
     runner = SkillRunner(
         skill_ids=skill_ids,
         ctx=SkillContext(agent_id=agent_id, metadata={"source": "agent_text_turn"}),
+        extra_skills=mcp_extras,
     )
+
+    # `user_text` was validated as non-empty by the outer handler;
+    # re-derive from `body` here so the inner function is self-contained.
+    user_text = (body.user_text or "").strip()
 
     # Build a fresh message list — system prompt + caller-supplied
     # history + the new user turn. We're not persisting history here;
