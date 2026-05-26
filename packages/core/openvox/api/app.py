@@ -203,7 +203,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="OpenVox Core",
         description="Voice agent pipeline (STT + LLM + TTS + RTC + telephony).",
-        version="0.2.6",
+        version="0.2.7",
         lifespan=_lifespan,
     )
     app.add_middleware(

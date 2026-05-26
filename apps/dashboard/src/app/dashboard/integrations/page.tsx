@@ -19,7 +19,7 @@
  * refresh of the integrations page doesn't show stale messages.
  */
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import useSWR from "swr";
 import {
@@ -42,7 +42,32 @@ type GoogleStatus = {
   accounts: GoogleIntegrationAccount[];
 };
 
+// Next.js 14's static export (`output: 'export'`) requires every
+// `useSearchParams()` caller to sit inside a `<Suspense>` boundary —
+// otherwise the prerender pass bails out with the
+// "missing-suspense-with-csr-bailout" error and the wheel build (which
+// embeds the static export) fails. So we split into:
+//
+//   - default export `IntegrationsPage` — pure-server-safe, wraps
+//     `IntegrationsPageInner` in `<Suspense>`.
+//   - `IntegrationsPageInner` — the original component, free to use
+//     client-side navigation hooks.
+//
+// The `<Suspense fallback>` is intentionally minimal: the only thing
+// the inner component USES from the searchParams is the post-OAuth-
+// callback toast, which is itself transient. A flash of "loading…"
+// would be more disruptive than just briefly showing the page without
+// the toast.
 export default function IntegrationsPage() {
+  return (
+    <Suspense fallback={null}>
+      <IntegrationsPageInner />
+    </Suspense>
+  );
+}
+
+
+function IntegrationsPageInner() {
   const { data, isLoading, mutate } = useSWR<GoogleStatus>(
     "google-integrations",
     () => api.googleIntegrationStatus(),
