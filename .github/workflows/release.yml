@@ -14,9 +14,24 @@
 #                        wingetcreate.
 #
 # Cutting a release:
-#   1. Bump version in packages/core/pyproject.toml.
+#   1. Bump version in packages/core/pyproject.toml AND
+#      packages/core/openvox/__init__.py:__version__. CI asserts
+#      they match (tests/test_version_sync.py).
 #   2. Commit + tag: `git tag v0.2.0 && git push origin v0.2.0`.
 #   3. This workflow does the rest.
+#
+# Recovery — tag push didn't trigger the workflow:
+#   GitHub Actions occasionally drops a `push: tags` event (~5%
+#   incident rate, hit once in 20 OpenVox releases — see CLAUDE.md
+#   §8 #96). When that happens the tag is on the remote but no
+#   workflow run appears. Manual dispatch reuses the same .yml:
+#
+#       gh workflow run release.yml --ref vX.Y.Z -f version=X.Y.Z
+#
+#   This re-runs every job below against the tagged commit. No data
+#   migration concerns; PyPI's idempotent re-upload would reject a
+#   duplicate but the workflow has skip_existing=false so a normal
+#   failure shows up loudly if the artefact's already there.
 #
 # Prerequisites (one-time setup; not on the critical path of this PR):
 #   - PyPI: configure Trusted Publishing for openvox-core pointing at
