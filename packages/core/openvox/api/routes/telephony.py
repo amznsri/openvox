@@ -691,75 +691,92 @@ async def _handle_telegram_update(
         voice_id = a.voice_id
         voice_lang = a.voice_language
         skill_ids = list(a.skills or [])
+        # Capture mcp_servers as a plain list-of-dicts before the
+        # session closes — the JSON column becomes a detached
+        # lazy-load proxy otherwise. See the open_agent_mcp docstring
+        # for why this transport (and every other text-mode transport)
+        # now boots MCP per-turn the same way the voice WS already did.
+        mcp_servers = list(a.mcp_servers or [])
 
-    runner = SkillRunner(
-        skill_ids=skill_ids,
-        ctx=SkillContext(
-            agent_id=agent_id,
-            metadata={"source": "telegram", "caller_id": str((message.get("from") or {}).get("id") or "")},
-        ),
-    )
+    # Bootstrap any MCP servers this agent declared so the LLM
+    # actually sees Gmail / Calendar / Notion / etc. tools — without
+    # this, the SkillRunner gets only the built-in `a.skills` list,
+    # which for the productivity templates is just `["get_time"]`
+    # and the LLM dutifully tells the user "configure your Google
+    # OAuth on the MCP tab" (the system prompt's fallback for
+    # missing tools).
+    from openvox.mcp import open_agent_mcp
 
-    messages = [
-        LLMMessage(role="system", content=system_prompt),
-        LLMMessage(role="user", content=user_text),
-    ]
-    cfg = LLMConfig(
-        model=llm_model,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        stream=False,
-        tools=runner.tool_specs() or None,
-    )
-
-    # Skill loop — same shape as orchestrator._llm_turn / agent_text_turn.
-    # Bounded at 6 iterations (CLAUDE.md §8 #46).
     answer = ""
-    try:
-        for _iter in range(6):
-            last_chunk = None
-            async for chunk in llm.chat_stream(messages, cfg):
-                last_chunk = chunk
-            if last_chunk is None:
-                break
-            delta = last_chunk.delta or ""
-            answer += delta
-            tool_calls = last_chunk.tool_calls or []
-            if not tool_calls:
-                break
-            # Append the assistant tool_calls message (Ark / OpenAI
-            # contract — see CLAUDE.md §8 #18).
-            messages.append(
-                LLMMessage(role="assistant", content=delta, tool_calls=tool_calls)
-            )
-            for tc in tool_calls:
-                fn = tc.get("function") or {}
-                name = fn.get("name") or ""
-                raw_args = fn.get("arguments") or "{}"
-                try:
-                    parsed_args = _json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                except _json.JSONDecodeError:
-                    parsed_args = {"_raw": raw_args}
-                if not isinstance(parsed_args, dict):
-                    parsed_args = {"_value": parsed_args}
-                logger.info("telegram skill_call: %s args=%s", name, parsed_args)
-                result = await runner.invoke(name, parsed_args)
+    async with open_agent_mcp(mcp_servers) as mcp_extras:
+        runner = SkillRunner(
+            skill_ids=skill_ids,
+            ctx=SkillContext(
+                agent_id=agent_id,
+                metadata={"source": "telegram", "caller_id": str((message.get("from") or {}).get("id") or "")},
+            ),
+            extra_skills=mcp_extras,
+        )
+
+        messages = [
+            LLMMessage(role="system", content=system_prompt),
+            LLMMessage(role="user", content=user_text),
+        ]
+        cfg = LLMConfig(
+            model=llm_model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=False,
+            tools=runner.tool_specs() or None,
+        )
+
+        # Skill loop — same shape as orchestrator._llm_turn / agent_text_turn.
+        # Bounded at 6 iterations (CLAUDE.md §8 #46).
+        try:
+            for _iter in range(6):
+                last_chunk = None
+                async for chunk in llm.chat_stream(messages, cfg):
+                    last_chunk = chunk
+                if last_chunk is None:
+                    break
+                delta = last_chunk.delta or ""
+                answer += delta
+                tool_calls = last_chunk.tool_calls or []
+                if not tool_calls:
+                    break
+                # Append the assistant tool_calls message (Ark / OpenAI
+                # contract — see CLAUDE.md §8 #18).
                 messages.append(
-                    LLMMessage(
-                        role="tool",
-                        tool_call_id=tc.get("id") or "",
-                        name=name,
-                        content=_json.dumps(result, ensure_ascii=False),
-                    )
+                    LLMMessage(role="assistant", content=delta, tool_calls=tool_calls)
                 )
-        else:
-            answer = (answer or "") + (
-                "\n\n(I had to abandon a tool loop — please try a simpler question.)"
-            )
-    except Exception as e:
-        logger.exception("telegram llm call failed")
-        await tg.send_text(bot_token, chat_id, f"(model error: {e})")
-        return
+                for tc in tool_calls:
+                    fn = tc.get("function") or {}
+                    name = fn.get("name") or ""
+                    raw_args = fn.get("arguments") or "{}"
+                    try:
+                        parsed_args = _json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except _json.JSONDecodeError:
+                        parsed_args = {"_raw": raw_args}
+                    if not isinstance(parsed_args, dict):
+                        parsed_args = {"_value": parsed_args}
+                    logger.info("telegram skill_call: %s args=%s", name, parsed_args)
+                    result = await runner.invoke(name, parsed_args)
+                    messages.append(
+                        LLMMessage(
+                            role="tool",
+                            tool_call_id=tc.get("id") or "",
+                            name=name,
+                            content=_json.dumps(result, ensure_ascii=False),
+                        )
+                    )
+            else:
+                answer = (answer or "") + (
+                    "\n\n(I had to abandon a tool loop — please try a simpler question.)"
+                )
+        except Exception as e:
+            logger.exception("telegram llm call failed")
+            await tg.send_text(bot_token, chat_id, f"(model error: {e})")
+            return
     answer = (answer or "").strip()
 
     # Persist the assistant reply + finalize the Session row. Even when
