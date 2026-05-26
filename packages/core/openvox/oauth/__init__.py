@@ -26,6 +26,10 @@ from openvox.oauth.store import (
     list_oauth_integrations,
     set_oauth_token,
 )
+# Provider-specific submodule — re-exported so callers can do
+#   ``from openvox.oauth import google``
+# rather than the longer ``from openvox.oauth.google import …``.
+from openvox.oauth import google  # noqa: F401
 
 __all__ = [
     "OAuthTokenBundle",
@@ -33,4 +37,5 @@ __all__ = [
     "get_oauth_token",
     "delete_oauth_token",
     "list_oauth_integrations",
+    "google",
 ]

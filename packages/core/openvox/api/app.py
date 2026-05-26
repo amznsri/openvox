@@ -27,6 +27,7 @@ from openvox.api.routes import (
     telephony,
     templates as templates_routes,
 )
+from openvox.api.routes.integrations import google as integrations_google
 from openvox.api.ws import twilio_stream as twilio_ws
 from openvox.api.ws import voice as voice_ws
 from openvox.config import get_settings
@@ -230,6 +231,17 @@ def create_app() -> FastAPI:
     app.include_router(evals_routes.router, prefix="/api/v1/evals", tags=["evals"])
     app.include_router(playground.router, prefix="/api/v1/playground", tags=["playground"])
     app.include_router(storage_routes.router, prefix="/storage", tags=["storage"])
+    # Per-provider OAuth integrations (Phase 1.2). The API router goes
+    # under /api/v1/integrations/google/* for management; the callback
+    # router is mounted at the root so Google can redirect to
+    # http://localhost:<port>/oauth/google/callback (the URI we
+    # registered with the Cloud Console).
+    app.include_router(
+        integrations_google.api_router,
+        prefix="/api/v1/integrations/google",
+        tags=["integrations"],
+    )
+    app.include_router(integrations_google.oauth_callback_router, tags=["integrations"])
     app.include_router(voice_ws.router)
     app.include_router(twilio_ws.router)
 
