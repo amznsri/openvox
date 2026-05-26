@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openvox-core"
-version = "0.2.8"
+version = "0.2.9"
 description = "Local-first, open-source voice agent platform — install with pip, run as a daemon, no Docker required."
 readme = "README.md"
 license = { text = "Apache-2.0" }
