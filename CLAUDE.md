@@ -607,15 +607,45 @@ Important file pointers:
     calendar-scheduler / executive-assistant templates default to
     the native skills; MCP variants preserved as power-user
     alternative.
-  - Released as **v0.2.6** to PyPI + brew + WinGet.
+  - Released as **v0.2.6** to PyPI + brew + WinGet (and **v0.2.7**
+    same-day hotfix for a `useSearchParams`/Suspense regression —
+    see bug #93).
   - **Phase 1.7 — Google OAuth verification** (1-2 wks turnaround)
     still pending; only test-users can use the Connect Gmail flow
     until verification completes.
 
+- **Session 18 — Phase 2: People API name-to-email lookup**
+  (2026-05-26, PR #36). The Executive Assistant can now resolve
+  "schedule with my dentist" even with no Gmail history — saved
+  Google Contacts get a first-class lookup path.
+  - **Scope expansion**: added
+    `https://www.googleapis.com/auth/contacts.readonly` to
+    `DEFAULT_SCOPES`. `include_granted_scopes=true` (Phase 1.2)
+    means existing connections merge it cleanly on reconnect.
+  - **`resolve_contact` skill** (`google_workspace.py`): calls
+    People API `people:searchContacts`, returns name + email(s) +
+    photo + organizations. Email-less contacts filtered out
+    (skill is name → EMAIL). Multiple matches preserve server-
+    sorted order so the LLM can disambiguate.
+  - **Warmup-on-empty pattern**: People API's search index needs
+    a one-time warmup; the skill detects empty initial response,
+    fires `query=""`, retries once — all self-contained.
+  - **Scope-error UX**: 403 PERMISSION_DENIED → "open Integrations
+    tab, reconnect to grant contacts.readonly". This is THE
+    common production failure (Phase 1 users haven't re-consented).
+  - **Exec Assistant prompt** rewrites the "resolve attendee by
+    name" sub-section as an explicit 3-tier chain:
+    resolve_contact → search_contacts_in_gmail → ask the user.
+    With "DO NOT skip steps" + a disambiguation tip using the
+    new `organizations` field.
+  - Skill count: 10 (was 9). Test count: 204 (+9 over Phase 1).
+  - Will ship as part of **v0.2.8** alongside any side-quest
+    fixes that land before the next release.
+
 ### 🚧 In progress
-- (none — Session 18 Phase 1 wrapped. Phases 2–5 next: People API,
-  Speech-to-Speech via OpenAI Realtime, GTM polish, CRM via MCP.
-  See `docs/PLANNING_SESSION18.md`.)
+- (none — Session 18 Phase 2 wrapped. Phases 3–5 next: Speech-to-
+  Speech via OpenAI Realtime, GTM polish, CRM via MCP. See
+  `docs/PLANNING_SESSION18.md`.)
 
 ### ⏳ Pending / roadmap
 - **Speech-to-Speech (S2S)** — placeholder. OpenAI Realtime works today as alternative.
