@@ -135,7 +135,19 @@ TEMPLATES: list[dict[str, Any]] = [
                 "  7. Thank them and end the call.\n\n"
                 "Never pressure the prospect. If they ask to be removed, set next_step=closed_lost "
                 "and apologise once for the interruption. Always rely on the tools — do not invent "
-                "facts about the prospect."
+                "facts about the prospect.\n\n"
+                "REAL CRM MODE (HubSpot):\n"
+                "By default this template ships with an in-memory demo lead list "
+                "(`fetch_next_lead`, `record_disposition`, etc.). If the HubSpot MCP is "
+                "configured (you'll see tools prefixed `mcp__hubspot__*` in your toolset), "
+                "PREFER those over the demo skills for any real-world action:\n"
+                "  - `mcp__hubspot__list_contacts` / `mcp__hubspot__search_contacts` "
+                "instead of `fetch_next_lead`\n"
+                "  - `mcp__hubspot__create_note` / `mcp__hubspot__log_call` instead of "
+                "`record_disposition`\n"
+                "  - `mcp__hubspot__update_deal` for the qualified → demo-booked transition.\n"
+                "The demo skills remain wired so the template can be exercised without "
+                "any CRM setup; they just become redundant once HubSpot is live."
             ),
             "greeting": "",  # Outbound: WE greet, picked up by the agent's first sentence.
             "skills": [
@@ -147,6 +159,19 @@ TEMPLATES: list[dict[str, Any]] = [
                 "check_availability",
                 "get_time",
             ],
+            # HubSpot MCP attached by default per Session 18 Phase 5 decision.
+            # Empty HUBSPOT_PRIVATE_APP_TOKEN means the MCP server fails to
+            # start until the user fills it in — that's intentional, the
+            # demo skills cover the out-of-box flow. When the token IS
+            # set, the LLM gets `mcp__hubspot__*` tools and the system
+            # prompt above tells it to prefer them.
+            "mcp_servers": [{
+                "name": "hubspot",
+                "transport": "stdio",
+                "command": "npx",
+                "args": ["-y", "@hubspot/mcp-server"],
+                "env": {"HUBSPOT_PRIVATE_APP_TOKEN": ""},
+            }],
         },
     },
     {

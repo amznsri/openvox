@@ -104,5 +104,37 @@
     "icon": "📅",
     "category": "productivity",
     "setup_hint": "Set GOOGLE_OAUTH_CREDENTIALS=/path/to/keys.json in the env block above (same Desktop App keys.json you used for the Gmail MCP works here). Then — one-time, interactively — run: `GOOGLE_OAUTH_CREDENTIALS=/path/to/keys.json npx -y @cocal/google-calendar-mcp auth`. This opens a browser, completes consent, and writes tokens to ~/.config/google-calendar-mcp/tokens.json. Without that step the MCP probe lists tools but every tool call returns 'No authenticated accounts found'."
+  },
+  {
+    "id": "hubspot",
+    "name": "HubSpot",
+    "tagline": "Read + write contacts, deals, companies; log calls + notes. Recommended CRM path for the SDR template — most-maintained MCP server in the HubSpot ecosystem.",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@hubspot/mcp-server"],
+    "env_required": ["HUBSPOT_PRIVATE_APP_TOKEN"],
+    "env_optional": [],
+    "docs_url": "https://developers.hubspot.com/docs/api/working-with-oauth",
+    "icon": "🟧",
+    "category": "crm",
+    "setup_hint": "Create a Private App in your HubSpot portal (Settings → Integrations → Private Apps → Create). Grant scopes: crm.objects.contacts.{read,write}, crm.objects.deals.{read,write}, crm.objects.companies.{read,write}, crm.objects.calls.{read,write}. Copy the generated Access Token and paste it as HUBSPOT_PRIVATE_APP_TOKEN in the env block above. The token is the only auth — no browser OAuth dance."
+  },
+  {
+    "id": "salesforce",
+    "name": "Salesforce",
+    "tagline": "Query + update Leads, Contacts, Opportunities, log tasks. Alternative to HubSpot for Salesforce-native sales teams.",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@salesforce-community/mcp-server-salesforce"],
+    "env_required": [
+      "SALESFORCE_USERNAME",
+      "SALESFORCE_PASSWORD",
+      "SALESFORCE_SECURITY_TOKEN"
+    ],
+    "env_optional": ["SALESFORCE_INSTANCE_URL"],
+    "docs_url": "https://github.com/salesforce-community/salesforce-mcp-server",
+    "icon": "☁️",
+    "category": "crm",
+    "setup_hint": "Salesforce auth is two-factor: SALESFORCE_PASSWORD is your account password; SALESFORCE_SECURITY_TOKEN is the per-user token you reset under Settings → My Personal Information → Reset Security Token (Salesforce emails it to you). Both must be filled in. SALESFORCE_INSTANCE_URL is only needed if you're on a sandbox or non-standard pod (e.g. https://your-domain.my.salesforce.com)."
   }
 ]
