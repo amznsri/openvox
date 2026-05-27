@@ -107,29 +107,71 @@ const PHRASINGS: Phrasing[] = [
 ];
 
 
+/** Replace intra-phrase punctuation with whitespace and collapse
+ *  runs of whitespace. Case-preserving — used for arg extraction.
+ *
+ *  Browser STT (Chrome / Edge cloud recogniser, Safari local) loves
+ *  to insert commas / periods that a typed query wouldn't have. The
+ *  user says "create from template Email Assistant"; the recogniser
+ *  returns "Create from template, Email Assistant." — a comma after
+ *  "template" and a trailing period. Our prefix list expects literal
+ *  `"create from template "` (with a SPACE between "template" and
+ *  the arg), so the comma kills the prefix match and the whole thing
+ *  falls through to Tier 1 fuzzy search. The user sees no "Create
+ *  from…" action card and concludes the command is broken.
+ *
+ *  We treat `[.,;:!?]` as soft delimiters — they collapse to a single
+ *  space — so "create from template, email assistant." normalises to
+ *  "create from template email assistant" and matches cleanly. The
+ *  original `query` is still passed back as `raw` for callers that
+ *  want the verbatim text (e.g. Hit titles). */
+function normalisePhrase(query: string): string {
+  return query
+    // Only strip punctuation that's TERMINAL — at end of string or
+    // immediately before whitespace. Preserves internal punctuation
+    // so email addresses ("alice@example.com"), URLs, and decimals
+    // pass through intact. Without this lookahead, "disconnect
+    // alice@example.com" would normalise to "disconnect
+    // alice@example com" and break the fuzzy match against stored
+    // OAuth account emails.
+    .replace(/[.,;:!?](?=\s|$)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** Try every phrasing in order; return the first match. */
 export function parseActionCommand(query: string): ActionMatch | null {
   const raw = query;
-  const lower = query.trim().toLowerCase();
-  if (!lower) return null;
+  // Bare "?" is the shortest help trigger we accept — and the
+  // normaliser would strip it (since it's terminal) leaving an
+  // empty string. Special-case it before normalising. Same for
+  // multi-punct variants like "??" / "?!" which are still clearly
+  // a help request from a confused user.
+  const trimmedRaw = query.trim();
+  if (/^[?!]+$/.test(trimmedRaw)) return { kind: "help", arg: "", raw };
+  // `cased` keeps the user's original case so the arg displays nicely
+  // ("ACME" stays "ACME", "Mira" stays "Mira"). `lower` is just for
+  // case-insensitive prefix matching — fuzzy `score()` downstream is
+  // already case-insensitive, so the arg's case is purely cosmetic.
+  const cased = normalisePhrase(query);
+  if (!cased) return null;
+  const lower = cased.toLowerCase();
 
   for (const p of PHRASINGS) {
     if (p.requiresArg) {
       if (lower.startsWith(p.prefix)) {
-        const arg = query.trim().slice(p.prefix.length).trim();
+        // Slice the case-preserving form so "test ACME" returns
+        // "ACME", not "acme". Use the same offset as the prefix
+        // match (lengths match because punctuation→space is 1:1).
+        const arg = cased.slice(p.prefix.length).trim();
         if (arg) return { kind: p.kind, arg, raw };
       }
     } else {
-      // No-arg commands accept the exact phrasing OR the phrasing
-      // followed by punctuation. "help." and "help?" both count.
+      // No-arg commands. "help" exactly, OR "help" + punctuation
+      // (which normalisePhrase already stripped). Post-normalise
+      // there's no punctuation in `lower`, so an exact-equals check
+      // covers "help" / "help." / "help?".
       if (lower === p.prefix) return { kind: p.kind, arg: "", raw };
-      if (lower.startsWith(p.prefix)) {
-        const tail = lower.slice(p.prefix.length).trim();
-        // Allow nothing or a punctuation-only tail (".", "?", "!").
-        if (!tail || /^[.!?]+$/.test(tail)) {
-          return { kind: p.kind, arg: "", raw };
-        }
-      }
     }
   }
   return null;

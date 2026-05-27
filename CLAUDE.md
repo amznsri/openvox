@@ -2124,6 +2124,94 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     `release.yml` docstring header so future operators know the
     command without having to dig.
 
+### Command palette + dashboard polish (Session 18 — v0.2.19)
+
+97. **Topbar popover trapped inside header's stacking context.**
+    The Tier 1/2 search popover has `z-50`, but lived inside a
+    `<header>` styled with `bg-background/40 backdrop-blur-xl`.
+    `backdrop-filter` creates a new stacking context per CSS spec,
+    so the popover's z-50 only ranks WITHIN the header. The
+    header itself was z-auto, same as `<main>` (the sibling that
+    follows it in DOM order). Two `z-auto` siblings → DOM order
+    wins → `<main>` rendered above the popover's contents where
+    they vertically overlapped. User-visible symptom: type `help`,
+    see the help reference, but page text bleeds THROUGH the
+    solid-bg popover where they overlap. The previous v0.2.16
+    "use fully-opaque bg-popover" fix made the popover opaque
+    against its own background but didn't solve the cross-
+    sibling stacking issue.
+    *Fix*: add `relative z-40` to the `<header>` element itself
+    (`apps/dashboard/src/components/nav/topbar.tsx`). Explicit
+    z-index beats z-auto in same-parent siblings, so the entire
+    header (including its inner popover) now wins against `<main>`.
+    **Lesson**: any element with `backdrop-filter`, `transform`,
+    `filter`, `opacity < 1`, `isolation`, or `mix-blend-mode`
+    creates a new stacking context. Children's z-indices only
+    matter within that context. If the children need to render
+    above sibling-of-parent elements, the PARENT needs an explicit
+    z-index too. The chrome-devtools "3D Stacking Contexts" panel
+    surfaces this visually — useful when a "z-index 99999 doesn't
+    work!" symptom comes up.
+
+98. **STT punctuation broke action-command prefix matching.**
+    The Tier 2 action-command parser (`command-actions.ts`) did
+    literal prefix matching against phrases like
+    `"create from template "` (with a trailing SPACE). Browser
+    SpeechRecognition cheerfully inserts commas and periods that
+    a typed query wouldn't have: a real Chrome transcript of
+    "create from template Email Assistant" comes back as
+    `"Create from template, Email Assistant."` — a comma between
+    "template" and "Email Assistant" plus a trailing period.
+    Result: `lower.startsWith("create from template ")` returns
+    FALSE (because of the comma), parser returns null, falls
+    through to Tier 1 fuzzy search, no "Create from…" action
+    card surfaces. User concludes the command is broken even
+    though their phrasing was identical to the help reference.
+    Same pattern bit `"test, Acme Support."` and
+    `"open, agents."`.
+    *Fix*: new `normalisePhrase()` helper strips terminal
+    punctuation — `[.,;:!?]` that's at end-of-string or
+    immediately followed by whitespace — and collapses runs of
+    whitespace. The lookahead `(?=\s|$)` is the load-bearing
+    part: it preserves INTERNAL punctuation, so
+    `"disconnect alice@example.com"` keeps its dot in
+    `example.com`. Bare `"?"` is special-cased before the
+    normaliser runs (otherwise the normaliser would strip it
+    entirely and the user's "what can I do?" shortcut breaks).
+    Smoke test count grew 46 → 53 to cover the punctuation
+    cases.
+    **Lesson — STT input is NEVER as clean as typed input.**
+    Every action-grammar parser that accepts voice transcripts
+    must tolerate at minimum: punctuation insertions
+    (commas/periods between words), extra whitespace, casing
+    drift (initial-caps on common nouns). Test cases must
+    include real STT transcripts, not just hand-typed examples
+    — otherwise the parser passes its own tests but breaks in
+    production.
+
+99. **Playground never read `?agent=<id>` from the URL.** Four
+    entry points pass `?agent=<id>` when sending the user to
+    `/dashboard/playground`: the Agents list "Test" button, the
+    Agent edit page "Test" button, and the voice/typed
+    "test <name>" command from the topbar palette. The
+    Playground page's `selectedAgent` state initialised to `""`
+    and never consulted the URL, so the Configuration card's
+    Agent dropdown stuck at "Ad-hoc (use settings below)"
+    regardless. User feedback: "this is causing confusion".
+    *Fix*: add `useSearchParams()` + eagerly seed `selectedAgent`
+    from `?agent=`. Wrap the page's default export in
+    `<Suspense fallback=…>` per CLAUDE.md §8 #93 (Next.js
+    static-export requires Suspense around any component that
+    calls `useSearchParams`). The existing useEffect at line ~55
+    then auto-populates system_prompt / llm_model / etc. from
+    the selected agent — no further wiring needed.
+    **Lesson**: when ANY entry point passes a query param to a
+    page, the receiving page MUST read it. Same rule as #38 in
+    reverse — if a producer writes to a slot, the consumer
+    needs to read it. CI lint candidate: grep for
+    `href="/dashboard/<page>?<key>=" patterns and assert the
+    target page has a `searchParams.get("<key>")` reference.
+
 ---
 
 ## 9. Known constraints / environment quirks
