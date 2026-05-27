@@ -37,7 +37,8 @@ TypeScript to extend any piece.
 - 🔌 **Provider-agnostic** — Anthropic · AssemblyAI · BytePlus · Cartesia · Deepgram · DeepSeek
   · ElevenLabs · Gemini · OpenAI · Whisper. Pick per agent, mix per layer.
 - 🏠 **Self-hosted, no telemetry** — SQLite + filesystem out of the box. Audio + text travel
-  only to providers you configure. Run fully on-device with local Whisper + Ollama + Piper.
+  only to providers you configure. Local Whisper STT is supported today; the LLM + TTS layers
+  are pluggable, so you can wire in local Ollama / Piper / etc. as community providers.
 - 🎯 **Sub-300 ms** end-to-end voice latency through sentence-level token streaming.
 - 📞 **Multi-channel from day one** — same agent over web RTC, phone (Twilio), WhatsApp
   Business, Telegram. Channels share one pipeline; one agent reaches every surface.
@@ -170,16 +171,17 @@ publish.
 
 Provider-neutral by design. Mix and match per agent through the dashboard or `.env`:
 
-| Layer       | Supported providers                                                                                    |
-| ----------- | ------------------------------------------------------------------------------------------------------ |
-| **LLM**     | Anthropic · BytePlus · DeepSeek · Gemini · OpenAI · *(any OpenAI-compatible endpoint)*                |
-| **STT**     | AssemblyAI · BytePlus · Deepgram · Whisper *(local or hosted)*                                         |
-| **TTS**     | BytePlus · Cartesia · ElevenLabs · OpenAI TTS                                                          |
-| **VAD**     | Silero *(local ONNX)* · BytePlus VAD                                                                   |
-| **RTC**     | Browser WebSocket *(default)* · BytePlus RTC                                                           |
-| **Phone**   | Twilio                                                                                                  |
-| **Chat**    | WhatsApp Business · Telegram · WeChat Work · Lark                                                      |
-| **Storage** | Local filesystem · AWS S3 · MinIO · BytePlus TOS · GCS · Alibaba OSS                                   |
+| Layer       | Supported providers                                                                                       |
+| ----------- | --------------------------------------------------------------------------------------------------------- |
+| **LLM**     | Anthropic · BytePlus · DeepSeek · Gemini · OpenAI · *(any OpenAI-compatible endpoint)*                    |
+| **STT**     | AssemblyAI · BytePlus · Deepgram · Whisper *(local or hosted)*                                            |
+| **TTS**     | BytePlus · Cartesia · ElevenLabs · OpenAI TTS                                                             |
+| **S2S**     | OpenAI Realtime *(single-WS replacement for the STT → LLM → TTS chain)*                                   |
+| **VAD**     | Silero *(local ONNX, server-side barge-in)*                                                               |
+| **RTC**     | BytePlus RTC *(optional; the default voice path is plain browser WebSocket → daemon at :8000)*            |
+| **Phone**   | Twilio Media Streams                                                                                      |
+| **Chat**    | WhatsApp Business · WhatsApp Personal *(QR sidecar)* · Telegram *(inbound + outbound)* · WeChat Work + Lark *(scaffolded — callback wiring done, crypto pending real-account testing)* |
+| **Storage** | Local filesystem · AWS S3 · MinIO *(via S3-compatible endpoint)* · BytePlus TOS                           |
 
 > **First-run tip:** BytePlus gives you LLM + STT + TTS under a single API key, which is the
 > lowest-friction way to try OpenVox. Swap any layer per agent once you're up.
@@ -203,13 +205,13 @@ voice-podcast generation are scaffolded as future provider slots.
    │   └──────────┬───────────────────┘         ──────────────────  (S2S mode,
    │              │                                                 sub-150 ms first-byte)
    │              ├────► SQLite (default) | Postgres
-   │              ├────► ~/.openvox/storage (default) | TOS / S3 / GCS / OSS / MinIO
+   │              ├────► ~/.openvox/storage (default) | BytePlus TOS / S3 / MinIO
    │              └────► silero VAD (local ONNX) — server-side barge-in
    │
    ├─ phone     ── Twilio Media Streams
    ├─ WhatsApp  ── Business Cloud API (+ optional Personal QR bridge)
    ├─ Telegram  ── inbound polling or webhook · outbound /telegram/send
-   └─ WeChat    ── Work / Lark audio bridge
+   └─ WeChat    ── Work / Lark adapters scaffolded (crypto pending real creds)
 ```
 
 A pipx (or Homebrew) install runs **one process** — the FastAPI daemon at `:8000` —
