@@ -144,7 +144,7 @@ DEFAULT_RATES: dict[str, ProviderRates] = {
     # S2S is a follow-up (D.s2s-pricing) once we instrument the
     # bridge to track audio-second meters.
     "openai_realtime": ProviderRates(
-        llm_usd_per_1m_input=5.00,    # text tokens, gpt-4o-realtime-preview
+        llm_usd_per_1m_input=5.00,    # text tokens, gpt-realtime
         llm_usd_per_1m_output=20.00,
         # Audio I/O — $100/1M audio tokens in, $200/1M audio tokens
         # out. Realtime samples at 24 kHz; OpenAI's "audio token" is
@@ -155,7 +155,7 @@ DEFAULT_RATES: dict[str, ProviderRates] = {
         # The output-audio rate is captured in `notes` until D.s2s-
         # pricing extends ProviderRates with explicit audio-out fields.
         stt_usd_per_minute=0.12,
-        model_name="gpt-4o-realtime-preview-2024-12-17",
+        model_name="gpt-realtime",
         source_url="https://platform.openai.com/docs/guides/realtime",
         verified_at="2026-05-27",
         notes=(
