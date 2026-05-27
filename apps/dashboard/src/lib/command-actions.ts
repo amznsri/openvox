@@ -35,6 +35,7 @@
  */
 
 export type ActionCommandKind =
+  | "open_page"
   | "test_agent"
   | "create_from_template"
   | "connect_gmail"
@@ -80,6 +81,19 @@ const PHRASINGS: Phrasing[] = [
 
   { kind: "disconnect", prefix: "disconnect ",   requiresArg: true },
 
+  // Open-page verbs. Multiple phrasings cover the natural English
+  // ways a user might say it — "Open agents", "go to evals",
+  // "show me playground" etc. The arg (everything after the verb)
+  // gets fuzzy-resolved against the PAGES catalog in topbar.tsx.
+  // Suffix-strip ("agents page" → "agents") happens in the consumer
+  // so the parser stays pure.
+  { kind: "open_page", prefix: "open ",           requiresArg: true },
+  { kind: "open_page", prefix: "go to ",          requiresArg: true },
+  { kind: "open_page", prefix: "navigate to ",    requiresArg: true },
+  { kind: "open_page", prefix: "show me ",        requiresArg: true },
+  { kind: "open_page", prefix: "show ",           requiresArg: true },
+  { kind: "open_page", prefix: "take me to ",     requiresArg: true },
+
   // Exact-match commands (no argument).
   { kind: "connect_gmail", prefix: "connect gmail",     requiresArg: false },
   { kind: "connect_gmail", prefix: "connect google",    requiresArg: false },
@@ -122,6 +136,43 @@ export function parseActionCommand(query: string): ActionMatch | null {
 }
 
 
+/** Strip trailing nav-y words from an "open <X>" argument so the
+ *  fuzzy matcher sees a clean page name. Voice transcripts and
+ *  natural typing both produce "agents page" / "evals tab" — the
+ *  trailing word is noise. Order matters: "section" is checked
+ *  AFTER "tab" so "agents tab section" still strips both. */
+const STRIPPABLE_SUFFIXES = [
+  "page",
+  "tab",
+  "section",
+  "screen",
+  "view",
+];
+
+export function stripNavSuffix(arg: string): string {
+  let s = arg.trim();
+  // Strip repeatedly — "agents page tab" → "agents page" → "agents".
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const sfx of STRIPPABLE_SUFFIXES) {
+      const lower = s.toLowerCase();
+      if (lower.endsWith(" " + sfx)) {
+        s = s.slice(0, -(sfx.length + 1)).trim();
+        changed = true;
+      } else if (lower === sfx) {
+        // Edge case: bare "open page" / "open tab" — arg becomes
+        // empty after strip. Caller treats empty arg as "no
+        // resolvable target".
+        s = "";
+        changed = true;
+      }
+    }
+  }
+  return s;
+}
+
+
 /** Static help content — rendered when query parses as `help`.
  *  Kept in this file (not topbar.tsx) so it sits next to the
  *  command definitions and stays in sync if a new phrasing is
@@ -131,6 +182,7 @@ export const HELP_SECTIONS: { title: string; items: string[] }[] = [
     title: "Navigation",
     items: [
       "Type a page name: agents, playground, evals, settings, …",
+      "Or say it: 'open agents', 'go to evals', 'show me playground'",
       "Cmd+K (Ctrl+K) focuses the search from anywhere",
       "↑↓ to navigate results, Enter to open, Esc to close",
     ],
