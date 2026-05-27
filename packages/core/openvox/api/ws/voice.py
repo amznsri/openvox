@@ -33,10 +33,13 @@ from openvox.db import db_session
 from openvox.db.models import Agent, Transcript
 from openvox.db.models import Session as DBSession
 from openvox.pipeline.orchestrator import SessionConfig, VoiceSession
+from openvox.pipeline.s2s_bridge import S2SBridge
 from openvox.providers import ProviderType, get_registry
 from openvox.providers.base import (
     AudioChunk,
     LLMProvider,
+    S2SConfig,
+    S2SProvider,
     STTConfig,
     STTProvider,
     TTSConfig,
@@ -133,7 +136,21 @@ async def voice_ws(ws: WebSocket) -> None:
         logger.info("voice ws disconnected")
     finally:
         if session is not None:
-            await session.end_audio()
+            try:
+                await session.end_audio()
+            except Exception:
+                logger.exception("session.end_audio() failed during teardown")
+            # S2SBridge is an async context manager — it owns a live
+            # WS connection to the upstream S2S provider that MUST be
+            # closed or the OpenAI Realtime / similar server will keep
+            # the slot until its idle timeout. VoiceSession isn't a
+            # context manager (pipeline mode owns no provider socket
+            # itself), so the hasattr-check is the discriminator.
+            if hasattr(session, "__aexit__"):
+                try:
+                    await session.__aexit__(None, None, None)
+                except Exception:
+                    logger.exception("S2S session teardown failed")
         if forward_task is not None:
             forward_task.cancel()
             try:
@@ -178,8 +195,22 @@ async def voice_ws(ws: WebSocket) -> None:
                 logger.exception("could not finalize voice session row")
 
 
-async def _build_session(ctrl: dict) -> tuple[VoiceSession, "MCPSessionManager | None"] | None:
-    """Build a VoiceSession + (optional) MCP manager.
+async def _build_session(ctrl: dict) -> tuple[object, "MCPSessionManager | None"] | None:
+    """Build a voice session + (optional) MCP manager.
+
+    Two session shapes today:
+      - :class:`VoiceSession` — pipeline mode (STT → LLM → TTS)
+      - :class:`S2SBridge` — S2S mode (single WS to OpenAI Realtime,
+        with the bridge translating events to the same TurnEvent
+        shape the WS forwarder already understands)
+
+    Selection rule:
+      1. If ``agent.s2s_provider`` is non-empty AND the named provider
+         is registered AND available (key present), build the bridge.
+      2. Otherwise fall through to pipeline mode.
+      3. If bridge construction throws (e.g. WS connect fails), log
+         + fall back to pipeline. The user gets a working call rather
+         than a hard error.
 
     Returns a tuple so the caller can close the MCP manager when the WS
     ends. None on failure (agent missing or providers unavailable).
@@ -206,6 +237,7 @@ async def _build_session(ctrl: dict) -> tuple[VoiceSession, "MCPSessionManager |
             temperature = a.temperature
             max_tokens = a.max_tokens
             vad_id = (getattr(a, "vad_provider", None) or "silero")
+            s2s_id = (getattr(a, "s2s_provider", None) or "")
     else:
         stt_id = ctrl.get("stt_provider", "byteplus")
         tts_id = ctrl.get("tts_provider", "byteplus")
@@ -226,6 +258,75 @@ async def _build_session(ctrl: dict) -> tuple[VoiceSession, "MCPSessionManager |
         temperature = float(ctrl.get("temperature", 0.7))
         max_tokens = int(ctrl.get("max_tokens", 2048))
         vad_id = (ctrl.get("vad_provider") or "silero")
+        s2s_id = (ctrl.get("s2s_provider") or "")
+
+    # ── S2S mode branch (Phase 3 PR-B) ─────────────────────────────
+    #
+    # When the agent (or ad-hoc ctrl) picks an S2S provider, skip
+    # the STT/LLM/TTS lookup entirely — the single S2S session
+    # subsumes all three. The bridge handles MCP-bridged skills the
+    # same way pipeline mode does, so we still spin up the manager
+    # below for tool calling.
+    if s2s_id:
+        s2s_provider = reg.get(ProviderType.S2S, s2s_id)
+        if isinstance(s2s_provider, S2SProvider) and s2s_provider.is_available():
+            # Build MCP first — bridge needs the runner with bridged
+            # skills, same as the pipeline path below.
+            mcp_mgr = None
+            extra_skills: list = []
+            if mcp_servers:
+                from openvox.mcp import MCPSessionManager
+                mcp_mgr = MCPSessionManager(mcp_servers)
+                try:
+                    await mcp_mgr.__aenter__()
+                    extra_skills = list(mcp_mgr.skills)
+                except Exception as e:
+                    logger.warning("mcp: setup failed in S2S mode: %s", e)
+                    mcp_mgr = None
+                    extra_skills = []
+            from openvox.skills import SkillContext
+            from openvox.skills.runner import SkillRunner
+            runner = SkillRunner(
+                skill_ids=skills,
+                ctx=SkillContext(agent_id=agent_id or "", metadata={"source": "ws_voice_s2s"}),
+                extra_skills=extra_skills,
+            )
+            s2s_cfg = S2SConfig(
+                model=llm_model or "",
+                instructions=sys_prompt,
+                # OpenAI Realtime voices are alloy/echo/shimmer/etc.
+                # Agent.voice_id may carry a BytePlus voice id from a
+                # legacy config — pass it through; the adapter falls
+                # back to "alloy" on unknown values.
+                voice=(voice_id or "alloy"),
+                temperature=temperature,
+                tools=runner.tool_specs() or None,
+            )
+            try:
+                bridge = S2SBridge(
+                    provider=s2s_provider,
+                    config=s2s_cfg,
+                    skill_runner=runner,
+                    input_sample_rate=int(ctrl.get("sample_rate", 16000)),
+                )
+                await bridge.__aenter__()
+                logger.info("S2S session opened via %s (agent_id=%s)", s2s_id, agent_id or "<ad-hoc>")
+                return bridge, mcp_mgr
+            except Exception as e:
+                # Failover to pipeline. Tear down the MCP manager
+                # we opened above so we don't leak subprocesses.
+                logger.warning("S2S bridge build failed (%s) — falling back to pipeline", e)
+                if mcp_mgr is not None:
+                    try:
+                        await mcp_mgr.__aexit__(None, None, None)
+                    except Exception:
+                        pass
+                    mcp_mgr = None
+        else:
+            logger.info(
+                "S2S provider %r not available (registered=%s) — using pipeline",
+                s2s_id, isinstance(s2s_provider, S2SProvider),
+            )
 
     stt = reg.get(ProviderType.STT, stt_id)
     tts = reg.get(ProviderType.TTS, tts_id)
@@ -286,12 +387,20 @@ async def _build_session(ctrl: dict) -> tuple[VoiceSession, "MCPSessionManager |
 
 
 async def _forward_events(
-    session: VoiceSession,
+    session: object,
     ws: WebSocket,
     metrics: dict | None = None,
     started_at: datetime | None = None,
     db_session_id: str = "",
 ) -> None:
+    """Forward events from either a VoiceSession or an S2SBridge.
+
+    Both expose ``run()`` yielding TurnEvents with the same shape
+    (kind / text / audio / sample_rate / encoding / data). The
+    forwarder doesn't care which is which — it just iterates and
+    routes audio frames to the WS binary channel + text events to
+    the JSON channel.
+    """
     try:
         async for ev in session.run():
             # Persist user_final + assistant_done as Transcript rows so

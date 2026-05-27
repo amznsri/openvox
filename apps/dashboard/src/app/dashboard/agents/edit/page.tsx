@@ -252,6 +252,47 @@ function AgentEditPage() {
         <TabsContent value="voice">
           <Card>
             <CardContent className="pt-6 space-y-4">
+              {/*
+                Voice-mode toggle (Phase 3 PR-B, v0.2.24).
+
+                "Pipeline" = the long-standing STT → LLM → TTS flow,
+                with the per-component providers chosen below.
+
+                "S2S (OpenAI Realtime)" = single-WS voice. The three
+                pipeline fields (STT/LLM/TTS) become hints (the model
+                field still picks the Realtime variant when set; voice
+                id still selects the Realtime voice name when it's one
+                of alloy/echo/shimmer/etc.). Anything else is ignored
+                in S2S mode.
+
+                The dashed-warning subtitle calls out that S2S needs
+                an OpenAI API key configured in Settings — without it
+                the server falls back to pipeline at session start
+                rather than failing the call.
+              */}
+              <div>
+                <Label>Voice mode</Label>
+                <Select
+                  value={form.s2s_provider || ""}
+                  onChange={(e) => set("s2s_provider", e.target.value)}
+                >
+                  <option value="">Pipeline (STT → LLM → TTS)</option>
+                  <option value="openai_realtime">
+                    S2S — OpenAI Realtime (requires OpenAI key)
+                  </option>
+                </Select>
+                {form.s2s_provider === "openai_realtime" && (
+                  <p className="text-xs text-muted-foreground mt-1.5">
+                    Single-WS voice via wss://api.openai.com/v1/realtime.
+                    First-byte latency ~120 ms vs. ~300 ms pipeline.
+                    Skills + MCP tools still work via Realtime's
+                    function-calling. STT/LLM/TTS settings below are
+                    ignored in this mode; the &ldquo;Voice ID&rdquo;
+                    field selects the Realtime voice (alloy / echo /
+                    shimmer / etc.).
+                  </p>
+                )}
+              </div>
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <Label>LLM provider</Label>

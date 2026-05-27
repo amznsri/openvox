@@ -48,6 +48,11 @@ class AgentIn(BaseModel):
     voice_map: dict[str, str] = Field(default_factory=dict)
     # "silero" (default) | "none" — controls server-side VAD interrupt path.
     vad_provider: str = "silero"
+    # Speech-to-Speech provider id. Empty (default) = pipeline mode
+    # (stt + llm + tts fields above are used). Populated values like
+    # "openai_realtime" make the WS voice route open an S2S session
+    # against the named provider instead. Phase 3 PR-B, v0.2.24.
+    s2s_provider: str = ""
 
 
 class AgentOut(AgentIn):
@@ -79,6 +84,11 @@ def _to_out(a: Agent) -> dict[str, Any]:
         "mcp_servers": a.mcp_servers or [],
         "voice_map": a.voice_map or {},
         "vad_provider": getattr(a, "vad_provider", "silero") or "silero",
+        # `s2s_provider` was added in v0.2.24. Use getattr so a fresh
+        # daemon talking to an older DB schema (very brief window
+        # between alembic migration 0005 running and the column
+        # being populated on the row) doesn't AttributeError.
+        "s2s_provider": getattr(a, "s2s_provider", "") or "",
         "status": a.status,
         "created_at": a.created_at.isoformat() if a.created_at else "",
         "updated_at": a.updated_at.isoformat() if a.updated_at else "",

@@ -349,6 +349,10 @@ export type Agent = {
   channels: Record<string, unknown>;
   mcp_servers: McpServerConfig[];
   voice_map: Record<string, string>;
+  // Speech-to-Speech provider id. Empty string = pipeline mode
+  // (the stt_/llm_/tts_provider fields above are used). Populated
+  // values today: "openai_realtime". Phase 3 PR-B, v0.2.24.
+  s2s_provider?: string;
   status: string;
   created_at: string;
   updated_at: string;
