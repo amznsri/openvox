@@ -102,5 +102,5 @@ for (const [input, expected] of stripCases) {
 }
 console.log(`stripNavSuffix: ${sPass}/${sPass+sFail} pass`);
 
-console.log(`help sections: ${HELP_SECTIONS.length} (expect 3)`);
+console.log(`help sections: ${HELP_SECTIONS.length} (expect 4)`);
 process.exit(fail + sFail > 0 ? 1 : 0);
