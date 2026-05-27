@@ -1,5 +1,5 @@
 /**
- * @openvox/sdk — TypeScript client for the OpenVox API.
+ * openvox-sdk — TypeScript client for the OpenVox API.
  *
  * Works in Node and the browser. Provides:
  *   - REST helpers for agents, templates, sessions, skills
