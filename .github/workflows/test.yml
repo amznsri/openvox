@@ -213,6 +213,18 @@ jobs:
         working-directory: apps/dashboard
         run: npm install --include=dev --ignore-scripts --no-audit --no-fund
 
+      - name: Lint Tailwind colour classes
+        # Guard against the "phantom class" failure mode documented in
+        # CLAUDE.md §8 #100 — `bg-popover` looks legitimate but the
+        # theme has no `popover` key in tailwind.config.ts, so Tailwind
+        # emits no CSS rule and the element renders with NO background.
+        # This script (scripts/lint-tailwind-classes.mjs) parses the
+        # tailwind config + every TSX file's `bg-*` / `ring-*` /
+        # `fill-*` / `stroke-*` / etc. classes and fails on any
+        # reference to a colour key that isn't in the theme.
+        working-directory: apps/dashboard
+        run: node scripts/lint-tailwind-classes.mjs
+
       - name: Build dashboard in static-export mode
         # Same incantation as release.yml's "Build dashboard for
         # static-export bundling" step. If THIS passes, that one
