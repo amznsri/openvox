@@ -621,12 +621,43 @@ export function Topbar({ title }: { title?: string }) {
     //     keeps their 8s to retry without re-clicking
     const top = hits.length > 0 ? hits[0] : null;
     const willNav = top !== null && !top.id.endsWith("-nomatch");
+    // Pages where the user is about to USE A MICROPHONE of their own
+    // — the topbar must NOT keep its recogniser armed there, or the
+    // user's intended-for-the-agent utterance gets dictated into the
+    // search field instead. User report: "I say 'test email
+    // assistant', the Playground opens, I click Tap to talk and
+    // speak to the agent — but my words show up in the OpenVox
+    // search bar because the 8-second rearm is still listening."
+    // The destination owns the mic from the moment we navigate.
+    //
+    // Currently this is just `/dashboard/playground` (voice tab +
+    // Documents tab both capture mic). Future mic-owning routes
+    // (e.g. live RTC test pages, in-page eval recorders) should
+    // be added to this prefix list as they ship.
+    const MIC_OWNING_PREFIXES = ["/dashboard/playground"];
+    const destOwnsMic =
+      !!top?.href &&
+      MIC_OWNING_PREFIXES.some((p) => top!.href!.startsWith(p));
     if (willNav) {
       void go(top!).finally(() => {
         // Clear the input + close the popover. The rearm UI strip
         // takes over the visible "still listening" affordance.
         setQ("");
-        rearmVoice();
+        if (destOwnsMic) {
+          // Hard-stop conversation mode. The user is about to speak
+          // to the agent, not to us. We also explicitly call
+          // recogRef.current?.stop() in case `onend` hasn't fired
+          // yet — race-prevention for fast nav transitions.
+          clearRearmTimer();
+          try {
+            recogRef.current?.stop();
+          } catch {
+            // ignore — recogniser may already have ended
+          }
+          setListening(false);
+        } else {
+          rearmVoice();
+        }
       });
     } else {
       // No usable hit. Keep the popover showing the existing
@@ -771,14 +802,26 @@ export function Topbar({ title }: { title?: string }) {
           </div>
         </div>
         {(open && q.trim()) || listening || voiceError || rearmRemaining > 0 ? (
-          // `bg-popover` (no alpha modifier) resolves to the theme's
-          // fully-opaque popover token. v0.2.15 used `bg-popover/95
-          // backdrop-blur-xl` which evaluated to too-transparent in
-          // the dark-theme palette — page content behind the popover
-          // bled through the help-mode list. A solid background is
-          // what every other shadcn dropdown / popover in the app
-          // uses; matching that is the correct fix.
-          <div className="absolute left-0 right-0 mt-2 rounded-lg border border-border/60 bg-popover shadow-xl z-50 overflow-hidden">
+          // `bg-card` resolves to `hsl(var(--card))` = `240 10% 6%` —
+          // a fully-opaque surface defined in globals.css.
+          //
+          // Previously this used `bg-popover` which LOOKED reasonable
+          // (shadcn convention) but is NOT a colour key in this
+          // project's `tailwind.config.ts`. The theme defines: border,
+          // input, ring, background, foreground, primary, secondary,
+          // muted, accent, card — NO `popover`. So `bg-popover` emitted
+          // no CSS rule, the popover had no background at all, and page
+          // text bled straight through the help list. The earlier "drop
+          // the /95 alpha modifier" fix didn't help because the
+          // underlying class was already a no-op. The v0.2.19 z-index
+          // lift on the header was correct but insufficient on its
+          // own — even a perfectly-stacked invisible background
+          // doesn't block anything. THIS line — switching to `bg-card`,
+          // a real defined opaque colour — is what actually blocks
+          // page content. Future option: add `popover: hsl(var(--popover))`
+          // to tailwind.config + define `--popover` in globals.css if
+          // we want shadcn-canonical naming.
+          <div className="absolute left-0 right-0 mt-2 rounded-lg border border-border/60 bg-card shadow-xl z-50 overflow-hidden">
             {/* Voice-state strip — covers three states:
                  - rearm + listening  → conversation mode countdown
                  - listening (fresh)  → "Listening… speak now"
