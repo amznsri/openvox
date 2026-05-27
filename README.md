@@ -5,9 +5,10 @@
 **The open-source platform for building production voice agents.**
 
 Web, phone, WhatsApp, Telegram. 41 voices, 7 languages out of the box. Pluggable providers — bring
-your own LLM, STT, and TTS. Self-host on a laptop in 60 seconds. Apache-2.0.
+your own LLM, STT, and TTS — or skip the pipeline entirely with OpenAI Realtime (S2S) for
+single-WS sub-150 ms voice. Self-host on a laptop in 60 seconds. Apache-2.0.
 
-[Dashboard](#) · [SDK](#) · [Templates](#templates) · [Architecture](#under-the-hood)
+[Quick install](#quick-install) · [Templates](#33-production-quality-templates) · [Provider matrix](#provider-matrix) · [Architecture](#under-the-hood)
 
 </div>
 
@@ -30,6 +31,9 @@ TypeScript to extend any piece.
 - 🎙️ **Build by voice** — describe the agent you want; the built-in setup assistant picks a
   template, names it, configures the voice, and walks you through publishing. Or use the
   dashboard. Or the SDK.
+- ⚡ **Two voice modes per agent** — choose **Pipeline** (STT → LLM → TTS, ~300 ms first-byte,
+  full provider mix-and-match) or **S2S** via OpenAI Realtime (single WS, ~120 ms first-byte,
+  native function-calling). Toggle per agent.
 - 🔌 **Provider-agnostic** — Anthropic · AssemblyAI · BytePlus · Cartesia · Deepgram · DeepSeek
   · ElevenLabs · Gemini · OpenAI · Whisper. Pick per agent, mix per layer.
 - 🏠 **Self-hosted, no telemetry** — SQLite + filesystem out of the box. Audio + text travel
@@ -54,12 +58,14 @@ openvox start
 
 That's it — ~45 seconds end-to-end. The installer detects Python 3.11+,
 picks `pipx` (or a venv fallback), drops the `openvox` binary on `$PATH`,
-then `openvox start` boots the daemon + opens the dashboard wizard at
-<http://localhost:8000/dashboard/setup>. No compile step, no Docker
-required.
+then `openvox start` boots the daemon and serves the dashboard at
+<http://localhost:8000/dashboard>. On first run, the setup wizard at
+`/dashboard/setup` walks you through pasting your provider keys. No
+compile step, no Docker required.
 
-> Works on macOS + Linux. On Windows, see the WinGet line under
-> *alternative installers* below.
+> Works on macOS + Linux. **Windows** users: pipx is supported
+> (`pipx install openvox-core`); a self-contained `.exe` via WinGet is
+> on the roadmap once a code-signing cert is in place.
 
 ### Alternative installers
 
@@ -73,9 +79,6 @@ pip install openvox-core      # ditto, but conflicts with PEP 668 systems
 
 # Homebrew on macOS — slower (compiles from source) but more brew-native
 brew install amznsri/openvox/openvox
-
-# WinGet — Windows
-winget install OpenVox.OpenVox
 ```
 
 > **Heads-up on Homebrew speed.** brew installs from sdists (compiles
@@ -95,6 +98,26 @@ openvox logs -f          # tail ~/.openvox/logs/openvox.log
 
 `openvox info` shows resolved config (with secrets redacted) — the
 fastest way to debug "is this thing configured?".
+
+### Your first agent (~2 minutes)
+
+1. **Add a provider key** — go to <http://localhost:8000/dashboard/settings/>,
+   click any provider row (OpenAI, BytePlus, Anthropic, …), paste your key,
+   Save. Keys are encrypted at rest in `~/.openvox/openvox.db` with a
+   per-host key in `~/.openvox/secret.key`. Restart the daemon once
+   (`openvox restart`) so the new key takes effect.
+2. **Pick a template** — open <http://localhost:8000/dashboard/templates>
+   and click *Copy template* on any of the 33 templates. Email Assistant
+   and Calendar Scheduler are good if you connected a Google account on
+   the Integrations tab; E-commerce Support and Multilingual Support
+   work out of the box with just an LLM + voice key.
+3. **Test it** — click *Test* on the new agent → Playground opens →
+   **Tap to talk** and have a conversation. Say "Stop" mid-response to
+   interrupt; the audio cuts within ~150 ms.
+
+That's it. Edit the agent's system prompt, attach documents, add MCP
+tools, or publish it to a channel (Twilio, WhatsApp, Telegram) from the
+agent's Channels tab.
 
 ### Production install (Docker mode)
 
@@ -119,24 +142,25 @@ for ngrok).
 > openvox-server openvox-redis` clears the orphan containers
 > before `docker compose up --build` brings up the new layout.
 
-That's it. The dashboard ships with **29 ready-to-run templates** — pick one and you have a
+That's it. The dashboard ships with **33 ready-to-run templates** — pick one and you have a
 working voice agent in under a minute. Or click **"Build by voice"** in the agent creator and
 describe what you want.
 
 ## What ships in the box
 
-### 29 production-quality templates
+### 33 production-quality templates
 
-| Category          | Templates                                                                        |
-| ----------------- | -------------------------------------------------------------------------------- |
-| **Support**       | E-commerce support · Multilingual support (51+ languages) · Hotline (7 languages) |
-| **Productivity**  | Email assistant · Calendar scheduler · Executive assistant (Gmail + Calendar)    |
-| **Sales**         | Outbound SDR · Telesales (7 languages) · Reactivation (7 languages)              |
-| **Knowledge**     | Document Q&A with RAG · Receptionist with in-app bookings                        |
-| **Education**     | Science & Math tutor with worked-example calculator                              |
-| **Finance**       | Stock analyst with live quotes + technical indicators                            |
-| **Analytics**     | Voice analyzer — sentiment, profanity, summarisation                              |
-| **Meta**          | Setup assistant — build new agents conversationally by voice                     |
+| Category          | Templates                                                                                                          |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **Support**       | E-commerce support · Multilingual support (51+ languages) · Hotline (7 languages — EN / ZH / YUE / ES / ID / FR / HI) |
+| **Sales**         | Outbound SDR (BANT + HubSpot MCP) · Telesales (7 languages) · Reactivation (7 languages)                           |
+| **Productivity**  | Email assistant (Gmail) · Calendar scheduler (Google) · Executive assistant (Gmail + Calendar via one OAuth)       |
+| **Front desk**    | Receptionist with in-app bookings                                                                                  |
+| **Knowledge**     | Document Q&A with RAG + image-aware passage lookup                                                                 |
+| **Education**     | Science & Math tutor with worked-example calculator                                                                |
+| **Finance**       | Stock analyst with live quotes + technical indicators                                                              |
+| **Analytics**     | Voice analyzer — sentiment + profanity + summarisation                                                             |
+| **Meta**          | Setup assistant — build new agents conversationally by voice                                                       |
 
 Click **Copy template** in the dashboard to instantiate any of them. Each copy is fully
 editable — change the system prompt, swap the voice, attach documents, add skills, then
@@ -160,35 +184,46 @@ Provider-neutral by design. Mix and match per agent through the dashboard or `.e
 > **First-run tip:** BytePlus gives you LLM + STT + TTS under a single API key, which is the
 > lowest-friction way to try OpenVox. Swap any layer per agent once you're up.
 
-Speech-to-speech, live interpretation, and voice-podcasts are scaffolded as future provider
-slots in the dashboard.
+**Speech-to-speech** (single-WS voice via OpenAI Realtime) ships today as an alternative to
+the STT/LLM/TTS pipeline — toggle it per agent on the Voice tab. Live interpretation and
+voice-podcast generation are scaffolded as future provider slots.
 
-## Architecture
+## Under the hood
 
 ```
-                ┌──────────────────────────────┐
-   browser ─►   │ Next.js dashboard (3000)     │
-                └──────────────┬───────────────┘
-                               │ REST + WS
-                ┌──────────────▼───────────────┐
-   SDKs   ────► │ Node gateway (3001)          │  auth, rate-limit, OAuth
-                └──────────────┬───────────────┘
-                               │ proxy + WS bridge
-                ┌──────────────▼───────────────┐
-   phone  ────► │ Python core (8000)           │  STT ↔ LLM ↔ TTS pipeline
-   WhatsApp ──► │ FastAPI + asyncio + skills   │
-                └──────────────┬───────────────┘
-                               │
-              ┌────────────────┼────────────────┐
-              ▼                ▼                ▼
-       Postgres + Redis    Storage          Providers
-                       (local | TOS | S3 | …)   (plug-ins)
+   browser  ──┐
+              │  REST + WS                ┌──────── 33 templates
+   SDKs    ──►│                           │
+              ▼                           │
+       ┌──────────────────────────────┐   │     STT ─► LLM ─► TTS  (Pipeline mode,
+   ────│ openvox daemon  :8000        │◄──┘     ──────────────────  sentence-streamed,
+   │   │ FastAPI + Python core        │            sub-300 ms first-byte)
+   │   │ + bundled Next.js dashboard  │
+   │   │ + per-session orchestrator   │         OpenAI Realtime WS
+   │   └──────────┬───────────────────┘         ──────────────────  (S2S mode,
+   │              │                                                 sub-150 ms first-byte)
+   │              ├────► SQLite (default) | Postgres
+   │              ├────► ~/.openvox/storage (default) | TOS / S3 / GCS / OSS / MinIO
+   │              └────► silero VAD (local ONNX) — server-side barge-in
+   │
+   ├─ phone     ── Twilio Media Streams
+   ├─ WhatsApp  ── Business Cloud API (+ optional Personal QR bridge)
+   ├─ Telegram  ── inbound polling or webhook · outbound /telegram/send
+   └─ WeChat    ── Work / Lark audio bridge
 ```
 
-The core orchestrator is a single `VoiceSession` per call. It streams mic audio to the STT
-provider, feeds final utterances into the LLM, and forwards token streams to the TTS provider
-in **sentence-sized chunks** so the user hears the first word within a few hundred milliseconds.
-Skill calls run inline through the LLM tool-use loop.
+A pipx (or Homebrew) install runs **one process** — the FastAPI daemon at `:8000` —
+which also serves the static-built Next.js dashboard from the same port. No
+separate gateway, no Redis. The Docker compose stack adds Postgres + a dev-mode
+dashboard on `:3000` for hot-reload, but the production-shaped path is the
+single-binary daemon.
+
+The orchestrator is a `VoiceSession` per call. Pipeline mode streams mic audio
+to STT, feeds final utterances into the LLM, and forwards token streams to TTS
+in **sentence-sized chunks** so the user hears the first word within ~300 ms.
+S2S mode replaces the three-provider chain with a single WebSocket to OpenAI
+Realtime, dropping first-byte latency to ~120 ms. Skills + MCP tools work in
+both modes.
 
 
 ## Extend it
@@ -211,11 +246,9 @@ class GetWeather(BaseSkill):
         return {"city": args["city"], "temp_c": 21}
 ```
 
-Or scaffold one:
-
-```bash
-npx openvox skills new get_weather
-```
+That's it — drop the file in `~/.openvox/skills/` and the daemon hot-reloads it within
+a second (see `openvox/skills/loader.py` for the watcher). Attach the skill to any agent
+on the Skills tab.
 
 ### Add a provider
 
@@ -225,10 +258,16 @@ Implement `STTProvider`, `TTSProvider`, `LLMProvider`, or `RTCProvider` from
 
 ### Use the SDK
 
+> **Heads-up:** the TypeScript + Python SDK packages aren't published yet
+> (clone the repo and link locally — `packages/sdk-ts/` and `packages/sdk-py/`).
+> The REST + WebSocket API at `localhost:8000` is stable and documented; if
+> you want to talk to the daemon today, the HTTP path is the canonical one
+> until the SDKs ship.
+
 ```ts
 import { OpenVoxClient, VoiceSession } from "@openvox/sdk";
 
-const client = new OpenVoxClient("http://localhost:3001");
+const client = new OpenVoxClient("http://localhost:8000");
 const agent = await client.templates.instantiate("ecommerce-support");
 
 const sess = new VoiceSession({
@@ -242,10 +281,10 @@ await sess.start();
 ```python
 from openvox_sdk import OpenVoxClient, VoiceSession, VoiceSessionOptions
 
-client = OpenVoxClient()
+client = OpenVoxClient("http://localhost:8000")
 agent = client.instantiate_template("education-tutor")
 
-async with VoiceSession("http://localhost:3001", VoiceSessionOptions(agent_id=agent["id"])) as s:
+async with VoiceSession("http://localhost:8000", VoiceSessionOptions(agent_id=agent["id"])) as s:
     async for event in s.events():
         print(event)
 ```
@@ -253,16 +292,19 @@ async with VoiceSession("http://localhost:3001", VoiceSessionOptions(agent_id=ag
 ## Repo layout
 
 ```
-openvox-v2/
-├── apps/dashboard/           Next.js 14 dashboard (App Router, Tailwind)
+openvox/
+├── apps/dashboard/                 Next.js 14 dashboard (App Router, Tailwind)
 ├── packages/
-│   ├── core/                 Python — voice pipeline, providers, skills, API
-│   ├── server/               Node.js — REST + WS gateway, telephony hooks
-│   ├── sdk-ts/               TypeScript SDK
-│   ├── sdk-py/               Python SDK
-│   └── cli/                  `openvox` CLI
-├── templates/                Built-in agent templates (catalogue lives in core/api/routes/templates.py)
-└── docker-compose.yml
+│   ├── core/                       Python — voice pipeline, providers, skills,
+│   │                               FastAPI + WebSocket server, S2S bridge,
+│   │                               33 templates, scheduler, observability.
+│   │                               Ships as the `openvox-core` wheel on PyPI.
+│   ├── cli/                        Thin `openvox` CLI (delegates to core).
+│   ├── sdk-ts/                     TypeScript SDK (not yet on npm).
+│   ├── sdk-py/                     Python SDK (not yet on PyPI).
+│   ├── sdk-web/                    Browser-side voice helpers.
+│   └── whatsapp_personal_bridge/   Node sidecar for WhatsApp Personal QR.
+└── docker-compose.yml              core + dashboard + postgres (+ ngrok / whatsapp)
 ```
 
 ## License
