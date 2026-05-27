@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ArrowRight, Bot, FileUp, Loader2, Mic as MicIcon, Search, Send, Sparkles, Square, Upload, User2 } from "lucide-react";
 
@@ -15,11 +16,38 @@ import { AudioPlaybackQueue, captureMicrophone } from "@/lib/voice/audio";
 
 type Line = { role: "user" | "assistant" | "skill" | "system"; text: string; pending?: boolean };
 
-export default function PlaygroundPage() {
+// Default export wrapped in <Suspense> so useSearchParams works under
+// Next.js `output: 'export'` (static export). Same pattern as
+// agents/edit/page.tsx and integrations/page.tsx — see CLAUDE.md §8
+// #93 for the build-time error this prevents.
+export default function PlaygroundPageWrapper() {
+  return (
+    <Suspense fallback={<div className="container py-12 text-muted-foreground">Loading…</div>}>
+      <PlaygroundPage />
+    </Suspense>
+  );
+}
+
+function PlaygroundPage() {
   const { data: agents = [] } = useSWR<Agent[]>("agents", () => api.listAgents());
   const { data: providers = [] } = useSWR<Provider[]>("providers", () => api.listProviders());
 
-  const [selectedAgent, setSelectedAgent] = useState<string>("");
+  // Pre-select an agent when the page is opened via "Test" buttons
+  // (Agents list, Agent edit page, voice/typed "test <name>" command).
+  // All four entry points pass `?agent=<id>` in the URL; without this,
+  // the Configuration card stuck on "Ad-hoc (use settings below)"
+  // regardless of which agent the user had just clicked Test for.
+  const searchParams = useSearchParams();
+  const agentParam = searchParams.get("agent") ?? "";
+  const [selectedAgent, setSelectedAgent] = useState<string>(agentParam);
+  // The query param may arrive BEFORE the agents SWR has resolved; we
+  // accept it eagerly and let the "apply settings" effect below run
+  // once `agents` loads. If the URL param is later changed while the
+  // page is open (e.g. back-button to a previous Test click), sync
+  // the dropdown to match.
+  useEffect(() => {
+    if (agentParam) setSelectedAgent(agentParam);
+  }, [agentParam]);
   const [systemPrompt, setSystemPrompt] = useState(
     "You are a helpful voice assistant. Keep responses under 2 sentences.",
   );

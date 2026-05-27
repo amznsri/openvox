@@ -61,6 +61,17 @@ const cases = [
   ["take me to providers",             "open_page",             "providers"],
   ["open",                             "",                      ""],          // empty arg
   ["go to ",                           "",                      ""],
+
+  // Voice-STT punctuation tolerance. Chrome / Edge cloud recognisers
+  // insert commas + periods that a typed query wouldn't have. Each
+  // of these came from a real STT transcript:
+  ["Create from template, Email Assistant.", "create_from_template", "Email Assistant"],
+  ["test, Acme Support.",              "test_agent",            "Acme Support"],
+  ["open, agents.",                    "open_page",             "agents"],
+  ["go to, evals page.",               "open_page",             "evals page"],
+  ["help.",                            "help",                  ""],
+  ["help?",                            "help",                  ""],
+  ["connect gmail.",                   "connect_gmail",         ""],
 ];
 
 // Suffix-strip cases (separate because they exercise a different

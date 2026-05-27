@@ -705,7 +705,16 @@ export function Topbar({ title }: { title?: string }) {
   };
 
   return (
-    <header className="h-16 flex items-center justify-between gap-3 px-6 border-b border-border/60 bg-background/40 backdrop-blur-xl">
+    // `relative z-40` on the header: `backdrop-blur-xl` creates a
+    // new stacking context per CSS spec, so the popover's `z-50`
+    // only ranks within the header. Without explicit z on the
+    // header itself, header is z-auto — same as <main> — and DOM
+    // order wins: <main> follows <header>, so page text would
+    // render above the popover where they overlap (visible as
+    // "type help, content bleeds through where the help list
+    // overlaps page content"). v0.2.16 made the popover bg
+    // fully opaque; this is the structural counterpart.
+    <header className="relative z-40 h-16 flex items-center justify-between gap-3 px-6 border-b border-border/60 bg-background/40 backdrop-blur-xl">
       <div className="flex items-center gap-3">
         {title && <h1 className="text-base font-semibold">{title}</h1>}
       </div>
