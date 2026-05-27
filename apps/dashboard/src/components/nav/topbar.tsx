@@ -607,21 +607,35 @@ export function Topbar({ title }: { title?: string }) {
   useEffect(() => {
     if (!pendingVoiceNav) return;
     setPendingVoiceNav(false);
-    if (hits.length === 0) return;
-    const top = hits[0];
-    if (top.id.endsWith("-nomatch")) return;
-    // Fire the navigation, then enter conversation mode so the
-    // user can chain commands without another mic click. Async
-    // navigation (action hits with .run callbacks) shouldn't
-    // block the rearm — the rearm timer + nav can race; the
-    // browser handles route changes mid-recognition fine.
-    void go(top).finally(() => {
-      // Clear the input + close the popover. The rearm UI strip
-      // takes over the visible "still listening" affordance.
-      setQ("");
-      // Voice is the trigger — start the follow-up window.
+    // We unconditionally enter conversation mode after a voice
+    // transcript fires, regardless of whether the transcript
+    // resolved to a usable hit. Previously the no-match path
+    // early-returned and the mic went dead — the user reported
+    // this felt like a bug: speaking gibberish (or a slightly-
+    // off phrase) silently dropped them out of conversation
+    // mode and they had to re-click the mic to try again.
+    //
+    // The new shape:
+    //   - usable hit → navigate, then rearm
+    //   - no hits / "no match" placeholder → just rearm; user
+    //     keeps their 8s to retry without re-clicking
+    const top = hits.length > 0 ? hits[0] : null;
+    const willNav = top !== null && !top.id.endsWith("-nomatch");
+    if (willNav) {
+      void go(top!).finally(() => {
+        // Clear the input + close the popover. The rearm UI strip
+        // takes over the visible "still listening" affordance.
+        setQ("");
+        rearmVoice();
+      });
+    } else {
+      // No usable hit. Keep the popover showing the existing
+      // "no match" message + the rearm countdown — the user
+      // sees WHY their command didn't resolve while the timer
+      // ticks down. Don't clear q (the no-match hit is built
+      // from q's content, so clearing would dismiss the hint).
       rearmVoice();
-    });
+    }
     // We intentionally depend ONLY on pendingVoiceNav. Depending on
     // `hits` too would re-fire if the corpora SWR-refetch arrived
     // mid-iteration. The flag is the canonical trigger.
