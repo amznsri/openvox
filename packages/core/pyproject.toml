@@ -4,7 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openvox-core"
-version = "0.2.20"
+# `version` is read from `openvox/__init__.py:__version__` at build
+# time via the `[tool.hatch.version]` block below. Single source of
+# truth — bump the dunder, hatchling propagates the value into the
+# wheel metadata, no two-file sync needed. See bug #45 (stale default
+# drift) for why we converged to this pattern.
+dynamic = ["version"]
 description = "Local-first, open-source voice agent platform — install with pip, run as a daemon, no Docker required."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -167,6 +172,13 @@ Changelog = "https://github.com/amznsri/openvox/blob/main/docs/SESSION_LOG.md"
 # exposes on the user's PATH. Matches the project name people will
 # search for.
 openvox = "openvox.cli:main"
+
+[tool.hatch.version]
+# Hatchling reads __version__ from this file at build time. Bumping
+# the version is now a single edit to `openvox/__init__.py`. The
+# `dynamic = ["version"]` declaration in [project] above is the other
+# half of the contract.
+path = "openvox/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["openvox"]

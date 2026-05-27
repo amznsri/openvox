@@ -1,65 +1,58 @@
-"""Pin the package version to a single source of truth.
+"""Single-source-of-truth check on the package version.
 
-There used to be THREE places hosting the version string:
-  - ``packages/core/pyproject.toml`` (what pip resolves)
-  - ``packages/core/openvox/__init__.py:__version__``
-  - ``packages/core/openvox/api/app.py`` (the FastAPI app's version=)
+Pre-D.hatch-version: there used to be TWO files that both held the
+version string (``pyproject.toml`` + ``openvox/__init__.py``), and
+a regex-based test asserted they matched. Bumping releases meant
+editing both — error-prone enough that v0.2.6 → v0.2.10 shipped
+with the dunder behind by 5 releases (bug #45 family).
 
-The v0.2.6 → v0.2.10 release sweep bumped the first two but missed
-``__init__.py`` for 5 releases, causing ``/health`` to report 0.2.5
-on machines actually running 0.2.10 (see v0.2.11 release notes).
+Post-D.hatch-version (this commit): ``pyproject.toml`` declares
+``dynamic = ["version"]`` and ``[tool.hatch.version]`` points at
+``openvox/__init__.py:__version__``. Hatchling reads the dunder
+at build time and propagates it into wheel metadata. The dunder
+is now the SOLE source of truth — there's nothing for a unit
+test to cross-reference against without spinning up an isolated
+wheel build.
 
-v0.2.12 consolidates: ``app.py`` now reads ``__version__`` from
-``openvox/__init__.py``, so the only TWO files that need to change
-on a version bump are pyproject.toml and __init__.py. This test
-asserts those two stay in lockstep — if a bump touches only one,
-the unit suite fails on every cell of the matrix and the contributor
-sees the mismatch before pushing.
+The post-D.hatch-version verification path:
 
-Long-term: pyproject.toml could also read from __init__ via a
-build-time hatchling hook (``[tool.hatch.version]`` dynamic).
-That's a v0.2.13+ follow-up; this test is the bridge.
+  1. **This test** asserts the dunder is shaped correctly (PEP
+     440-ish: at least three dot-separated numeric components,
+     each starting with a digit). Catches typos like ``0,2,5``
+     or ``v0.2.11`` before the release pipeline starts spending
+     time on broken metadata.
+
+  2. **The release pipeline's ``verify-pypi-install`` job**
+     (CLAUDE.md §8 #94) installs the freshly-published wheel
+     into a clean venv, runs ``openvox version``, and asserts
+     the output equals the new version. That's the genuine
+     end-to-end check that hatchling's dynamic-version hook
+     fired correctly — done against a real install, not the
+     source tree.
+
+This file used to also assert ``importlib.metadata.version(
+"openvox-core") == openvox.__version__`` to catch a regressed
+hatch hook. Removed because it false-positives on editable
+``pip install -e .`` dev installs (the dist-info metadata
+gets pinned at install time and lags the source dunder on
+every bump). The verify-pypi-install CI job is the real
+check.
 """
 
 from __future__ import annotations
 
-import pathlib
-import re
-
 import openvox
-
-
-def _pyproject_version() -> str:
-    """Read ``version`` out of ``pyproject.toml`` without depending on
-    a TOML parser at test time (tomllib is 3.11+ but pinning the
-    parsing logic to the regex keeps the test trivial)."""
-    here = pathlib.Path(__file__).resolve().parent
-    pyproject = here.parent / "pyproject.toml"
-    text = pyproject.read_text()
-    m = re.search(r'^version\s*=\s*"([^"]+)"', text, flags=re.MULTILINE)
-    assert m, f"no version line found in {pyproject}"
-    return m.group(1)
-
-
-def test_pyproject_matches_dunder_version():
-    """pyproject.toml's `version = "X.Y.Z"` MUST equal openvox.__version__."""
-    pyproject_v = _pyproject_version()
-    dunder_v = openvox.__version__
-    assert pyproject_v == dunder_v, (
-        f"version mismatch — pyproject.toml says {pyproject_v!r} but "
-        f"openvox/__init__.py says {dunder_v!r}. Bump BOTH together; "
-        f"that's the convention until the build-time hatchling hook lands."
-    )
 
 
 def test_dunder_version_is_pep440_shape():
     """Catch typos like '0,2,5' or 'v0.2.11' before they hit PyPI.
 
-    Loose check: at least three dot-separated numeric components.
+    Loose check: at least three dot-separated numeric components,
+    each component starts with a digit (allows trailing tags
+    like ``rc1`` / ``post1`` / ``dev0`` after the digit).
     """
     parts = openvox.__version__.split(".")
     assert len(parts) >= 3, f"unexpected version shape: {openvox.__version__!r}"
-    # Each component starts with digits (allow trailing tags like "0rc1").
     for p in parts:
         assert p and p[0].isdigit(), (
             f"version component {p!r} doesn't start with a digit"
