@@ -125,21 +125,36 @@ jobs:
           fi
           echo "value=$v" >> "$GITHUB_OUTPUT"
           echo "Releasing OpenVox v$v"
-      - name: Verify tag matches pyproject.toml version
+      - name: Verify tag matches openvox/__init__.py __version__
         # PyPI is immutable: once 0.x.y uploads, that version number is
-        # burnt forever. If we tag v0.2.0 but forget to bump the version
-        # in pyproject.toml, the wheel still says 0.1.0 → PyPI rejects
-        # as a duplicate. Fail fast here so the mistake is obvious in
-        # the workflow log rather than in the upload step.
+        # burnt forever. If we tag v0.2.0 but forget to bump the dunder,
+        # the wheel still says 0.1.0 → PyPI rejects as a duplicate. Fail
+        # fast here so the mistake is obvious in the workflow log
+        # rather than in the upload step.
+        #
+        # Source of truth: openvox/__init__.py:__version__. After PR #53
+        # (v0.2.21, D.hatch-version) pyproject.toml's version is
+        # dynamic — declared via `[tool.hatch.version]` reading from the
+        # dunder at build time. The earlier check grepped
+        # `^version = ` from pyproject.toml and silently emitted an
+        # empty `file_ver` after the dynamic switch; that's how
+        # v0.2.23's release pipeline tagged-out with an empty mismatch
+        # and PyPI got stuck on v0.2.20 for several releases.
+        # Re-anchoring here to the dunder closes the gap.
         run: |
           tag_ver="${{ steps.version.outputs.value }}"
-          file_ver=$(grep -E '^version = ' packages/core/pyproject.toml | head -1 | sed -E 's/version = "(.+)"/\1/')
-          if [ "$tag_ver" != "$file_ver" ]; then
-            echo "::error::Tag v$tag_ver does not match pyproject.toml version $file_ver."
-            echo "Bump packages/core/pyproject.toml's version field to $tag_ver, commit, then re-tag."
+          file_ver=$(grep -E '^__version__\s*=' packages/core/openvox/__init__.py | head -1 | sed -E 's/__version__[^"]+"([^"]+)".*/\1/')
+          if [ -z "$file_ver" ]; then
+            echo "::error::Could not extract __version__ from packages/core/openvox/__init__.py."
+            echo "If the dunder format changed, update the regex in release.yml."
             exit 1
           fi
-          echo "✓ tag v$tag_ver matches pyproject.toml version $file_ver"
+          if [ "$tag_ver" != "$file_ver" ]; then
+            echo "::error::Tag v$tag_ver does not match openvox/__init__.py __version__ $file_ver."
+            echo "Bump packages/core/openvox/__init__.py's __version__ to $tag_ver, commit, then re-tag."
+            exit 1
+          fi
+          echo "✓ tag v$tag_ver matches openvox/__init__.py __version__ $file_ver"
       - name: Set up Node (for dashboard static build)
         uses: actions/setup-node@v4
         with:
