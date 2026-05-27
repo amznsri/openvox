@@ -293,12 +293,51 @@ function AgentEditPage() {
                   </p>
                 )}
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              {/*
+                When S2S mode is active the pipeline grid below is
+                NOT consulted by the WS voice route — see
+                api/ws/voice.py::_build_session, which short-circuits
+                on agent.s2s_provider before touching STT/LLM/TTS.
+                Greying the grid out (rather than hiding it) preserves
+                the saved values so toggling back to Pipeline mode
+                doesn't lose the per-component config. The Voice ID
+                field stays semi-relevant in S2S — its value is
+                forwarded to Realtime as the voice name when it
+                matches alloy/echo/shimmer/etc. — so we keep it
+                marked but slightly less greyed than the strictly-
+                ignored fields.
+
+                A footnote above the grid surfaces the same info that
+                used to live ONLY under the Voice mode dropdown, so
+                users scanning the page bottom-first see it too.
+              */}
+              {form.s2s_provider === "openai_realtime" && (
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-200/90 flex items-start gap-2">
+                  <span className="font-semibold">S2S mode active —</span>
+                  <span>
+                    fields below are saved but <em>ignored</em> at call
+                    time. Voice mode falls back to the values here only
+                    if your OpenAI key is unavailable when the session
+                    starts (graceful degradation, see daemon log for{" "}
+                    <code className="text-amber-100">S2S session opened</code>{" "}
+                    vs <code className="text-amber-100">falling back to pipeline</code>).
+                  </span>
+                </div>
+              )}
+              <div
+                className={`grid grid-cols-3 gap-3 ${
+                  form.s2s_provider === "openai_realtime"
+                    ? "opacity-50 pointer-events-none"
+                    : ""
+                }`}
+                aria-disabled={form.s2s_provider === "openai_realtime"}
+              >
                 <div>
                   <Label>LLM provider</Label>
                   <Select
                     value={form.llm_provider || "byteplus"}
                     onChange={(e) => set("llm_provider", e.target.value)}
+                    disabled={form.s2s_provider === "openai_realtime"}
                   >
                     <option value="byteplus">BytePlus</option>
                     <option value="openai">OpenAI</option>
@@ -312,6 +351,7 @@ function AgentEditPage() {
                   <Select
                     value={form.stt_provider || "byteplus"}
                     onChange={(e) => set("stt_provider", e.target.value)}
+                    disabled={form.s2s_provider === "openai_realtime"}
                   >
                     <option value="byteplus">BytePlus</option>
                     <option value="deepgram">Deepgram</option>
@@ -324,6 +364,7 @@ function AgentEditPage() {
                   <Select
                     value={form.tts_provider || "byteplus"}
                     onChange={(e) => set("tts_provider", e.target.value)}
+                    disabled={form.s2s_provider === "openai_realtime"}
                   >
                     <option value="byteplus">BytePlus</option>
                     <option value="elevenlabs">ElevenLabs</option>
@@ -333,7 +374,11 @@ function AgentEditPage() {
                 </div>
                 <div>
                   <Label>Model</Label>
-                  <Input value={form.llm_model || ""} onChange={(e) => set("llm_model", e.target.value)} />
+                  <Input
+                    value={form.llm_model || ""}
+                    onChange={(e) => set("llm_model", e.target.value)}
+                    disabled={form.s2s_provider === "openai_realtime"}
+                  />
                 </div>
                 <div>
                   <Label>Voice ID</Label>
@@ -351,6 +396,7 @@ function AgentEditPage() {
                     step="0.1"
                     value={form.voice_speed ?? 1}
                     onChange={(e) => set("voice_speed", parseFloat(e.target.value))}
+                    disabled={form.s2s_provider === "openai_realtime"}
                   />
                 </div>
               </div>
