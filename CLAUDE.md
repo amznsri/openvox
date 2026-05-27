@@ -2212,6 +2212,73 @@ Each entry is a real production bug we tracked down. Future-you, take note.
     `href="/dashboard/<page>?<key>=" patterns and assert the
     target page has a `searchParams.get("<key>")` reference.
 
+### Command palette finale (Session 18 — v0.2.20)
+
+100. **`bg-popover` was a no-op the entire time.** Bugs #97 (v0.2.19
+    header z-index lift) and the earlier v0.2.16 "drop the /95
+    alpha" change BOTH sat on top of an invalid color class. The
+    project's `tailwind.config.ts` defines:
+        `border, input, ring, background, foreground, primary,
+         secondary, muted, accent, card, success, warning, danger,
+         violet, cyan`
+    — **NO `popover` key**. (Vendored shadcn templates use one,
+    but this codebase's theme dropped it.) So `className="bg-popover"`
+    produced no CSS rule, the popover element had no background at
+    all, and every other styling fix on top of that was theatre —
+    the help list "appeared above" the page only insofar as the page
+    text was visible STRAIGHT THROUGH the invisible popover surface.
+    The user reported the same symptom four times across three
+    "fixes"; only inspecting tailwind.config + globals.css surfaced
+    the actual problem.
+    *Real fix*: switch to `bg-card` — a defined opaque colour
+    (`hsl(var(--card))` = `240 10% 6%`). Future cleanup option: add
+    `popover: hsl(var(--popover))` to tailwind.config + define a
+    `--popover` CSS variable in globals.css to match shadcn naming;
+    until then `bg-card` is canonical.
+    **Lesson — the WORST UI bugs are silent class-name typos.**
+    Tailwind doesn't warn when you write `bg-popover` against a
+    theme that doesn't define `popover` — the class is just absent
+    from the generated CSS. The render LOOKS structurally plausible
+    (the `<div>` exists, it has rounded corners and a shadow, its
+    z-index is correct), but the colour layer is missing. Debug
+    workflow next time: when "fix the popover bg" doesn't take,
+    INSPECT the rendered element in DevTools and read the
+    `computed background-color` BEFORE proposing another fix.
+    If it's `rgba(0,0,0,0)` you're chasing a CSS phantom.
+    Filed as a CI lint candidate: parse all `bg-*` / `text-*` /
+    `border-*` classes in `src/**/*.tsx`, intersect with the
+    `colors` keys from tailwind.config — anything not found is a
+    silent typo.
+
+101. **Voice rearm dictates the user's agent words into the search
+    bar.** Voice command "test email assistant" → topbar navigates
+    to `/dashboard/playground?agent=<id>` → finally callback calls
+    `rearmVoice()` which spins up a fresh SpeechRecognition session
+    for 8 seconds. The Playground's "Tap to talk" mic then captures
+    the user's speech for the AGENT — but the topbar's recogniser
+    is ALSO listening, and dictates the same words into the search
+    field. User-visible: "I said 'tell me about my emails today'
+    to the agent and saw my entire sentence typed into the OpenVox
+    command bar instead". By design we want hands-free conversation
+    mode for NAVIGATION (open agents → open evals → open settings),
+    but the moment the user lands somewhere they intend to actually
+    USE A MICROPHONE, the topbar must shut up.
+    *Fix*: new `MIC_OWNING_PREFIXES = ["/dashboard/playground"]`
+    list. After voice nav, if `top.href.startsWith(<any prefix>)`,
+    skip rearm + explicitly `recogRef.current?.stop()` for race-
+    prevention + `clearRearmTimer()` to kill the countdown UI.
+    Future mic-owning routes (live RTC test pages, in-page eval
+    recorders, etc.) get added to the prefix list as they ship.
+    **Lesson — extends #52 (voice sessions leak across navigation).**
+    Mic ownership has to be EXPLICIT and exclusive at any moment.
+    When the topbar listens, the page can't. When the page listens
+    (Playground, recorders), the topbar can't. The rearm-after-nav
+    pattern is fine *unless* the destination owns the mic — at
+    which point rearm is actively harmful. Make the inversion
+    explicit in code (a prefix list rather than implicit "always
+    rearm"). For every new mic-using page, add its path prefix
+    to MIC_OWNING_PREFIXES at the same time.
+
 ---
 
 ## 9. Known constraints / environment quirks
