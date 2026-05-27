@@ -219,11 +219,15 @@ class DocumentChunk(Base):
     document_id: Mapped[str] = mapped_column(
         ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
     )
-    # Soft FK: redundant given document_id (cascading through Document
-    # → DocumentChunk already covers the "delete agent" path). Kept
-    # as a plain indexed String so the existing query patterns work
-    # unchanged. Promotion to a hard FK is a D9-v2 follow-up.
-    agent_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    # D9-v2 (v0.2.21): promoted from soft string to hard FK with
+    # CASCADE. The chunk-by-document cascade above already covers
+    # the "delete agent" path transitively, but the direct FK is
+    # cheap belt-and-braces — defends against any future code path
+    # that inserts a chunk without a corresponding Document row
+    # (shouldn't happen, but the constraint costs nothing).
+    agent_id: Mapped[str] = mapped_column(
+        ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     chunk_index: Mapped[int] = mapped_column(Integer, default=0)
     page: Mapped[int] = mapped_column(Integer, default=0)
     # `kind`: "text" → plain text content; "image" → text contains a URL/data URI.
@@ -256,8 +260,16 @@ class ScheduledJob(Base):
     kind: Mapped[str] = mapped_column(String(40), default="agent_query")
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
 
-    # Optional agent the job is scoped to (FK kept loose — we store the
-    # string id so deleting the agent doesn't cascade-delete the schedule).
+    # Soft FK on purpose: empty agent_id is a valid value for
+    # `audio_batch` kind jobs (which watch a folder, not an agent).
+    # Promoting to a hard FK with nullable=False would reject those
+    # inserts; promoting with nullable=True + SET NULL is workable
+    # but ripples into the dashboard / SDK / scheduler-runner code
+    # which currently treats this as `str`. D9-v2 deliberately
+    # leaves this for a follow-up planning decision (audit-trail
+    # semantics vs cascade-everything). The delete_agent route
+    # still manually deletes scheduled_jobs scoped to the agent
+    # being removed.
     agent_id: Mapped[str] = mapped_column(String(36), default="")
 
     # Trigger.

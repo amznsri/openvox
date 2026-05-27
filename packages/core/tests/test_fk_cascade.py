@@ -274,3 +274,99 @@ async def test_deleting_scheduled_job_cascades_to_job_runs(isolated_db):
     async with db_session() as s:
         rows = (await s.execute(select(JobRun).where(JobRun.job_id == job_id))).scalars().all()
         assert rows == []
+
+
+# ── D9-v2: agent.id → document_chunks.agent_id direct CASCADE ────
+
+
+@pytest.mark.asyncio
+async def test_deleting_agent_directly_cascades_chunks(isolated_db):
+    """D9-v2 (v0.2.21): `document_chunks.agent_id` is now a hard FK
+    with CASCADE. Deleting the agent removes chunks directly, even
+    if the path through the Document parent were broken (e.g. a
+    chunk that somehow got inserted without a matching Document
+    row — defence in depth).
+    """
+    from openvox.db import db_session
+    from openvox.db.models import Document, DocumentChunk
+
+    await _seed_agent("Test agent", "agent-d9v2")
+    async with db_session() as s:
+        doc = Document(
+            agent_id="agent-d9v2",
+            name="x.pdf",
+            mime_type="application/pdf",
+            size_bytes=10,
+            page_count=1,
+        )
+        s.add(doc)
+        await s.flush()
+        s.add(DocumentChunk(document_id=doc.id, agent_id="agent-d9v2", text="hello"))
+
+    async with db_session() as s:
+        rows = (
+            await s.execute(select(DocumentChunk).where(DocumentChunk.agent_id == "agent-d9v2"))
+        ).scalars().all()
+        assert len(rows) == 1
+
+    # Delete the agent — chunks must disappear via the direct
+    # agent_id CASCADE (would also have disappeared via the
+    # document_id → documents.id → agents.id transitive path, but
+    # this test pins the DIRECT path independently).
+    from openvox.db.models import Agent
+    async with db_session() as s:
+        agent = await s.get(Agent, "agent-d9v2")
+        await s.delete(agent)
+
+    async with db_session() as s:
+        rows = (
+            await s.execute(select(DocumentChunk).where(DocumentChunk.agent_id == "agent-d9v2"))
+        ).scalars().all()
+        assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_delete_agent_route_handles_soft_fk_orphans(isolated_db):
+    """After D.cascade-retire, the delete_agent route only manually
+    deletes the THREE remaining soft-FK dependents (EvalRun,
+    Recording, ScheduledJob). The hard-FK chain (Sessions,
+    Transcripts, Documents, DocumentChunks, JobRuns) is handled
+    by DB-level cascades.
+    """
+    from openvox.api.routes.agents import delete_agent
+    from openvox.db import db_session
+    from openvox.db.models import (
+        Agent, Document, DocumentChunk, EvalRun, Recording, ScheduledJob,
+    )
+
+    await _seed_agent("Test agent", "agent-retire")
+
+    async with db_session() as s:
+        # Hard-FK children — should cascade automatically.
+        doc = Document(
+            agent_id="agent-retire", name="d.pdf", mime_type="application/pdf",
+            size_bytes=1, page_count=1,
+        )
+        s.add(doc); await s.flush()
+        s.add(DocumentChunk(document_id=doc.id, agent_id="agent-retire", text="t"))
+
+        # Soft-FK children — route deletes them explicitly.
+        s.add(EvalRun(agent_id="agent-retire", criteria=[], transcript=[]))
+        s.add(Recording(source_agent_id="agent-retire", transcript=[]))
+        s.add(ScheduledJob(
+            agent_id="agent-retire", kind="agent_query", name="x",
+            trigger_type="interval", trigger_expr="1h", payload={},
+            enabled=False,
+        ))
+
+    await delete_agent("agent-retire")
+
+    # Every dependency type — hard AND soft — must be gone.
+    async with db_session() as s:
+        assert (await s.execute(select(Agent).where(Agent.id == "agent-retire"))).first() is None
+        assert (await s.execute(select(Document).where(Document.agent_id == "agent-retire"))).first() is None
+        assert (await s.execute(select(DocumentChunk).where(DocumentChunk.agent_id == "agent-retire"))).first() is None
+        assert (await s.execute(select(EvalRun).where(EvalRun.agent_id == "agent-retire"))).first() is None
+        assert (await s.execute(select(Recording).where(Recording.source_agent_id == "agent-retire"))).first() is None
+        assert (await s.execute(select(ScheduledJob).where(ScheduledJob.agent_id == "agent-retire"))).first() is None
+
