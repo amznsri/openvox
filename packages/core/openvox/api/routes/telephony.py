@@ -543,6 +543,93 @@ async def telegram_disconnect(agent_id: str) -> dict[str, Any]:
     return {"disconnected": True}
 
 
+# ── Telegram outbound (D.tg-out) ─────────────────────────────────────
+# Companion to /telegram/connect's INBOUND path. An outbound channel
+# lets an agent (or a scheduled job, or any internal pipeline) push a
+# message to a Telegram chat without waiting for the user to write
+# first. Common use cases:
+#
+#   - Scheduled summaries: "every Monday 9 AM, post the weekend
+#     incident digest to chat -100123…"
+#   - Event-driven notifications: a skill detects a fault and pings
+#     the on-call group.
+#   - Setup-flow confirmations: when an agent finishes onboarding
+#     via the Setup Assistant, ping the owner's DM.
+#
+# The bot token comes from the agent's `channels.telegram.bot_token`
+# (set during /telegram/connect). The caller doesn't have to know
+# the token — it just specifies the agent.
+
+
+class TelegramSendRequest(BaseModel):
+    agent_id: str
+    # Telegram identifies destinations by integer chat_id (private
+    # chats / groups) or @username (channels / supergroups with a
+    # username). Both are accepted by the bot API's sendMessage; we
+    # forward verbatim. Int comes in as int; @username as str.
+    chat_id: int | str
+    # Empty text → no-op (matches send_text's defensive behaviour).
+    # Long text auto-chunks at 4096 chars to fit Telegram's per-
+    # message limit (see telephony/telegram.py:_chunks).
+    text: str = ""
+
+
+@router.post("/telegram/send")
+async def telegram_send(req: TelegramSendRequest) -> dict[str, Any]:
+    """Send a text message from ``agent_id``'s connected bot to
+    ``chat_id``.
+
+    Failure modes surface as HTTP errors so the caller knows:
+      - 404 if the agent doesn't exist
+      - 400 if the agent isn't connected to Telegram (no token)
+      - 502 if Telegram itself rejects the message (rare — usually
+        means the bot was kicked from the chat, or the chat_id was
+        wrong, or the bot's permissions don't allow messaging)
+
+    Voice replies (an alternative we could add) would be a separate
+    endpoint ``/telegram/send_voice`` taking PCM and synthesising
+    OGG-Opus via the agent's TTS provider before calling
+    ``tg.send_voice``. Deferred until a real use case appears —
+    the scheduled-summary / event-notification flows the route was
+    born for are all text-mode.
+    """
+    from openvox.db import db_session
+    from openvox.db.models import Agent
+    from openvox.telephony import telegram as tg
+    from openvox.utils.text import clean_for_tts
+
+    async with db_session() as s:
+        a = await s.get(Agent, req.agent_id)
+        if a is None:
+            raise HTTPException(404, "agent not found")
+        cfg = (a.channels or {}).get("telegram") or {}
+
+    token = (cfg.get("bot_token") or "").strip()
+    if not token:
+        raise HTTPException(
+            400,
+            "agent has no Telegram bot connected — POST /telegram/connect first",
+        )
+
+    body = (req.text or "").strip()
+    if not body:
+        return {"sent": False, "reason": "empty text"}
+
+    # Apply the same TTS-friendly cleaning we use on inbound voice
+    # responses (CLAUDE.md §8 #50). Even though Telegram renders
+    # text, a user reading the message gets the same benefit —
+    # markdown asterisks and URL noise don't help anyone reading.
+    # Conservative pass; emails, file extensions, ampersands left
+    # alone.
+    body = clean_for_tts(body)
+
+    try:
+        await tg.send_text(token, req.chat_id, body)
+    except Exception as e:
+        raise HTTPException(502, f"telegram delivery failed: {e}") from e
+    return {"sent": True, "chat_id": req.chat_id, "chars": len(body)}
+
+
 @router.post("/telegram/webhook")
 async def telegram_event(request: Request) -> dict[str, Any]:
     """Receive an Update from Telegram and route it through an agent.
