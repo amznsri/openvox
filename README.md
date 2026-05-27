@@ -7,7 +7,7 @@
 Web, phone, WhatsApp, Telegram. 41 voices, 7 languages out of the box. Pluggable providers — bring
 your own LLM, STT, and TTS. Self-host on a laptop in 60 seconds. Apache-2.0.
 
-[Dashboard](#) · [SDK](#) · [Templates](#templates) · [Architecture](docs/architecture.md)
+[Dashboard](#) · [SDK](#) · [Templates](#templates) · [Architecture](#under-the-hood)
 
 </div>
 
@@ -81,8 +81,7 @@ winget install OpenVox.OpenVox
 > **Heads-up on Homebrew speed.** brew installs from sdists (compiles
 > ~5 native deps via clang + rust), so expect 2-5 min vs the one-liner's
 > ~45s. The end result is the same binary; only the install path
-> differs. See [`docs/install.md`](./docs/install.md) for the trade-off
-> in detail.
+> differs.
 
 ### After install — start the daemon
 
@@ -95,10 +94,7 @@ openvox logs -f          # tail ~/.openvox/logs/openvox.log
 ```
 
 `openvox info` shows resolved config (with secrets redacted) — the
-fastest way to debug "is this thing configured?". See
-[`docs/install.md`](./docs/install.md) for per-path details and
-[`docs/install-cli.md`](./docs/install-cli.md) for the source-checkout /
-contributor flow.
+fastest way to debug "is this thing configured?".
 
 ### Production install (Docker mode)
 
@@ -114,13 +110,14 @@ open http://localhost:3000
 
 Brings up four services: core + dashboard + postgres (+ optional
 `--profile whatsapp` for WhatsApp Personal or `--profile tunnel`
-for ngrok). See [`docs/install-docker.md`](./docs/install-docker.md)
-when written (Phase 4).
+for ngrok).
 
 > **Upgrading an existing install?** If you're pulling the latest
-> after a long pause, check [`docs/upgrade-notes.md`](./docs/upgrade-notes.md)
-> — Phase 1 deleted the Node gateway + Redis services, which means a
-> one-time orphan-container cleanup is required.
+> after a long pause and your old install used the v0.1.x Node
+> gateway + Redis stack: those services were deleted in Phase 1.
+> A one-time `docker stop openvox-server openvox-redis && docker rm
+> openvox-server openvox-redis` clears the orphan containers
+> before `docker compose up --build` brings up the new layout.
 
 That's it. The dashboard ships with **29 ready-to-run templates** — pick one and you have a
 working voice agent in under a minute. Or click **"Build by voice"** in the agent creator and
@@ -193,7 +190,6 @@ provider, feeds final utterances into the LLM, and forwards token streams to the
 in **sentence-sized chunks** so the user hears the first word within a few hundred milliseconds.
 Skill calls run inline through the LLM tool-use loop.
 
-See [docs/architecture.md](docs/architecture.md) for the deep dive.
 
 ## Extend it
 
@@ -266,8 +262,7 @@ openvox-v2/
 │   ├── sdk-py/               Python SDK
 │   └── cli/                  `openvox` CLI
 ├── templates/                Built-in agent templates (catalogue lives in core/api/routes/templates.py)
-├── docker-compose.yml
-└── docs/
+└── docker-compose.yml
 ```
 
 ## License

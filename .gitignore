@@ -66,3 +66,11 @@ pnpm-debug.log*
 # Next.js / npm — auto-generated, not source
 apps/dashboard/next-env.d.ts
 apps/dashboard/package-lock.json
+
+# Internal-only working files. CLAUDE.md (project memory for the
+# coding agent) and docs/ (planning notes, session logs, internal
+# READMEs) are maintained in the local clone but NOT pushed to
+# GitHub. The repo's public surface stays code + the top-level
+# README + LICENSE.
+CLAUDE.md
+docs/
