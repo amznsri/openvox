@@ -265,6 +265,43 @@ function PlaygroundPage() {
               ))}
             </Select>
           </div>
+          {/*
+            S2S-mode banner. Pulled from the selected agent's
+            `s2s_provider` field — populated only when the user
+            opted into S2S on the agent edit page. We don't
+            re-implement the toggle here; the playground is for
+            EXERCISING the agent's saved config, not editing it.
+
+            Showing the banner above the system prompt / providers
+            grid (rather than below) means the user sees "this is
+            S2S mode" before scanning the fields that LOOK like
+            they're active. Without this header the saved BytePlus
+            values in the LLM / STT / TTS dropdowns read as
+            "BytePlus is being used right now", when in reality
+            the WS voice route ignores them entirely in S2S mode.
+          */}
+          {(() => {
+            const a = agents.find((x) => x.id === selectedAgent);
+            const s2s = (a?.s2s_provider || "").trim();
+            if (!s2s) return null;
+            return (
+              <div className="rounded-md border border-violet-500/30 bg-violet-500/5 px-3 py-2 text-xs text-violet-200/90 space-y-1">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="h-3.5 w-3.5 text-violet-300" />
+                  <span className="font-semibold">
+                    {s2s === "openai_realtime"
+                      ? "S2S — OpenAI Realtime"
+                      : `S2S — ${s2s}`}
+                  </span>
+                </div>
+                <p>
+                  Single-WS voice. The provider fields below are saved
+                  fallback only and <em>not consulted</em> while S2S is
+                  engaged. To change voice mode, open Agents → Edit.
+                </p>
+              </div>
+            );
+          })()}
           <div>
             <Label>System prompt</Label>
             <Textarea
@@ -273,10 +310,23 @@ function PlaygroundPage() {
               onChange={(e) => setSystemPrompt(e.target.value)}
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          {(() => {
+            const a = agents.find((x) => x.id === selectedAgent);
+            const s2sActive = !!(a?.s2s_provider || "").trim();
+            return (
+              <div
+                className={`grid grid-cols-2 gap-3 ${
+                  s2sActive ? "opacity-50 pointer-events-none" : ""
+                }`}
+                aria-disabled={s2sActive}
+              >
             <div>
               <Label>LLM</Label>
-              <Select value={llmProvider} onChange={(e) => setLlmProvider(e.target.value)}>
+              <Select
+                value={llmProvider}
+                onChange={(e) => setLlmProvider(e.target.value)}
+                disabled={s2sActive}
+              >
                 {provFor("llm").map((p) => (
                   <option key={p.id} value={p.id} disabled={!p.available}>
                     {p.display_name}
@@ -290,6 +340,7 @@ function PlaygroundPage() {
               <Input
                 value={llmModel}
                 onChange={(e) => setLlmModel(e.target.value)}
+                disabled={s2sActive}
                 // Leaving blank is the canonical "use the provider's
                 // configured default" sentinel — surfaced as a
                 // placeholder so users don't think the field is
@@ -299,7 +350,11 @@ function PlaygroundPage() {
             </div>
             <div>
               <Label>STT</Label>
-              <Select value={sttProvider} onChange={(e) => setSttProvider(e.target.value)}>
+              <Select
+                value={sttProvider}
+                onChange={(e) => setSttProvider(e.target.value)}
+                disabled={s2sActive}
+              >
                 {provFor("stt").map((p) => (
                   <option key={p.id} value={p.id} disabled={!p.available}>
                     {p.display_name}
@@ -310,7 +365,11 @@ function PlaygroundPage() {
             </div>
             <div>
               <Label>TTS</Label>
-              <Select value={ttsProvider} onChange={(e) => setTtsProvider(e.target.value)}>
+              <Select
+                value={ttsProvider}
+                onChange={(e) => setTtsProvider(e.target.value)}
+                disabled={s2sActive}
+              >
                 {provFor("tts").map((p) => (
                   <option key={p.id} value={p.id} disabled={!p.available}>
                     {p.display_name}
@@ -319,7 +378,9 @@ function PlaygroundPage() {
                 ))}
               </Select>
             </div>
-          </div>
+              </div>
+            );
+          })()}
         </CardContent>
       </Card>
 
