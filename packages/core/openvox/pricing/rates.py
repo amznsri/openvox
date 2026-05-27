@@ -132,6 +132,40 @@ DEFAULT_RATES: dict[str, ProviderRates] = {
             "input + $12/1M audio tokens."
         ),
     ),
+    # OpenAI Realtime — Speech-to-Speech via wss://api.openai.com/v1/realtime.
+    # Pricing model is fundamentally different from pipeline: bills on
+    # AUDIO tokens (input + output) rather than text tokens or
+    # characters. We carry the audio-side cost as `stt_usd_per_minute`
+    # and the LLM-side cost as standard token rates so the dashboard's
+    # pricing matrix surfaces all three numbers, but the SESSION cost
+    # calculator doesn't fully apportion S2S sessions today (S2S
+    # provider doesn't break out STT/LLM/TTS counters — the assistant_
+    # audio bytes are the only signal). Per-session cost reporting for
+    # S2S is a follow-up (D.s2s-pricing) once we instrument the
+    # bridge to track audio-second meters.
+    "openai_realtime": ProviderRates(
+        llm_usd_per_1m_input=5.00,    # text tokens, gpt-4o-realtime-preview
+        llm_usd_per_1m_output=20.00,
+        # Audio I/O — $100/1M audio tokens in, $200/1M audio tokens
+        # out. Realtime samples at 24 kHz; OpenAI's "audio token" is
+        # ~50 ms of audio, so ~20 tokens/sec = 1200/min, giving
+        # ~$0.12/min input audio + $0.24/min output audio. We surface
+        # the input-side as `stt_usd_per_minute` (the closest schema
+        # field) so the dashboard's per-minute summary stays honest.
+        # The output-audio rate is captured in `notes` until D.s2s-
+        # pricing extends ProviderRates with explicit audio-out fields.
+        stt_usd_per_minute=0.12,
+        model_name="gpt-4o-realtime-preview-2024-12-17",
+        source_url="https://platform.openai.com/docs/guides/realtime",
+        verified_at="2026-05-27",
+        notes=(
+            "S2S over WS. Audio: $100/1M input audio tokens "
+            "(~$0.12/min) + $200/1M output audio tokens (~$0.24/min). "
+            "Text: $5/$20 per 1M (above). Cached input -50%. "
+            "Per-session cost requires audio-meter instrumentation in "
+            "the bridge — see D.s2s-pricing follow-up."
+        ),
+    ),
     "anthropic": ProviderRates(
         llm_usd_per_1m_input=3.00,
         llm_usd_per_1m_output=15.00,

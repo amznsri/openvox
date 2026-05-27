@@ -76,6 +76,17 @@ class Agent(Base):
     # component sends `{type:"interrupt"}` itself).
     vad_provider: Mapped[str] = mapped_column(String(50), default="silero")
 
+    # Speech-to-Speech provider id (Phase 3 PR-B, v0.2.24). When set,
+    # the orchestrator opens an S2S session against this provider INSTEAD
+    # of running the STT→LLM→TTS pipeline — single-WS-hop voice for
+    # ~120 ms first-byte latency at the cost of provider portability.
+    # Empty string is the canonical "pipeline mode" sentinel; populated
+    # values: "openai_realtime" (today; Gemini Live planned). The
+    # stt/tts/llm fields are still consulted as FALLBACK when the S2S
+    # provider isn't available (no key, network issue) — see
+    # `s2s_bridge.py` for the failover logic.
+    s2s_provider: Mapped[str] = mapped_column(String(50), default="")
+
     status: Mapped[str] = mapped_column(String(20), default=AgentStatus.DRAFT.value)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
