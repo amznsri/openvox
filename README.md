@@ -16,11 +16,7 @@ single-WS sub-150 ms voice. Self-host on a laptop in 60 seconds. Apache-2.0.
 
 ## Why OpenVox?
 
-The voice agent landscape today splits between **closed SaaS** (Vapi, Retell, Bland — fast to
-start, expensive at scale, no control over your data) and **low-level OSS frameworks** (LiveKit
-Agents, Pipecat — flexible but you wire up everything from skills to dashboards yourself).
-
-OpenVox sits between them: an open-source platform that ships **every layer of the stack** — voice
+OpenVox is an open-source platform that ships **every layer of the stack** — voice
 pipeline, dashboard, SDK, CLI, runnable templates, observability, scheduling — so a non-technical
 operator can build a working agent in five minutes, and a developer can drop into Python or
 TypeScript to extend any piece.
