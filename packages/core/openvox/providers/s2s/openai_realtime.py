@@ -78,7 +78,14 @@ logger = logging.getLogger(__name__)
 
 
 _WS_URL = "wss://api.openai.com/v1/realtime"
-_DEFAULT_MODEL = "gpt-4o-realtime-preview-2024-12-17"
+# Production GA model name. The earlier
+# `gpt-4o-realtime-preview-2024-12-17` was the preview SKU and OpenAI
+# graduated Realtime out of beta — calls against the preview model
+# (and against the `OpenAI-Beta: realtime=v1` header below) get
+# rejected with `4000 invalid_request_error.beta_api_shape_disabled`.
+# Operator can override by setting Agent.llm_model on the agent
+# record; that value flows in via S2SConfig.model.
+_DEFAULT_MODEL = "gpt-realtime"
 
 
 class OpenAIRealtimeProvider(S2SProvider):
@@ -146,9 +153,16 @@ class _OpenAIRealtimeSession(S2SSession):
         import websockets
 
         url = f"{_WS_URL}?model={self._model}"
+        # Auth-only. The `OpenAI-Beta: realtime=v1` header that the
+        # preview API required is now REJECTED with
+        # `4000 invalid_request_error.beta_api_shape_disabled` —
+        # OpenAI graduated Realtime to GA and the beta shape is
+        # gone. Sending the header now breaks the handshake.
+        # If a future Realtime-2 beta lands behind a NEW beta
+        # header, gate it on the model name (re-enable for
+        # `gpt-5-realtime-preview-*` etc.).
         headers = {
             "Authorization": f"Bearer {self._api_key}",
-            "OpenAI-Beta": "realtime=v1",
         }
         kwargs = {"max_size": 16 * 1024 * 1024, "ssl": certifi_ssl_context()}
         # Newer + older websockets API parameter rename — same dance
