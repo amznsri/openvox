@@ -293,6 +293,145 @@ jobs:
           print('✓ dashboard bundle present in wheel')
           "
 
+  # ── SDK publishing (TS + Python) ───────────────────────────────────
+  #
+  # Both SDKs live in packages/sdk-ts/ and packages/sdk-py/ and are
+  # versioned INDEPENDENTLY of openvox-core. That means every
+  # `v0.x.y` tag for the daemon doesn't necessarily mean a new SDK
+  # release — the SDK package.json / pyproject.toml is the source of
+  # truth. The jobs below check the registry first and SKIP if the
+  # version they would publish already exists; bumping the SDK
+  # version in source is what actually triggers a publish on the
+  # next tagged release.
+  #
+  # Pre-launch setup (operator does once, then forgets):
+  #   1. npm — add `NPM_TOKEN` to repo secrets. Generate at
+  #      https://www.npmjs.com/settings/<user>/tokens with scope
+  #      "Automation" + access "Read and Publish".
+  #   2. PyPI — set up Trusted Publishing for `openvox-sdk` at
+  #      https://pypi.org/manage/account/publishing/ — same repo +
+  #      workflow + environment as openvox-core. No token needed.
+  #
+  # If `NPM_TOKEN` isn't set, the publish-npm job no-ops (skip-on-
+  # missing-secret guard below). Same for PyPI Trusted Publishing —
+  # the OIDC handshake fails fast with a clear error if the trust
+  # config isn't set up yet.
+
+  publish-npm:
+    name: Publish openvox-sdk to npm
+    needs: build           # parallel to publish-pypi (core); independent of it
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: https://registry.npmjs.org
+      - name: Check if this SDK version is already on npm
+        id: check
+        # `npm view` returns the LATEST version when no version is
+        # specified. We compare against package.json — if they match,
+        # the publish would 409 on duplicate; skip rather than fail
+        # the whole release. Bumping package.json's `version` is
+        # what makes this job actually publish.
+        run: |
+          LOCAL=$(node -p "require('./packages/sdk-ts/package.json').version")
+          REMOTE=$(npm view openvox-sdk version 2>/dev/null || echo "none")
+          echo "local=$LOCAL remote=$REMOTE"
+          if [ "$LOCAL" = "$REMOTE" ]; then
+            echo "Already published — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install deps + build
+        if: steps.check.outputs.skip != 'true'
+        working-directory: packages/sdk-ts
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+          # `files: ["dist"]` in package.json restricts the tarball.
+          # Smoke-check the build output exists before we try to
+          # publish a directory with no files.
+          test -f dist/index.js
+          test -f dist/index.d.ts
+          echo "✓ dist/ built"
+      - name: Publish to npm
+        if: ${{ steps.check.outputs.skip != 'true' && env.NODE_AUTH_TOKEN != '' }}
+        working-directory: packages/sdk-ts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # --access public is required for unscoped names too on free
+          # tier accounts; harmless on paid ones. The token is read
+          # automatically from NODE_AUTH_TOKEN.
+          npm publish --access public
+      - name: Note if NPM_TOKEN is missing
+        if: ${{ steps.check.outputs.skip != 'true' && env.NODE_AUTH_TOKEN == '' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # Print a clear next-step instead of silently passing. The
+        # job stays GREEN so this doesn't block the rest of the
+        # release pipeline — the operator can add the token then
+        # re-run THIS job via workflow_dispatch.
+        run: |
+          echo "::warning::NPM_TOKEN secret is not set. Skipping npm publish."
+          echo "Add the token at https://github.com/amznsri/openvox/settings/secrets/actions"
+
+  publish-pypi-sdk:
+    name: Publish openvox-sdk to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/openvox-sdk
+    permissions:
+      # Required by pypa/gh-action-pypi-publish for Trusted Publishing.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check if this SDK version is already on PyPI
+        id: check
+        run: |
+          LOCAL=$(grep -E '^version = ' packages/sdk-py/pyproject.toml | head -1 | sed -E 's/version = "(.+)"/\1/')
+          REMOTE=$(curl -s https://pypi.org/pypi/openvox-sdk/json 2>/dev/null | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              print(d['info']['version'])
+          except Exception:
+              print('none')
+          ")
+          echo "local=$LOCAL remote=$REMOTE"
+          if [ "$LOCAL" = "$REMOTE" ]; then
+            echo "Already published — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build wheel + sdist
+        if: steps.check.outputs.skip != 'true'
+        working-directory: packages/sdk-py
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          twine check dist/*
+          echo "✓ wheel + sdist built"
+      - name: Stage dist for publish action
+        if: steps.check.outputs.skip != 'true'
+        # pypa/gh-action-pypi-publish reads from the working dir's
+        # dist/, not from an arbitrary path. Copy into place.
+        run: |
+          mkdir -p dist
+          cp packages/sdk-py/dist/* dist/
+          ls -la dist/
+      - name: Publish to PyPI (Trusted Publishing)
+        if: steps.check.outputs.skip != 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+
   # ── GitHub Release: attach wheel + sdist + install.sh + checksums ──
   publish-github-release:
     name: Attach assets to GitHub Release

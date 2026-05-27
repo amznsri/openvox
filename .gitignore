@@ -66,6 +66,8 @@ pnpm-debug.log*
 # Next.js / npm — auto-generated, not source
 apps/dashboard/next-env.d.ts
 apps/dashboard/package-lock.json
+packages/sdk-ts/package-lock.json
+packages/sdk-web/package-lock.json
 
 # Internal-only working files. CLAUDE.md (project memory for the
 # coding agent) and docs/ (planning notes, session logs, internal

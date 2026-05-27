@@ -258,14 +258,15 @@ Implement `STTProvider`, `TTSProvider`, `LLMProvider`, or `RTCProvider` from
 
 ### Use the SDK
 
-> **Heads-up:** the TypeScript + Python SDK packages aren't published yet
-> (clone the repo and link locally — `packages/sdk-ts/` and `packages/sdk-py/`).
-> The REST + WebSocket API at `localhost:8000` is stable and documented; if
-> you want to talk to the daemon today, the HTTP path is the canonical one
-> until the SDKs ship.
+Install:
+
+```bash
+npm install openvox-sdk        # TypeScript / Node / Bun
+pip install openvox-sdk        # Python 3.10+
+```
 
 ```ts
-import { OpenVoxClient, VoiceSession } from "@openvox/sdk";
+import { OpenVoxClient, VoiceSession } from "openvox-sdk";
 
 const client = new OpenVoxClient("http://localhost:8000");
 const agent = await client.templates.instantiate("ecommerce-support");

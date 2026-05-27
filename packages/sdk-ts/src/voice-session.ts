@@ -3,9 +3,9 @@
  *
  * In Node:
  *
- *   import { VoiceSession } from "@openvox/sdk";
+ *   import { VoiceSession } from "openvox-sdk";
  *   const sess = new VoiceSession({
- *     baseWsUrl: "ws://localhost:3001",
+ *     baseWsUrl: "ws://localhost:8000",
  *     options: { agentId: "abc..." },
  *   });
  *   sess.on(ev => console.log(ev));
