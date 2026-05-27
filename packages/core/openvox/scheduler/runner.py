@@ -80,6 +80,8 @@ async def _dispatch(kind: str, payload: dict[str, Any], agent_id: str) -> tuple[
         return await _run_audio_batch(agent_id, payload)
     if kind == "outbound_call_batch":
         return await _run_outbound_call_batch(agent_id, payload)
+    if kind == "outbound_telegram":
+        return await _run_outbound_telegram(agent_id, payload)
     return {}, f"unknown job kind: {kind!r}"
 
 
@@ -296,3 +298,147 @@ async def _run_outbound_call_batch(agent_id: str, payload: dict[str, Any]) -> tu
             errors.append(f"{number}: {e}")
 
     return {"calls": placed, "errors": errors, "preview": False}, ""
+
+
+# ── Kind: outbound_telegram (D.tg-out) ────────────────────────────
+# Payload: {
+#   "chat_ids":    [123456789, "@my_channel"],   # explicit list, OR
+#   "from_skill":  "fetch_subscribers",          # iteratively pull
+#                                                # `{"chat_id": ...}` from a skill
+#   "max_messages": 50,
+#
+#   # One of:
+#   "message": "Static text the same for every recipient.",
+#   "agent_query": "summarise today's incidents",  # ask the agent's LLM
+#                                                  # per-run (NOT per-recipient
+#                                                  # — keeps cost predictable)
+#
+#   "preview":     true     # safety: dry-run by default
+# }
+#
+# Sends a message to N Telegram chats from the agent's connected bot.
+# Use cases:
+#   - Weekly status post: "every Monday 9 AM, ask the agent to
+#     summarise last week's eval runs + post to the team chat."
+#   - Event-driven blasts: a skill watches a feed and the cron
+#     periodically asks the agent to digest + push.
+#
+# Safety rails matching outbound_call_batch:
+#   - preview=true by default (returns who WOULD have been messaged;
+#     no actual sends)
+#   - max_messages caps the blast radius even if a skill returns
+#     thousands of chat IDs
+
+
+async def _run_outbound_telegram(agent_id: str, payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    if not agent_id:
+        return {}, "agent_id required for outbound_telegram"
+
+    chat_ids_raw: list[Any] = list(payload.get("chat_ids") or [])
+    from_skill = (payload.get("from_skill") or "").strip()
+    max_messages = int(payload.get("max_messages") or 50)
+    preview = bool(payload.get("preview", True))
+
+    # Pull from a skill if no explicit list — same pattern as
+    # outbound_call_batch's lead-fetch loop. Each skill invocation
+    # is expected to return `{"output": {"chat_id": <int|str>}}` or
+    # `{"output": {"chat_ids": [...]}}` for batched returns.
+    if not chat_ids_raw and from_skill:
+        from openvox.skills import SkillContext
+        from openvox.skills.runner import SkillRunner
+
+        runner = SkillRunner(
+            skill_ids=[from_skill],
+            ctx=SkillContext(agent_id=agent_id, metadata={"source": "scheduler"}),
+        )
+        for _ in range(max_messages):
+            res = await runner.invoke(from_skill, {})
+            out = (res or {}).get("output") or {}
+            # Two return shapes: single chat_id OR a batch list.
+            if "chat_ids" in out:
+                # Skill returned a whole batch in one go — break early.
+                chat_ids_raw.extend(out["chat_ids"])
+                break
+            cid = out.get("chat_id")
+            if not cid:
+                break
+            chat_ids_raw.append(cid)
+
+    chat_ids = chat_ids_raw[:max_messages]
+    if not chat_ids:
+        return {"sent": 0, "preview": preview, "message": "no chat_ids"}, ""
+
+    # Body source: explicit `message` wins over `agent_query`. If
+    # both are absent there's nothing to send — fail loudly so a
+    # broken payload doesn't silently no-op.
+    message = (payload.get("message") or "").strip()
+    agent_query = (payload.get("agent_query") or "").strip()
+    if not message and not agent_query:
+        return {}, "either payload.message or payload.agent_query is required"
+
+    # If using agent_query, run a SINGLE LLM call here and reuse
+    # the answer for every recipient. Per-recipient LLM calls would
+    # be expensive + non-deterministic (different recipients get
+    # different summaries when the cron fires). For per-recipient
+    # personalisation, the skill returning chat_ids should also
+    # return per-recipient context — out of scope for v1.
+    if agent_query:
+        from openvox.db.models import Agent
+        from openvox.providers import ProviderType, get_registry
+        from openvox.providers.base import LLMConfig, LLMMessage, LLMProvider
+
+        async with db_session() as s:
+            agent = await s.get(Agent, agent_id)
+            if agent is None:
+                return {}, f"agent {agent_id} not found"
+            llm = get_registry().get(ProviderType.LLM, agent.llm_provider)
+            if llm is None or not isinstance(llm, LLMProvider):
+                return {}, f"llm provider {agent.llm_provider!r} unavailable"
+            history = [
+                LLMMessage(role="system", content=agent.system_prompt or ""),
+                LLMMessage(role="user", content=agent_query),
+            ]
+            chunk = await llm.chat(
+                history,
+                LLMConfig(model=agent.llm_model, max_tokens=agent.max_tokens or 1024),
+            )
+            message = (chunk.text or "").strip()
+        if not message:
+            return {}, "agent_query produced empty output"
+
+    if preview:
+        return {
+            "preview": True,
+            "would_send_to": chat_ids,
+            "message_preview": message[:200] + ("…" if len(message) > 200 else ""),
+            "message": "Preview mode — no Telegram messages sent. Set payload.preview=false to send.",
+        }, ""
+
+    # Real send. Per-recipient errors are collected — one bad
+    # chat_id (kicked bot / wrong ID) doesn't abort the whole
+    # batch.
+    from openvox.db.models import Agent
+    from openvox.telephony import telegram as tg
+    from openvox.utils.text import clean_for_tts
+
+    async with db_session() as s:
+        agent = await s.get(Agent, agent_id)
+        if agent is None:
+            return {}, f"agent {agent_id} not found"
+        tg_cfg = (agent.channels or {}).get("telegram") or {}
+    token = (tg_cfg.get("bot_token") or "").strip()
+    if not token:
+        return {}, f"agent {agent_id} has no Telegram bot connected"
+
+    cleaned = clean_for_tts(message)
+    sent: list[Any] = []
+    errors: list[str] = []
+    for cid in chat_ids:
+        try:
+            await tg.send_text(token, cid, cleaned)
+            sent.append(cid)
+        except Exception as e:
+            logger.exception("outbound telegram failed for %s", cid)
+            errors.append(f"{cid}: {e}")
+
+    return {"sent": len(sent), "chat_ids": sent, "errors": errors, "preview": False}, ""
