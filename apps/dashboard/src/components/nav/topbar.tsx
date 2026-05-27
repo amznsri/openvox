@@ -562,6 +562,13 @@ export function Topbar({ title }: { title?: string }) {
             onChange={(e) => {
               setQ(e.target.value);
               setOpen(true);
+              // Typing supersedes a prior failed voice attempt — the
+              // amber "Didn't catch that" / "Microphone permission
+              // denied" strip stays visible by default until cleared.
+              // Without this, a user who gives up on voice and types
+              // "help" sees the help popover with the stale error
+              // banner on top.
+              if (voiceError) setVoiceError(null);
             }}
             onFocus={() => q && setOpen(true)}
             onKeyDown={onKey}
@@ -599,7 +606,14 @@ export function Topbar({ title }: { title?: string }) {
           </div>
         </div>
         {(open && q.trim()) || listening || voiceError ? (
-          <div className="absolute left-0 right-0 mt-2 rounded-lg border border-border/60 bg-popover/95 backdrop-blur-xl shadow-xl z-50 overflow-hidden">
+          // `bg-popover` (no alpha modifier) resolves to the theme's
+          // fully-opaque popover token. v0.2.15 used `bg-popover/95
+          // backdrop-blur-xl` which evaluated to too-transparent in
+          // the dark-theme palette — page content behind the popover
+          // bled through the help-mode list. A solid background is
+          // what every other shadcn dropdown / popover in the app
+          // uses; matching that is the correct fix.
+          <div className="absolute left-0 right-0 mt-2 rounded-lg border border-border/60 bg-popover shadow-xl z-50 overflow-hidden">
             {/* Voice-state strip — only shows when listening / errored.
                 Honest about where the audio actually goes — Chrome /
                 Edge upload to a cloud recogniser, Safari is local. */}
