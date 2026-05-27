@@ -125,6 +125,23 @@ export function Topbar({ title }: { title?: string }) {
   // inside the recognition's callbacks — state would be stale.
   const voiceGotResultRef = useRef(false);
 
+  // ── Conversation mode (rearm after voice-initiated nav) ─────
+  //
+  // The user feedback that drove this: clicking the mic icon,
+  // speaking, navigating, then having to click AGAIN to issue the
+  // next command felt clunky. Conversation mode keeps the mic
+  // armed for ~8 seconds after each successful voice nav so a
+  // follow-up command is zero-click. Each new spoken command
+  // resets the timer (extending the window); 8 silent seconds
+  // ends it.
+  //
+  // Only triggered by voice-initiated commands. Typed queries
+  // (Enter) DON'T enter conversation mode — typing is intentional
+  // and shouldn't surprise-keep the mic open.
+  const REARM_SECONDS = 8;
+  const [rearmRemaining, setRearmRemaining] = useState(0);
+  const rearmIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   useEffect(() => {
     // Feature-detect on mount. Firefox doesn't ship SpeechRecognition
     // at all — the mic button stays hidden there rather than mocked
@@ -135,23 +152,23 @@ export function Topbar({ title }: { title?: string }) {
     setVoiceSupported(typeof SR === "function");
   }, []);
 
-  function startVoice() {
-    setVoiceError(null);
+  /** Build + configure a one-shot SpeechRecognition instance with
+   *  the standard event handlers we use everywhere. Pulled into a
+   *  helper because both ``startVoice`` (initial activation) and
+   *  ``rearmVoice`` (conversation-mode follow-up) need an identical
+   *  setup. Returns null when the browser doesn't support the API
+   *  (Firefox); caller sets a friendly error message in that case. */
+  function buildRecogniser(): any {
     const SR =
       (window as any).SpeechRecognition ||
       (window as any).webkitSpeechRecognition;
-    if (!SR) {
-      setVoiceError("This browser doesn't support speech recognition.");
-      return;
-    }
+    if (!SR) return null;
     const recog = new SR();
     recog.lang = "en-US";
     recog.interimResults = true;
     recog.continuous = false;       // stop on first final result
     recog.maxAlternatives = 1;
     recog.onresult = (event: any) => {
-      // Pull the latest result + show it in the input as the user
-      // speaks. Final result populates the query + opens the popover.
       let transcript = "";
       for (let i = 0; i < event.results.length; i++) {
         transcript += event.results[i][0].transcript;
@@ -159,9 +176,13 @@ export function Topbar({ title }: { title?: string }) {
       setQ(transcript.trim());
       setOpen(true);
       voiceGotResultRef.current = true;
+      // If we're in conversation-mode rearm, a fresh utterance
+      // extends the window. The timer below decrements regardless;
+      // the reset on speech is the "stop me from auto-timing-out
+      // while the user is mid-sentence" behaviour.
+      setRearmRemaining((r) => (r > 0 ? REARM_SECONDS : r));
     };
     recog.onerror = (event: any) => {
-      // `not-allowed` = user denied mic permission; `no-speech` = silence.
       const tag = event?.error || "unknown";
       setVoiceError(
         tag === "not-allowed"
@@ -171,23 +192,41 @@ export function Topbar({ title }: { title?: string }) {
             : `Voice input failed (${tag}).`,
       );
       setListening(false);
+      // Cancel any pending rearm — keep the mic from re-arming
+      // on a denied-permission state.
+      clearRearmTimer();
     };
     recog.onend = () => {
       setListening(false);
-      // Refocus the text input so the user can refine the query
-      // immediately if the transcript needs editing.
       inputRef.current?.focus();
-      // Auto-navigate: when voice input ends with a usable transcript,
-      // fire the top hit automatically. Set a flag here; the effect
-      // below picks it up AFTER React has re-rendered with the final
-      // transcript + recomputed `hits`. Keyboard input is unaffected
-      // — typing still requires Enter for explicit confirmation.
-      // The voiceGotResultRef guard prevents surprise navigation
-      // when the user clicked the mic but never actually spoke.
+      // Auto-navigate after voice ends with a real transcript.
+      // pendingVoiceNav is consumed by the effect below AFTER
+      // React has rendered with the final q.
       if (voiceGotResultRef.current) setPendingVoiceNav(true);
     };
+    return recog;
+  }
+
+  /** Tear down the rearm interval if it's running. Idempotent. */
+  function clearRearmTimer() {
+    if (rearmIntervalRef.current !== null) {
+      clearInterval(rearmIntervalRef.current);
+      rearmIntervalRef.current = null;
+    }
+    setRearmRemaining(0);
+  }
+
+  function startVoice() {
+    setVoiceError(null);
+    // Activation cancels any in-flight rearm window so the user
+    // gets a fresh session-start without leftover countdown.
+    clearRearmTimer();
+    const recog = buildRecogniser();
+    if (!recog) {
+      setVoiceError("This browser doesn't support speech recognition.");
+      return;
+    }
     recogRef.current = recog;
-    // Reset the "did we hear anything" flag for THIS session.
     voiceGotResultRef.current = false;
     try {
       recog.start();
@@ -201,6 +240,53 @@ export function Topbar({ title }: { title?: string }) {
     }
   }
 
+  /** Conversation-mode follow-up listener. Called after a voice-
+   *  initiated nav fires. Spins up a fresh recogniser and starts
+   *  the countdown timer. Each new utterance resets the timer
+   *  (see ``onresult`` handler above); ``REARM_SECONDS`` seconds
+   *  of silence ends the conversation. */
+  function rearmVoice() {
+    if (!voiceSupported) return;
+    const recog = buildRecogniser();
+    if (!recog) return;
+    recogRef.current = recog;
+    voiceGotResultRef.current = false;
+    try {
+      recog.start();
+      setListening(true);
+    } catch (e) {
+      // Safari's race condition — silently give up rather than
+      // showing an error mid-conversation, which would be jarring.
+      // The user can re-click the mic to retry.
+      setListening(false);
+      return;
+    }
+    // Start the countdown. Cleared by any of:
+    //   - timer expires (silence) → stopVoice
+    //   - user starts a new voice command via mic-click → clearRearmTimer
+    //   - user types in the input → stopVoice + clearRearmTimer
+    //   - permission error in onerror handler
+    setRearmRemaining(REARM_SECONDS);
+    if (rearmIntervalRef.current !== null) {
+      clearInterval(rearmIntervalRef.current);
+    }
+    rearmIntervalRef.current = setInterval(() => {
+      setRearmRemaining((r) => {
+        if (r <= 1) {
+          // Silence timeout — stop listening, mic goes idle.
+          if (rearmIntervalRef.current !== null) {
+            clearInterval(rearmIntervalRef.current);
+            rearmIntervalRef.current = null;
+          }
+          try { recogRef.current?.stop(); } catch { /* ignore */ }
+          setListening(false);
+          return 0;
+        }
+        return r - 1;
+      });
+    }, 1000);
+  }
+
   function stopVoice() {
     try {
       recogRef.current?.stop();
@@ -208,7 +294,19 @@ export function Topbar({ title }: { title?: string }) {
       // ignore
     }
     setListening(false);
+    clearRearmTimer();
   }
+
+  // Cleanup the rearm interval if the component unmounts mid-
+  // conversation (e.g. user navigates to a route that swaps the
+  // layout). Prevents setState-after-unmount warnings.
+  useEffect(() => {
+    return () => {
+      if (rearmIntervalRef.current !== null) {
+        clearInterval(rearmIntervalRef.current);
+      }
+    };
+  }, []);
 
   // ── Cmd+K / Ctrl+K global listener ───────────────────────────
   //
@@ -233,6 +331,39 @@ export function Topbar({ title }: { title?: string }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [q]);
+
+  // ── Cmd+Shift+Space — global voice toggle ─────────────────────
+  //
+  // The mic-icon click is fine when the user is on the search bar
+  // already; over-the-shoulder usability feedback was that needing
+  // to find + click the icon between every voice command (since
+  // navigation closes the popover) made voice feel clunky. This
+  // shortcut keeps the user's hands on the keyboard for activation,
+  // and combined with conversation mode (rearm after each command)
+  // means real hands-free chained navigation.
+  //
+  // Why Cmd+Shift+Space:
+  //   - macOS Spotlight uses Cmd+Space; Cmd+Shift+Space isn't
+  //     system-reserved (verified across recent macOS releases).
+  //   - On Windows/Linux, Ctrl+Shift+Space is unlikely to collide
+  //     with anything common.
+  //   - Mentioned in the help-mode reference so it's discoverable.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      // `e.code` is canonical for the space bar — matching against
+      // `e.key === " "` is finicky because some layouts produce a
+      // non-breaking space here.
+      const isVoiceToggle =
+        (e.metaKey || e.ctrlKey) && e.shiftKey && e.code === "Space";
+      if (!isVoiceToggle) return;
+      if (!voiceSupported) return;        // Firefox + similar
+      e.preventDefault();
+      if (listening) stopVoice();
+      else startVoice();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [listening, voiceSupported]);
 
   // Pull the three searchable corpora. SWR de-dupes between pages.
   const { data: agents = [] } = useSWR<Agent[]>("agents", () => api.listAgents());
@@ -479,7 +610,18 @@ export function Topbar({ title }: { title?: string }) {
     if (hits.length === 0) return;
     const top = hits[0];
     if (top.id.endsWith("-nomatch")) return;
-    void go(top);
+    // Fire the navigation, then enter conversation mode so the
+    // user can chain commands without another mic click. Async
+    // navigation (action hits with .run callbacks) shouldn't
+    // block the rearm — the rearm timer + nav can race; the
+    // browser handles route changes mid-recognition fine.
+    void go(top).finally(() => {
+      // Clear the input + close the popover. The rearm UI strip
+      // takes over the visible "still listening" affordance.
+      setQ("");
+      // Voice is the trigger — start the follow-up window.
+      rearmVoice();
+    });
     // We intentionally depend ONLY on pendingVoiceNav. Depending on
     // `hits` too would re-fire if the corpora SWR-refetch arrived
     // mid-iteration. The flag is the canonical trigger.
@@ -588,8 +730,8 @@ export function Topbar({ title }: { title?: string }) {
                 aria-label={listening ? "Stop voice input" : "Start voice input"}
                 title={
                   listening
-                    ? "Listening — click to stop"
-                    : "Voice search (uses your browser's speech recogniser)"
+                    ? "Listening — click to stop (or wait for silence)"
+                    : "Voice search (Cmd+Shift+Space). Uses your browser's speech recogniser."
                 }
                 className={`h-7 w-7 inline-flex items-center justify-center rounded-md transition-colors ${
                   listening
@@ -605,7 +747,7 @@ export function Topbar({ title }: { title?: string }) {
             </kbd>
           </div>
         </div>
-        {(open && q.trim()) || listening || voiceError ? (
+        {(open && q.trim()) || listening || voiceError || rearmRemaining > 0 ? (
           // `bg-popover` (no alpha modifier) resolves to the theme's
           // fully-opaque popover token. v0.2.15 used `bg-popover/95
           // backdrop-blur-xl` which evaluated to too-transparent in
@@ -614,12 +756,26 @@ export function Topbar({ title }: { title?: string }) {
           // what every other shadcn dropdown / popover in the app
           // uses; matching that is the correct fix.
           <div className="absolute left-0 right-0 mt-2 rounded-lg border border-border/60 bg-popover shadow-xl z-50 overflow-hidden">
-            {/* Voice-state strip — only shows when listening / errored.
+            {/* Voice-state strip — covers three states:
+                 - rearm + listening  → conversation mode countdown
+                 - listening (fresh)  → "Listening… speak now"
+                 - voiceError         → amber error banner
                 Honest about where the audio actually goes — Chrome /
                 Edge upload to a cloud recogniser, Safari is local. */}
             {(listening || voiceError) && (
               <div className="px-3 py-2 text-xs border-b border-border/40 flex items-center gap-2">
-                {listening && (
+                {listening && rearmRemaining > 0 && (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin text-rose-300" />
+                    <span className="text-rose-300">
+                      Conversation mode — say another command
+                    </span>
+                    <span className="text-muted-foreground ml-auto font-mono tabular-nums">
+                      {rearmRemaining}s
+                    </span>
+                  </>
+                )}
+                {listening && rearmRemaining === 0 && (
                   <>
                     <Loader2 className="h-3 w-3 animate-spin text-rose-300" />
                     <span className="text-rose-300">Listening… speak now</span>

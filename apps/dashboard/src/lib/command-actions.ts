@@ -188,10 +188,19 @@ export const HELP_SECTIONS: { title: string; items: string[] }[] = [
     ],
   },
   {
+    title: "Voice",
+    items: [
+      "Click the mic OR press Cmd+Shift+Space to start listening",
+      "Speak a command (try 'open agents' / 'test <agent name>')",
+      "After voice navigation, mic stays armed for 8s — say another",
+      "  command and the timer resets; silence ends the conversation",
+      "Click the mic again to mute immediately",
+    ],
+  },
+  {
     title: "Search",
     items: [
       "Type an agent / template / skill name to find it",
-      "Click the mic to dictate via your browser's speech recogniser",
     ],
   },
   {
