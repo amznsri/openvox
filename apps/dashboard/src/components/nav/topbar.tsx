@@ -27,6 +27,7 @@ import { api, type Agent, type Skill, type Template } from "@/lib/api";
 import {
   HELP_SECTIONS,
   parseActionCommand,
+  stripNavSuffix,
   type ActionMatch,
 } from "@/lib/command-actions";
 
@@ -109,6 +110,20 @@ export function Topbar({ title }: { title?: string }) {
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const recogRef = useRef<any>(null);
+  // Set in the recogniser's `onend` handler. A useEffect lower down
+  // watches this + the (memoised) `hits` array — when both line up
+  // (flag is true AND hits has just re-rendered with the final
+  // transcript), the effect fires the top hit automatically.
+  // Cleared back to false immediately after firing so subsequent
+  // typing doesn't accidentally re-trigger.
+  const [pendingVoiceNav, setPendingVoiceNav] = useState(false);
+  // Tracks whether the current voice session has produced any
+  // transcript. Used as a guard for auto-navigation: if the user
+  // clicked the mic but never spoke (or the mic timed out silently),
+  // we don't surprise-navigate based on whatever is in the input
+  // from earlier typing. Ref (not state) because it's read from
+  // inside the recognition's callbacks — state would be stale.
+  const voiceGotResultRef = useRef(false);
 
   useEffect(() => {
     // Feature-detect on mount. Firefox doesn't ship SpeechRecognition
@@ -143,6 +158,7 @@ export function Topbar({ title }: { title?: string }) {
       }
       setQ(transcript.trim());
       setOpen(true);
+      voiceGotResultRef.current = true;
     };
     recog.onerror = (event: any) => {
       // `not-allowed` = user denied mic permission; `no-speech` = silence.
@@ -161,8 +177,18 @@ export function Topbar({ title }: { title?: string }) {
       // Refocus the text input so the user can refine the query
       // immediately if the transcript needs editing.
       inputRef.current?.focus();
+      // Auto-navigate: when voice input ends with a usable transcript,
+      // fire the top hit automatically. Set a flag here; the effect
+      // below picks it up AFTER React has re-rendered with the final
+      // transcript + recomputed `hits`. Keyboard input is unaffected
+      // — typing still requires Enter for explicit confirmation.
+      // The voiceGotResultRef guard prevents surprise navigation
+      // when the user clicked the mic but never actually spoke.
+      if (voiceGotResultRef.current) setPendingVoiceNav(true);
     };
     recogRef.current = recog;
+    // Reset the "did we hear anything" flag for THIS session.
+    voiceGotResultRef.current = false;
     try {
       recog.start();
       setListening(true);
@@ -231,6 +257,54 @@ export function Topbar({ title }: { title?: string }) {
       // Help is rendered separately in the popover — not via the
       // hit list — so emit zero hits here.
       if (actionMatch.kind === "help") return [];
+
+      if (actionMatch.kind === "open_page") {
+        // Strip trailing "page" / "tab" / "section" / etc. so
+        // "open agents page" → arg "agents". Then fuzzy-match
+        // against the same PAGES catalog Tier 1 uses.
+        const cleaned = stripNavSuffix(actionMatch.arg);
+        if (!cleaned) {
+          return [{
+            kind: "action",
+            actionKind: "help",
+            id: "open-nomatch",
+            title: `Which page? Try "open agents" or "open evals"`,
+            subtitle: "Or just type the page name",
+            href: "/dashboard",
+          }];
+        }
+        const ranked: { page: typeof PAGES[number]; s: number }[] = [];
+        for (const p of PAGES) {
+          const s = Math.max(
+            score(cleaned, p.title),
+            score(cleaned, p.subtitle),
+            score(cleaned, p.keywords),
+          );
+          if (s > 0) ranked.push({ page: p, s });
+        }
+        ranked.sort((a, b) => b.s - a.s);
+        const top = ranked.slice(0, 5);
+        if (top.length === 0) {
+          return [{
+            kind: "action",
+            actionKind: "help",
+            id: "open-nomatch",
+            title: `No page matches "${cleaned}"`,
+            subtitle: "Try a different name, or type 'help'",
+            href: "/dashboard",
+          }];
+        }
+        return top.map((m) => ({
+          kind: "action",
+          actionKind: "test",  // re-use the "Play" icon — visually
+                               // close enough to "open" without
+                               // introducing yet another action icon
+          id: `open-${m.page.id}`,
+          title: `Open ${m.page.title}`,
+          subtitle: m.page.subtitle,
+          href: m.page.href,
+        }));
+      }
 
       if (actionMatch.kind === "connect_gmail") {
         return [{
@@ -384,6 +458,33 @@ export function Topbar({ title }: { title?: string }) {
 
   // Reset highlight when the result list changes.
   useEffect(() => setActiveIdx(0), [hits.length, q]);
+
+  // Auto-navigate after a voice command. The recogniser's `onend`
+  // handler sets `pendingVoiceNav`; by the time THIS effect runs,
+  // React has re-rendered with the final transcript and `hits` is
+  // up-to-date. We:
+  //   - Clear the flag immediately (so a subsequent typed edit
+  //     doesn't re-fire navigation).
+  //   - Skip when there are no hits at all (user said something
+  //     unrecognised — let them see the empty state).
+  //   - Skip "no match" placeholder hits — their id ends in
+  //     `-nomatch` (e.g. "test-nomatch", "open-nomatch"). Auto-
+  //     navigating those would land users on /dashboard with no
+  //     explanation; better to let them retry.
+  //   - Otherwise: fire the top hit. Same code path as Enter — so
+  //     async actions get their spinner + error strip, etc.
+  useEffect(() => {
+    if (!pendingVoiceNav) return;
+    setPendingVoiceNav(false);
+    if (hits.length === 0) return;
+    const top = hits[0];
+    if (top.id.endsWith("-nomatch")) return;
+    void go(top);
+    // We intentionally depend ONLY on pendingVoiceNav. Depending on
+    // `hits` too would re-fire if the corpora SWR-refetch arrived
+    // mid-iteration. The flag is the canonical trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingVoiceNav]);
 
   // Tier 2 — action hits may run async work (e.g. instantiate a
   // template + redirect). Show a spinner inline while it's pending
