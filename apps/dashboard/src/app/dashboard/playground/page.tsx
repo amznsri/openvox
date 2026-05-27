@@ -181,8 +181,58 @@ function PlaygroundPage() {
     const type = ev.type as string;
     const text = (ev.text as string) || "";
     if (type === "user_partial") {
+      // Barge-in detection. If the assistant's audio queue is
+      // currently playing (or has pending buffers), the user
+      // starting to speak means INTERRUPT, not "wait until current
+      // utterance finishes".
+      //
+      // Two parallel actions:
+      //   1. LOCAL: drain the playback queue immediately. The server
+      //      may already have synthesised 20-30 seconds of audio
+      //      ahead of realtime (BytePlus TTS streams faster than
+      //      audio plays); without this the user hears the rest
+      //      even though the server stops generating new chunks.
+      //   2. REMOTE: send {type:"interrupt"} to the WS. The
+      //      orchestrator's interrupt() sets _cancel_tts, which the
+      //      _speak() loop checks each chunk — kills in-flight TTS
+      //      generation on the server side too.
+      //
+      // The user-spotted bug this fixes: with BytePlus pipeline,
+      // mid-response "Stop" was transcribed (we see USER: Stop in
+      // the transcript) and the LLM produced a new "Got it" turn,
+      // but the dashboard kept playing audio for the PREVIOUS
+      // turn's pre-buffered bullets. Reported 2026-05-27.
+      //
+      // Why on user_partial (not user_final): partial fires within
+      // ~150ms of speech start; final waits for end-of-utterance
+      // (which can be 1-2 seconds later). Cutting audio at partial
+      // matches human conversational barge-in timing.
+      if (playerRef.current?.isPlaying()) {
+        playerRef.current.stopAll();
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(
+            JSON.stringify({ type: "interrupt", source: "client-stt-partial" })
+          );
+        }
+      }
       setLines((ls) => upsertPending(ls, "user", text));
     } else if (type === "user_final") {
+      // Defence-in-depth: if the STT provider doesn't emit
+      // user_partial (some adapters only fire user_final on
+      // end-of-utterance), the barge-in branch above never ran.
+      // Repeat the check here so audio still drains, just with
+      // slightly more delay than the partial-driven path.
+      // The stopAll() is a no-op if the queue is already empty
+      // (e.g. partial already fired this turn), so it's safe to
+      // call unconditionally.
+      if (playerRef.current?.isPlaying()) {
+        playerRef.current.stopAll();
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(
+            JSON.stringify({ type: "interrupt", source: "client-stt-final" })
+          );
+        }
+      }
       setLines((ls) => finalisePending(ls, "user", text));
     } else if (type === "assistant_token") {
       setLines((ls) => appendAssistantToken(ls, text));
