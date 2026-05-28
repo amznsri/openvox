@@ -160,13 +160,13 @@ fi
 
 cat <<EOF
 
-$C_BOLD▸ Next:$C_RESET
+${C_BOLD}> Next:${C_RESET}
 
   Start the background daemon:
-    $C_BOLD openvox start $C_RESET
+    ${C_BOLD}openvox start${C_RESET}
 
   Or run in the foreground (Ctrl-C to stop):
-    $C_BOLD openvox run $C_RESET
+    ${C_BOLD}openvox run${C_RESET}
 
   Then open: http://localhost:8000/dashboard
 
