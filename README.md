@@ -2,7 +2,7 @@
 
 # OpenVox
 
-**The open-source platform for building production voice agents.**
+**The open-source platform for building personal and production voice agents.**
 
 One prompt or one click in — a working voice agent out. Pipeline or speech-to-speech,
 on web, phone, WhatsApp, and Telegram. Self-host on a laptop in 60 seconds. Apache-2.0.
@@ -42,7 +42,7 @@ language detection — no "press 1 for…" menus.
 
 ### ⚡ Two voice modes per agent
 Choose **Pipeline** (STT → LLM → TTS, ~300 ms first-byte, full provider mix-and-match) or **S2S**
-via OpenAI Realtime (single WebSocket, ~120 ms first-byte, native function-calling). Toggle per
+Speech-to-Speech (single WebSocket, ~120 ms first-byte, native function-calling). Toggle per
 agent on the Voice tab — if S2S is unavailable at call time it falls back to pipeline automatically.
 
 ### 🎙️ Build by voice
