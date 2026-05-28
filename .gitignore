@@ -50,3 +50,6 @@ pnpm-debug.log*
 
 # OpenVox local state directory
 .openvox/
+
+# Local reference repos (not tracked)
+openclaw/
