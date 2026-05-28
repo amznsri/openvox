@@ -68,6 +68,12 @@ def _build_trigger(job: ScheduledJob):
     if job.trigger_type == "once":
         # Expr is an ISO datetime e.g. "2026-05-12T20:00:00".
         return DateTrigger(run_date=datetime.fromisoformat(job.trigger_expr), timezone=job.timezone or "UTC")
+    if job.trigger_type == "webhook":
+        # Webhook jobs fire only on explicit POST to
+        # /api/v1/jobs/webhook/{token}. Returning None signals
+        # `register_or_update` to skip APScheduler entirely — there's
+        # no time-based schedule to register.
+        return None
     raise ValueError(f"unknown trigger_type: {job.trigger_type}")
 
 
@@ -83,9 +89,25 @@ def _parse_interval(expr: str) -> int:
 
 
 def register_or_update(job: ScheduledJob) -> None:
-    """Add or replace an APScheduler job. Safe to call repeatedly."""
+    """Add or replace an APScheduler job. Safe to call repeatedly.
+
+    Webhook-trigger jobs aren't registered with APScheduler at all —
+    they only fire on an explicit `POST /api/v1/jobs/webhook/{token}`.
+    We still clear any old APScheduler binding so converting an
+    existing cron job into a webhook job doesn't leave the old
+    schedule firing.
+    """
     sched = get_scheduler()
     trigger = _build_trigger(job)
+    if trigger is None:
+        # Webhook (or any future externally-triggered) kind. Unregister
+        # any stale time-based binding and bail out.
+        try:
+            sched.remove_job(job.id)
+        except Exception:
+            pass
+        job.next_run_at = None
+        return
     sched.add_job(
         execute_job,
         trigger=trigger,

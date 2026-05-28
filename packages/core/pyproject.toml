@@ -4,13 +4,36 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openvox-core"
-version = "0.1.0"
-description = "OpenVox — local-first voice agent platform core"
+# `version` is read from `openvox/__init__.py:__version__` at build
+# time via the `[tool.hatch.version]` block below. Single source of
+# truth — bump the dunder, hatchling propagates the value into the
+# wheel metadata, no two-file sync needed. See bug #45 (stale default
+# drift) for why we converged to this pattern.
+dynamic = ["version"]
+description = "Local-first, open-source voice agent platform — install with pip, run as a daemon, no Docker required."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 authors = [{ name = "OpenVox Contributors" }]
-keywords = ["voice", "agent", "ai", "tts", "stt", "rtc", "byteplus"]
+keywords = ["voice", "agent", "ai", "tts", "stt", "rtc", "telegram", "whatsapp", "twilio"]
+classifiers = [
+  # Maturity — bump to "5 - Production/Stable" after the v1 PyPI release.
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: Apache Software License",
+  # OS support: CLI mode works on all three; Docker mode is Linux-only.
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Communications :: Telephony",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
 dependencies = [
   # Web
@@ -32,9 +55,21 @@ dependencies = [
   "httpx>=0.27.0",
   "certifi>=2024.8.30",
   "aiofiles>=24.1.0",
-  # Audio / numerics
+  # Audio / numerics. scipy was previously listed but no module under
+  # `openvox/` imports it — removed in v0.2.2. If/when we add a feature
+  # that needs scipy (FFT, signal processing beyond what numpy covers),
+  # add it back AND move it to optional extras to keep the brew/pipx
+  # install lean.
   "numpy>=1.26.0",
-  "scipy>=1.13.0",
+  # silero-vad (server-side VAD) lives in [project.optional-dependencies].
+  # It pulls in torch + torchaudio which only ship platform-specific
+  # wheels and (on PyPI's Linux variant) declare ~15 nvidia-*
+  # dependencies that don't have macOS counterparts. That broke the
+  # Homebrew formula's resource generator for v0.2.0. Making VAD opt-in
+  # keeps the default install lean and lets pip pick the right torch
+  # build for each platform via `pip install 'openvox-core[vad]'`.
+  # See SilroVADProvider.is_available — the runtime gracefully
+  # degrades to client-driven interrupts if silero-vad isn't installed.
   # Audio decoding for the Audio Analyzer file-upload path. Requires the
   # ffmpeg binary, which is installed in the core Dockerfile.
   "pydub>=0.25.1",
@@ -56,6 +91,14 @@ dependencies = [
   "opentelemetry-instrumentation-fastapi>=0.48b0",
   # Telephony
   "twilio>=9.3.0",
+  # PEP 594 removed `audioop` from the stdlib in Python 3.13.
+  # `packages/core/openvox/api/ws/twilio_stream.py` uses it for
+  # μ-law / linear PCM conversion on Twilio Media Streams. The
+  # `audioop-lts` package vendors the removed stdlib module under
+  # the same name, so the `import audioop` works unchanged across
+  # all supported Python versions. Conditional install: only pulled
+  # in on 3.13+ where the stdlib copy is gone.
+  "audioop-lts>=0.2.1; python_version >= '3.13'",
   # Utility
   "tenacity>=9.0.0",
   "orjson>=3.10.0",
@@ -63,6 +106,12 @@ dependencies = [
   "apscheduler>=3.10.4",
   # Model Context Protocol — connect to external tool servers.
   "mcp>=1.2.0",
+  # Hot-reload of user skills in ~/.openvox/skills/ — small async-friendly
+  # wrapper around inotify/FSEvents/ReadDirectoryChangesW.
+  "watchfiles>=0.24.0",
+  # CLI framework — backs `openvox version`/`info`/`run`. Click-based,
+  # type-hint-driven, plays nicely with the rest of our Python stack.
+  "typer>=0.12.0",
 ]
 
 [project.optional-dependencies]
@@ -70,6 +119,10 @@ dev = [
   "pytest>=8.3.0",
   "pytest-asyncio>=0.24.0",
   "pytest-cov>=5.0.0",
+  # respx mocks outbound httpx calls. Used by the provider unit
+  # tests so they can't accidentally hit real BytePlus / OpenAI /
+  # etc. APIs (which would cost money + flake the suite).
+  "respx>=0.21.0",
   "ruff>=0.6.0",
   "mypy>=1.11.0",
 ]
@@ -77,12 +130,107 @@ local-stt = [
   # Optional: local Whisper inference. Heavy — opt-in.
   "openai-whisper>=20240930",
 ]
+vad = [
+  # Silero VAD — sub-100 ms server-side voice activity detection.
+  # Heavy: pulls in torch (~200 MB on macOS, ~2.5 GB on Linux with
+  # CUDA wheels from PyPI's default index) + torchaudio. Off by
+  # default to keep `pip install openvox-core` lean — install with
+  # `pip install 'openvox-core[vad]'` to enable.
+  #
+  # silero-vad packages the ONNX model so no runtime network fetch.
+  # The Python-side provider (openvox.providers.vad.silero) imports
+  # silero_vad + torch lazily inside is_available() so a missing
+  # install gracefully degrades to client-driven interrupts instead
+  # of crashing provider bootstrap.
+  "silero-vad>=5.1.0",
+]
+# Postgres / production-database operators. Today asyncpg ships in the
+# base install so the production path "just works", but reserving the
+# extras name now means `pip install openvox-core[postgres]` is a
+# stable command across future deps-shuffles (e.g. if we move
+# asyncpg/alembic out of the base install in a slim-down).
+postgres = []
+# WhatsApp Personal channel. The QR-scan adapter is a Node sidecar
+# (whatsapp-web.js), launched via Docker compose profile=whatsapp; no
+# Python deps to add today. The extras key is reserved here so
+# `pip install openvox-core[whatsapp]` is the documented install path
+# once the Node sidecar gets wrapped in a Python launcher.
+whatsapp = []
+
+[project.urls]
+# Surfaced on the PyPI listing sidebar. Keep these stable — PyPI doesn't
+# rewrite history, so old releases that point at dead URLs stay dead.
+Homepage = "https://github.com/amznsri/openvox"
+Documentation = "https://github.com/amznsri/openvox/tree/main/docs"
+Repository = "https://github.com/amznsri/openvox"
+Issues = "https://github.com/amznsri/openvox/issues"
+Changelog = "https://github.com/amznsri/openvox/blob/main/docs/SESSION_LOG.md"
 
 [project.scripts]
-openvox-core = "openvox.cli:main"
+# Phase 1 PR-2: renamed openvox-core → openvox. This is the user-facing
+# binary name that `pip install openvox` (or `pip install openvox-core`)
+# exposes on the user's PATH. Matches the project name people will
+# search for.
+openvox = "openvox.cli:main"
+
+[tool.hatch.version]
+# Hatchling reads __version__ from this file at build time. Bumping
+# the version is now a single edit to `openvox/__init__.py`. The
+# `dynamic = ["version"]` declaration in [project] above is the other
+# half of the contract.
+path = "openvox/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["openvox"]
+
+# Ship the alembic config + migration scripts alongside the package
+# (Session 17 Phase 3). The migration env.py needs to import openvox.*
+# at runtime, which is awkward if alembic/ lives INSIDE openvox/ (would
+# require careful import-cycle avoidance). Keeping alembic/ alongside
+# openvox/ keeps the imports clean. The wheel ships both via the
+# force-include block below; init_db() probes a few candidate paths
+# at runtime to find them.
+[tool.hatch.build.targets.wheel.force-include]
+"alembic" = "alembic"
+"alembic.ini" = "alembic.ini"
+
+# Note on dashboard bundling: the `openvox/_dashboard/` directory is
+# included automatically via the `packages = ["openvox"]` setting
+# above (hatchling defaults pick up ALL files under listed packages,
+# not just .py). No force-include block needed — adding one would
+# duplicate the entries and trip "Duplicate name" warnings during
+# wheel build.
+#
+# The directory is populated at release time by
+# .github/workflows/release.yml's "Build dashboard for static-export
+# bundling" step (BUILD_OUTPUT=export npm run build → copy
+# apps/dashboard/out/ into packages/core/openvox/_dashboard/). In a
+# fresh checkout it contains only .gitkeep; the actual static files
+# are gitignored. The FastAPI mount at api/app.py picks the directory
+# up at runtime so a wheel-installed openvox serves the dashboard at
+# /dashboard with no separate Node process.
+#
+# Windows nssm.exe bundling is still pending (see openvox/cli/daemon/
+# windows_service.py); will be added in its own force-include block
+# below once the binary lands.
+
+[tool.hatch.build.targets.sdist]
+# Whitelist the things we need in the source distribution and exclude
+# transient build artefacts. Without this, hatch picks everything up.
+include = [
+  "/openvox",
+  "/tests",
+  "/alembic",
+  "/alembic.ini",
+  "/README.md",
+  "/pyproject.toml",
+]
+exclude = [
+  "__pycache__",
+  "*.pyc",
+  ".pytest_cache",
+  "/tests/.openvox",  # tmp test data dir if it ever leaks
+]
 
 [tool.ruff]
 line-length = 100
@@ -95,3 +243,79 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Markers used by the test suite. `strict-markers` makes a typo in
+# a marker name (`@pytest.mark.itnegration`) hard-error instead of
+# silently being a no-op.
+markers = [
+    "slow: tests that take >1s individually (skip locally with -m 'not slow')",
+    "integration: tests that talk to a real subsystem (DB beyond fixture, real subprocess, etc.)",
+    "network: tests that hit a real external API (NOT respx-mocked); off by default in CI",
+    "e2e: full-stack tests that spawn the daemon + browser (Phase 2)",
+]
+addopts = [
+    "--strict-markers",
+    # Skip network tests by default — they cost money + flake.
+    # To run them locally: `pytest -m network`.
+    "-m", "not network",
+]
+
+# ── Coverage ───────────────────────────────────────────────────────
+# Run with: `pytest --cov=openvox` (already wired via pytest-cov dev dep).
+#
+# Threshold is intentionally moderate (60%) — the goal isn't 100%
+# coverage of every line, it's catching the load-bearing-but-easy-
+# to-regress paths (hydration, secrets, providers, setup skills).
+# Provider modules + telephony glue are intentionally NOT chased to
+# high coverage because they're mostly thin HTTP wrappers whose
+# value is verified via the e2e Playwright walk (Phase 2).
+
+[tool.coverage.run]
+source = ["openvox"]
+branch = true
+omit = [
+    # Skip files that are mostly conditional imports / runtime config —
+    # high noise, low signal for unit-test coverage.
+    "openvox/cli/__main__.py",
+    "openvox/api/ws/*",  # WebSocket handlers — covered by e2e Phase 2
+    "openvox/telephony/*",  # Phone integrations — needs real Twilio sandbox
+]
+
+[tool.coverage.report]
+# REGRESSION GUARD, not an aspirational target.
+#
+# Current measured coverage after Phase 1 (PLANNING_SESSION17.md):
+#   ~30% line / 20 branch. The number is held down by:
+#
+#     * Provider HTTP wrappers (~20 files in providers/openai_compat
+#       and providers/byteplus) — 0% covered because they're thin
+#       request-builders verified by the e2e Playwright walk
+#       (Phase 2) and the eval harness, not by unit tests.
+#     * Telephony glue (telephony/* + api/routes/telephony.py) —
+#       requires real Twilio / Telegram sandboxes; covered by
+#       manual TESTPLAN runs, not pytest.
+#     * Skills other than setup.py — workflow-specific business
+#       logic exercised end-to-end via real agent runs.
+#
+# The MODULES we DID cover are at 80%+:
+#     openvox/secrets.py             94%
+#     openvox/utils/text.py          90%
+#     openvox/cli/daemon/*           ~85%
+#
+# Phase 2 (E2E Playwright) raises overall coverage by ~10 points
+# because the daemon process exercises every API route. Phase 6 (CI
+# matrix hardening) is when we should consider bumping this gate.
+# For now: 25% catches a real regression (someone deleting tests)
+# without false-positiving on a phase-2-deferred coverage gap.
+fail_under = 25
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    # Pragma blocks — for "this can't easily be tested" code paths.
+    "pragma: no cover",
+    # Defensive imports / typing-only blocks.
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    # Abstract methods.
+    "raise NotImplementedError",
+    "@abstractmethod",
+]

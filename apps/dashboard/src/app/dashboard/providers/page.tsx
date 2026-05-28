@@ -102,10 +102,13 @@ export default function ProvidersPage() {
         </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {[
-            { name: "BytePlus VAD", desc: "Voice activity detection (placeholder until launch)" },
+            // Card list mirrors what's actually wired vs what's still
+            // aspirational. Edit honestly — every "works today" line
+            // here is a promise we have to be able to back up in code.
+            { name: "BytePlus VAD", desc: "Voice activity detection (placeholder)" },
             { name: "Silero VAD", desc: "Self-hosted VAD model — works today" },
             { name: "BytePlus S2S", desc: "Speech-to-speech (placeholder)" },
-            { name: "OpenAI Realtime", desc: "Speech-to-speech alternative — works today" },
+            { name: "OpenAI Realtime", desc: "Speech-to-speech (planned — not yet wired)" },
             { name: "BytePlus Translate", desc: "Live interpretation (placeholder)" },
             { name: "BytePlus Podcast", desc: "Two-speaker podcast generation (placeholder)" },
           ].map((p) => (

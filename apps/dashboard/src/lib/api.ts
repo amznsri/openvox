@@ -4,14 +4,24 @@
  * which proxies to the Python core.
  */
 
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
-const WS = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:3001";
+// Defaults point directly at the FastAPI core (port 8000). The Node gateway
+// at :3001 was deleted in Phase 1 (docs/phase1-audit.md) — these defaults
+// match the new docker-compose.yml NEXT_PUBLIC_API_URL/WS_URL values.
+const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const WS = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
 
 async function http<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const r = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(init.headers || {}) },
-    ...init,
-  });
+  // Only attach `Content-Type: application/json` when there's a body
+  // to send. Fastify v5 (our gateway) is strict: receiving a DELETE
+  // or POST with `Content-Type: application/json` but an empty body
+  // returns `FST_ERR_CTP_EMPTY_JSON_BODY` before the request reaches
+  // the Python core. The dashboard's DELETE handlers (api.deleteAgent
+  // and similar) don't carry a body, so we'd 400 every time.
+  const headers: Record<string, string> = { ...(init.headers as any || {}) };
+  if (init.body !== undefined && init.body !== null && !("Content-Type" in headers)) {
+    headers["Content-Type"] = "application/json";
+  }
+  const r = await fetch(`${BASE}${path}`, { ...init, headers });
   if (!r.ok) {
     const text = await r.text().catch(() => "");
     throw new Error(`${r.status} ${r.statusText}: ${text}`);
@@ -45,7 +55,8 @@ export const api = {
   // Providers / skills
   listProviders: (type?: string) =>
     http<Provider[]>(`/api/v1/providers${type ? `?type=${type}` : ""}`),
-  listVoices: () => http<Record<string, Voice[]>>("/api/v1/providers/voices"),
+  listVoices: () =>
+    http<Record<string, Voice[] | string>>("/api/v1/providers/voices"),
   listSkills: () => http<Skill[]>("/api/v1/skills"),
   invokeSkill: (skill_id: string, args: Record<string, unknown>) =>
     http<{ ok: boolean; output: unknown; error: string }>("/api/v1/skills/invoke", {
@@ -165,11 +176,154 @@ export const api = {
     http<JobRunRecord[]>(`/api/v1/jobs/${id}/runs`),
 
   // MCP — probe a server config without saving it.
+  // Backend may return `error: string` even with a successful HTTP
+  // response when the MCP server itself failed to connect (npx
+  // not found, OAuth keys missing, etc.). Caller should check
+  // `error` before celebrating a 0-tools response as success.
   mcpProbe: (cfg: McpServerConfig) =>
-    http<{ tools: { id: string; display_name: string; description: string }[]; count: number }>(
+    http<{
+      tools: { id: string; display_name: string; description: string }[];
+      count: number;
+      error: string | null;
+    }>(
       "/api/v1/mcp/probe",
       { method: "POST", body: JSON.stringify(cfg) },
     ),
+  mcpCatalogue: () =>
+    http<McpCatalogueEntry[]>("/api/v1/mcp/catalogue"),
+
+  // ── Telephony ─────────────────────────────────────────────────────
+  publicUrl: () =>
+    http<{ url: string | null; source: string | null; available: boolean; hint?: string; name?: string }>(
+      "/api/v1/telephony/public_url",
+    ),
+  telegramVerify: (botToken: string) =>
+    http<{ id: number; username: string; first_name: string; can_join_groups: boolean; can_read_all_group_messages: boolean }>(
+      "/api/v1/telephony/telegram/verify",
+      { method: "POST", body: JSON.stringify({ bot_token: botToken }) },
+    ),
+  // Connect a bot to an agent. `mode` defaults to "polling" — no public
+  // URL needed. Pass "webhook" only for production deployments that
+  // have ngrok / a real public HTTPS URL configured.
+  telegramConnect: (
+    agentId: string,
+    botToken: string,
+    replyMode: "text" | "voice" | "both",
+    mode: "polling" | "webhook" = "polling",
+  ) =>
+    http<{ connected: boolean; mode: string; bot_username: string; webhook_url: string | null; reply_mode: string }>(
+      "/api/v1/telephony/telegram/connect",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          agent_id: agentId,
+          bot_token: botToken,
+          reply_mode: replyMode,
+          mode,
+        }),
+      },
+    ),
+  telegramDisconnect: (agentId: string) =>
+    http<{ disconnected: boolean }>(`/api/v1/telephony/telegram/connect/${agentId}`, { method: "DELETE" }),
+
+  // ── WhatsApp Personal (whatsapp-web.js bridge) ────────────────────
+  // Connect spins up the bridge session; status() is then polled every
+  // ~2s until status==="ready" (and the QR appears in between).
+  whatsappPersonalConnect: (agentId: string) =>
+    http<{ connected: boolean; started?: boolean; agent_id?: string }>(
+      "/api/v1/telephony/whatsapp_personal/connect",
+      { method: "POST", body: JSON.stringify({ agent_id: agentId }) },
+    ),
+  whatsappPersonalStatus: (agentId: string) =>
+    http<{
+      status: "not_started" | "initializing" | "qr" | "authenticated" | "ready" | "disconnected" | "error" | "bridge_offline";
+      qr?: string | null;
+      info?: { wid: string | null; pushname: string | null; platform: string | null } | null;
+      last_error?: string | null;
+      hint?: string;
+    }>(`/api/v1/telephony/whatsapp_personal/status/${agentId}`),
+  whatsappPersonalDisconnect: (agentId: string) =>
+    http<{ disconnected: boolean }>(
+      `/api/v1/telephony/whatsapp_personal/connect/${agentId}`,
+      { method: "DELETE" },
+    ),
+
+  // ── Admin / first-run wizard ─────────────────────────────────────
+  // Phase 3 (`docs/PLANNING_SESSION15.md`). Resolution at runtime is
+  // env-var-first, store-fallback — see `openvox/secrets.py` on the
+  // backend.
+  setupStatus: () =>
+    http<{
+      complete: boolean;
+      have_llm: boolean;
+      have_voice: boolean;
+      providers_configured: Record<string, string[]>;
+    }>("/api/v1/admin/setup/status"),
+  setupSaveKeys: (provider: string, keys: Record<string, string>) =>
+    http<{
+      ok: boolean;
+      saved: string[];
+      deleted: string[];
+      status: {
+        complete: boolean;
+        have_llm: boolean;
+        have_voice: boolean;
+        providers_configured: Record<string, string[]>;
+      };
+    }>("/api/v1/admin/setup/keys", {
+      method: "POST",
+      body: JSON.stringify({ provider, keys }),
+    }),
+
+  // ── Pricing ───────────────────────────────────────────────────────
+  sessionPricing: (sessionId: string) =>
+    http<SessionPricing>(`/api/v1/pricing/sessions/${sessionId}`),
+  pricingRates: () => http<PricingRates>(`/api/v1/pricing/rates`),
+
+  // ── Evals ─────────────────────────────────────────────────────────
+  listPersonas: () => http<Persona[]>("/api/v1/evals/personas"),
+  listRecordings: () => http<RecordingRecord[]>("/api/v1/evals/recordings"),
+  listEvalRuns: (limit = 50) => http<EvalRunRecord[]>(`/api/v1/evals/runs?limit=${limit}`),
+  getEvalRun: (id: string) => http<EvalRunRecord>(`/api/v1/evals/runs/${id}`),
+  runEval: (body: RunEvalRequest) =>
+    http<EvalRunRecord>("/api/v1/evals/run", { method: "POST", body: JSON.stringify(body) }),
+  saveSessionAsRecording: (sessionId: string, name?: string) =>
+    http<RecordingRecord>(`/api/v1/evals/recordings/from-session`, {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId, name: name || "" }),
+    }),
+
+  // ── OAuth integrations (Phase 1.2 / 1.5) ──────────────────────────
+  // Status: list connected Google accounts + whether OAuth client is
+  // configured at the deployment level (501 if not — wizard / .env).
+  googleIntegrationStatus: () =>
+    http<{ configured: boolean; accounts: GoogleIntegrationAccount[] }>(
+      "/api/v1/integrations/google/status",
+    ),
+  // Helpers that build the URLs the page navigates to. The /start
+  // endpoint 302's to Google's consent screen, so we navigate the
+  // browser directly rather than fetching JSON.
+  googleIntegrationStartUrl: () => `${BASE}/api/v1/integrations/google/start`,
+  disconnectGoogleIntegration: (email: string) =>
+    http<{ ok: boolean; email: string; revoke_succeeded: boolean | null }>(
+      `/api/v1/integrations/google/${encodeURIComponent(email)}/disconnect`,
+      { method: "DELETE" },
+    ),
+
+  // ── Setup Assistant (Session 10) ──────────────────────────────────
+  setupAssistantSingleton: () =>
+    http<Agent>("/api/v1/templates/setup-assistant/singleton"),
+  // Text-mode turn against any agent (used by SetupAssistant's text
+  // input — voice goes through /ws/voice instead). Returns assistant
+  // text + an event log so the UI can render skill calls.
+  agentTurn: (agentId: string, userText: string, history: { role: string; content: string }[]) =>
+    http<{
+      text: string;
+      events: { type: string; name?: string; text?: string; args?: any; output?: any }[];
+    }>(`/api/v1/agents/${agentId}/turn`, {
+      method: "POST",
+      body: JSON.stringify({ user_text: userText, history }),
+    }),
 };
 
 export const wsUrl = (path: string) => `${WS}${path}`;
@@ -195,6 +349,10 @@ export type Agent = {
   channels: Record<string, unknown>;
   mcp_servers: McpServerConfig[];
   voice_map: Record<string, string>;
+  // Speech-to-Speech provider id. Empty string = pipeline mode
+  // (the stt_/llm_/tts_provider fields above are used). Populated
+  // values today: "openai_realtime". Phase 3 PR-B, v0.2.24.
+  s2s_provider?: string;
   status: string;
   created_at: string;
   updated_at: string;
@@ -209,6 +367,35 @@ export type McpServerConfig = {
   url?: string;
 };
 
+export type GoogleIntegrationAccount = {
+  provider: string;          // always "google" today; future-proofing
+  user_email: string;
+  scopes: string[];
+  expires_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type McpCatalogueEntry = {
+  id: string;
+  name: string;
+  tagline: string;
+  transport: "stdio" | "sse";
+  command?: string;
+  args?: string[];
+  env_required: string[];
+  env_optional: string[];
+  docs_url?: string;
+  icon?: string;
+  category?: string;
+  // Optional multi-line prose for out-of-band setup that the env block
+  // can't capture (credentials FILES at specific paths, interactive
+  // `npx … auth` commands, etc.). Rendered by the Browse-catalogue
+  // modal beneath the env-required list when present. Added in v0.2.9
+  // for the Gmail / Calendar MCPs which use file-based credentials.
+  setup_hint?: string;
+};
+
 export type Template = {
   id: string;
   name: string;
@@ -217,6 +404,9 @@ export type Template = {
   icon: string;
   use_cases: string[];
   default: Partial<Agent>;
+  /** BCP-47 short code ("en", "zh", "yue", "es", "id", "fr", "hi") on
+   *  language-family templates. Absent on the original 8 templates. */
+  language?: string;
 };
 
 export type Provider = {
@@ -227,7 +417,17 @@ export type Provider = {
   available: boolean;
 };
 
-export type Voice = { id: string; name: string };
+export type Voice = {
+  id: string;
+  name: string;
+  // Catalogue-only metadata (BytePlus voices have these; curated
+  // ElevenLabs/OpenAI entries don't and the fields are simply absent).
+  language?: string;
+  gender?: string;
+  style?: string;
+  scenario?: string;
+  language_codes?: string[];
+};
 
 export type Skill = {
   id: string;
@@ -275,6 +475,9 @@ export type TextChatRequest = {
   user: string;
   temperature?: number;
   max_tokens?: number;
+  // When set, the core persists a Session row so the call shows up on
+  // the Observability page.
+  agent_id?: string;
 };
 
 export type RtcToken = {
@@ -328,7 +531,7 @@ export type JobRecord = {
   kind: "agent_query" | "skill_run" | "audio_batch" | string;
   payload: Record<string, unknown>;
   agent_id: string;
-  trigger_type: "cron" | "interval" | "once" | string;
+  trigger_type: "cron" | "interval" | "once" | "webhook" | string;
   trigger_expr: string;
   timezone: string;
   enabled: boolean;
@@ -338,6 +541,9 @@ export type JobRecord = {
   last_error: string;
   created_at: string;
   updated_at: string;
+  // Webhook-trigger jobs only — full URL the integration should POST to.
+  webhook_url?: string;
+  webhook_token?: string;
 };
 
 export type JobRunRecord = {
@@ -347,4 +553,98 @@ export type JobRunRecord = {
   status: string;
   result: Record<string, unknown>;
   error: string;
+};
+
+// ── Pricing ─────────────────────────────────────────────────────────────
+
+export type SessionPricing = {
+  session_id: string;
+  duration_ms: number;
+  telemetry: {
+    tokens_in: number;
+    tokens_out: number;
+    tts_chars: number;
+    stt_chars: number;
+    estimated_from_duration: boolean;
+    stt_chars_estimated: boolean;
+  };
+  actual: {
+    total_usd: number;
+    components: { stt: number; llm_input: number; llm_output: number; tts: number };
+    rate_card: string;
+    warnings: string[];
+  };
+  alternatives: { combo: { stt: string; llm: string; tts: string }; total_usd: number; delta_usd: number }[];
+  cheapest: { combo: { stt: string; llm: string; tts: string }; total_usd: number; delta_usd: number } | null;
+  savings_vs_cheapest_usd: number;
+};
+
+export type ProviderRate = {
+  stt_usd_per_minute: number;
+  stt_usd_per_1m_chars: number;
+  llm_usd_per_1m_input: number;
+  llm_usd_per_1m_output: number;
+  tts_usd_per_1k_chars: number;
+  model_name: string;
+  source_url: string;
+  verified_at: string;
+  notes: string;
+};
+
+export type PricingRates = {
+  providers: Record<string, ProviderRate>;
+  override_via: string;
+};
+
+// ── Evals ───────────────────────────────────────────────────────────────
+
+export type Persona = {
+  id: string;
+  name: string;
+  description: string;
+  system_prompt: string;
+  voice_id: string;
+  tags: string[];
+  llm_provider?: string;
+  llm_model?: string;
+  builtin: boolean;
+  created_at?: string;
+};
+
+export type RecordingRecord = {
+  id: string;
+  name: string;
+  source_session_id: string;
+  source_agent_id: string;
+  transcript: { role: string; text: string; skill_id?: string }[];
+  audio_url: string;
+  tags: string[];
+  notes: string;
+  turn_count: number;
+  created_at: string;
+};
+
+export type EvalRunRecord = {
+  id: string;
+  agent_id: string;
+  recording_id: string | null;
+  persona_id: string | null;
+  criteria: string[];
+  transcript: { role: string; text: string }[];
+  verdict: string;       // "pass" | "fail" | "partial" | "running" | "error"
+  score: number;
+  judge_breakdown: { criterion: string; verdict: string; reasoning: string }[];
+  error: string;
+  turn_count: number;
+  duration_ms: number;
+  started_at: string;
+  ended_at: string | null;
+};
+
+export type RunEvalRequest = {
+  agent_id: string;
+  recording_id?: string;
+  persona_id?: string;
+  criteria?: string[];
+  max_turns?: number;
 };

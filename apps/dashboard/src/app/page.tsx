@@ -13,6 +13,15 @@ import {
   Sparkles,
   PhoneCall,
   Activity,
+  Briefcase,
+  Calendar,
+  FileText,
+  Mail,
+  PhoneOutgoing,
+  Languages,
+  ClipboardCheck,
+  DollarSign,
+  Wand2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -22,13 +31,14 @@ const providers = [
   "BytePlus Seed-2.0",
   "ElevenLabs",
   "Deepgram",
-  "OpenAI GPT-4o",
+  "OpenAI GPT-5",
   "Anthropic Claude",
   "Google Gemini",
   "DeepSeek",
   "Cartesia",
   "AssemblyAI",
   "Twilio",
+  "Telegram",
 ];
 
 const useCases = [
@@ -52,39 +62,93 @@ const useCases = [
     title: "Voice analyzer",
     desc: "Sentiment, profanity, and call-quality QA.",
   },
+  {
+    icon: Briefcase,
+    title: "Receptionist",
+    desc: "Appointment booking with conflict detection — voice or phone.",
+  },
+  {
+    icon: PhoneOutgoing,
+    title: "SDR / outbound sales",
+    desc: "BANT-qualifies leads, books demos, hands off to humans.",
+  },
+  {
+    icon: Languages,
+    title: "Multilingual hotline",
+    desc: "Auto-detects EN, ZH, ES, ID, FR + more — voice swaps per language.",
+  },
+  {
+    icon: FileText,
+    title: "Document Q&A",
+    desc: "RAG over your PDFs + docs. Voice-in, voice-out. BM25 fallback when embeddings 404.",
+  },
+  {
+    icon: Mail,
+    title: "Email Assistant",
+    desc: "Gmail MCP wired — summarise inbox, draft replies by voice.",
+  },
+  {
+    icon: Calendar,
+    title: "Calendar Scheduler",
+    desc: "Google Calendar MCP — book, reschedule, find slots without typing.",
+  },
 ];
 
 const features = [
   {
     icon: Zap,
-    title: "Sub-300ms latency",
-    desc: "Sentence-level streaming pipeline keeps the conversation fluid.",
+    title: "Sub-300ms first audio · <100ms interrupt",
+    desc: "Sentence-level streaming pipeline + Silero VAD. Measured P50=58ms, P95=121ms on interrupt.",
+  },
+  {
+    icon: Wand2,
+    title: "Build by voice",
+    desc: "Talk to the Setup Assistant — it picks a template, fills your prompt, attaches skills, publishes. No form-filling.",
+  },
+  {
+    icon: ClipboardCheck,
+    title: "Eval framework",
+    desc: "Synthetic personas (paranoid, angry, ESL) spar against your agent. Replay real calls. Catch regressions in CI.",
   },
   {
     icon: Plug,
     title: "Pluggable providers",
-    desc: "BytePlus, ElevenLabs, Deepgram, OpenAI, Anthropic — swap any layer at any time.",
+    desc: "14 providers across LLM / STT / TTS / VAD. Swap any layer per-agent — even mid-call.",
   },
   {
     icon: PhoneCall,
-    title: "Web, phone, and chat",
-    desc: "Browser RTC, Twilio voice calls, WhatsApp Business, Telegram. One agent, every channel.",
+    title: "Every channel",
+    desc: "Browser RTC, Twilio (in + out), WhatsApp, Telegram, WeChat Work, Lark. One agent, eight surfaces.",
+  },
+  {
+    icon: Sparkles,
+    title: "Skills, MCP, hot-reload",
+    desc: "30+ built-in skills. 8 MCP catalogue servers (Slack, Gmail, Calendar, GitHub, HubSpot, …). Drop a .py — auto-reloads.",
+  },
+  {
+    icon: DollarSign,
+    title: "Transparent cost calculator",
+    desc: "Cited rate card per provider. Per-session breakdown. What-if matrix shows you the cheapest combo for the call you just made.",
   },
   {
     icon: ShieldCheck,
-    title: "Local-first by default",
-    desc: "Runs on your laptop. SQLite + filesystem. Your audio never leaves your machine.",
+    title: "Self-hosted, no cloud middle-man",
+    desc: "Runs on your laptop or your cluster. SQLite + filesystem out of the box. Postgres + S3/TOS when you scale.",
   },
   {
     icon: Globe,
     title: "GDPR-aware",
     desc: "Configurable retention, regional residency, transcript-only mode, PII masking.",
   },
-  {
-    icon: Sparkles,
-    title: "Skills & extensions",
-    desc: "Add tools by dropping a Python file in ~/.openvox/skills, or pip-install third-party packages.",
-  },
+];
+
+const byTheNumbers = [
+  { value: "29", label: "Templates" },
+  { value: "7", label: "Languages" },
+  { value: "41", label: "BytePlus voices" },
+  { value: "30+", label: "Built-in skills" },
+  { value: "14", label: "Providers" },
+  { value: "8", label: "Channels" },
 ];
 
 export default function LandingPage() {
@@ -114,7 +178,7 @@ export default function LandingPage() {
               Providers
             </a>
             <a
-              href="https://github.com/openvox/openvox"
+              href="https://github.com/amznsri/openvox"
               target="_blank"
               rel="noreferrer"
               className="hidden md:inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground"
@@ -139,29 +203,39 @@ export default function LandingPage() {
         <div className="container py-24 md:py-32 text-center">
           <Badge variant="primary" className="mb-6 mx-auto">
             <span className="h-1.5 w-1.5 rounded-full bg-violet-400 mr-1.5 animate-pulse" />
-            Open-source • Local-first • Apache-2.0
+            Open-source • Self-hosted • Apache-2.0
           </Badge>
           <h1 className="text-5xl md:text-7xl font-bold tracking-tight">
             Voice agents that <span className="gradient-text">actually ship.</span>
           </h1>
           <p className="mt-6 text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto">
             OpenVox is the open platform for building, testing, and deploying production-grade voice
-            agents. Every layer is swappable. Every byte stays on your machine — until you say otherwise.
+            agents. Every layer is swappable. Self-hosted glue — your providers see audio + text,
+            but no OpenVox cloud sits in the loop.
           </p>
           <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
-            <Link href="/dashboard">
+            <Link href="/dashboard/agents/new?mode=voice">
               <Button variant="gradient" size="lg">
-                Open the dashboard
+                <Mic className="h-4 w-4" />
+                Build by voice
                 <ArrowRight className="h-4 w-4" />
               </Button>
             </Link>
-            <Link href="/dashboard/playground">
+            <Link href="/dashboard">
               <Button variant="outline" size="lg">
-                <Mic className="h-4 w-4" />
+                Open the dashboard
+              </Button>
+            </Link>
+            <Link href="/dashboard/playground">
+              <Button variant="ghost" size="lg">
                 Try the playground
               </Button>
             </Link>
           </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            🎙 Talk to the Setup Assistant — it&apos;ll build your first agent
+            for you. Or hop straight to the dashboard.
+          </p>
 
           <div className="mt-12 flex flex-wrap items-center justify-center gap-3 text-xs text-muted-foreground">
             <span className="font-medium tracking-wide uppercase">Powered by</span>
@@ -174,15 +248,30 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/* By the numbers */}
+      <section className="container py-8 md:py-12">
+        <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+          {byTheNumbers.map((n) => (
+            <div
+              key={n.label}
+              className="text-center rounded-xl p-4 border border-border/60 bg-card/40 backdrop-blur-xl"
+            >
+              <div className="text-2xl md:text-3xl font-bold gradient-text tabular-nums">{n.value}</div>
+              <div className="mt-1 text-xs text-muted-foreground uppercase tracking-wider">{n.label}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* Use cases */}
       <section id="templates" className="container py-16 md:py-24">
         <div className="text-center mb-12">
           <h2 className="text-3xl md:text-4xl font-bold">Pre-built templates, ready to launch</h2>
           <p className="mt-3 text-muted-foreground">
-            Four production-quality blueprints. Customise the prompt, plug your skills, ship.
+            29 production blueprints across 7 languages. Customise the prompt, plug your skills, ship.
           </p>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
           {useCases.map((u) => (
             <div key={u.title} className="gradient-border rounded-xl p-5 hover:translate-y-[-2px] transition-transform">
               <u.icon className="h-6 w-6 text-violet-400 mb-3" />
@@ -190,6 +279,12 @@ export default function LandingPage() {
               <p className="text-sm text-muted-foreground mt-1">{u.desc}</p>
             </div>
           ))}
+        </div>
+        <div className="mt-6 text-center">
+          <Link href="/dashboard/templates" className="text-sm text-cyan-300 hover:text-cyan-200 inline-flex items-center gap-1">
+            Browse all 29 templates
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
         </div>
       </section>
 
@@ -228,7 +323,7 @@ export default function LandingPage() {
             {[
               "BytePlus", "OpenAI", "Anthropic", "Gemini", "DeepSeek",
               "ElevenLabs", "Deepgram", "AssemblyAI", "Cartesia", "Whisper",
-              "Twilio", "WhatsApp",
+              "Silero VAD", "Twilio", "WhatsApp", "Telegram", "WeChat Work", "Lark",
             ].map((s) => (
               <div
                 key={s}
@@ -255,7 +350,7 @@ export default function LandingPage() {
                 <ArrowRight className="h-4 w-4" />
               </Button>
             </Link>
-            <a href="https://github.com/openvox/openvox" target="_blank" rel="noreferrer">
+            <a href="https://github.com/amznsri/openvox" target="_blank" rel="noreferrer">
               <Button variant="outline" size="lg">
                 <Github className="h-4 w-4" />
                 Read the docs
@@ -269,7 +364,7 @@ export default function LandingPage() {
         <div className="container py-8 flex flex-col md:flex-row items-center justify-between gap-4 text-sm text-muted-foreground">
           <p>OpenVox — Apache-2.0. Built openly.</p>
           <div className="flex items-center gap-4">
-            <a href="https://github.com/openvox/openvox" className="hover:text-foreground" target="_blank" rel="noreferrer">
+            <a href="https://github.com/amznsri/openvox" className="hover:text-foreground" target="_blank" rel="noreferrer">
               GitHub
             </a>
             <Link href="/dashboard" className="hover:text-foreground">Dashboard</Link>

@@ -41,18 +41,53 @@ from openvox.providers.base import (
     TTSConfig,
     TTSProvider,
 )
+from openvox.providers.vad.base import VADConfig, VADProvider
 from openvox.skills import SkillRunner
 
 logger = logging.getLogger(__name__)
+
+# ── STT hallucination defence ────────────────────────────────────────
+# BytePlus Seed-ASR (and most multilingual ASRs) emit very-low-confidence
+# finals during silence, breath sounds, or lip smacks — frequently a
+# Chinese filler like 嗯/啊/哦 because Seed is Chinese-first. These slip
+# through as USER turns and the LLM dutifully replies, which is what
+# users perceive as "the assistant answering on its own".
+#
+# Filter rule: drop user_final when confidence is EXPLICITLY between 0
+# and the threshold below. Confidence of exactly 0.0 means "no value
+# reported" by the provider — we let those pass to avoid silently
+# breaking providers that don't populate the field.
+#
+# Threshold picked from BytePlus's empirical distribution: real speech
+# is typically >0.8, hallucinations <0.3. 0.5 is a comfortable middle
+# ground that catches the bad ones without risking real utterances.
+_MIN_STT_FINAL_CONFIDENCE = 0.5
+
+# The heavy lifting for ASR hallucination defence + filler-affix
+# trimming now lives in openvox.utils.text.sanitize_user_final —
+# centralised so unit-testable in isolation. The orchestrator just
+# applies the result.
 
 
 @dataclass
 class SessionConfig:
     system_prompt: str = "You are a helpful voice assistant."
     greeting: str = ""
-    llm_model: str = "doubao-seed-1.6-250615"
+    # Empty string → providers fall back to their configured default
+    # (BytePlus reads settings.byteplus_llm_model = "seed-2-0-pro-260328"
+    # via providers/byteplus/llm.py:_model_id). Hard-coding a model name
+    # here used to silently force every caller to "doubao-seed-1.6-250615"
+    # which doesn't exist on our key. Leave blank — the resolver does the
+    # right thing.
+    llm_model: str = ""
     temperature: float = 0.7
     max_tokens: int = 2048
+    # Safety cap on the LLM ↔ skill round-trip loop. Each iteration is
+    # "LLM returns tool_calls → we run them → feed results back". Most
+    # turns finish in 1–2 iterations; runaway loops (LLM that always
+    # asks for another tool) used to blow the Python stack. 6 is plenty
+    # for legitimate multi-step reasoning and stops the loop cleanly.
+    max_tool_iterations: int = 6
     stt: STTConfig = None  # type: ignore[assignment]
     tts: TTSConfig = None  # type: ignore[assignment]
     skills: list[str] | None = None
@@ -97,15 +132,34 @@ class VoiceSession:
         tts: TTSProvider,
         config: SessionConfig,
         skill_runner: SkillRunner | None = None,
+        vad: VADProvider | None = None,
     ) -> None:
         self._stt = stt
         self._llm = llm
         self._tts = tts
+        self._vad = vad
         self._cfg = config
         self._skills = skill_runner or SkillRunner(skill_ids=config.skills or [])
         self._history: list[LLMMessage] = [LLMMessage(role="system", content=config.system_prompt)]
+        # We tee inbound audio into two queues: STT reads one (slow but
+        # transcribes), VAD reads the other (fast but only detects voice).
+        # If no VAD provider is configured, the VAD queue stays unused and
+        # the second `put` is a near-zero cost.
         self._inbound: asyncio.Queue[AudioChunk | None] = asyncio.Queue(maxsize=128)
+        self._vad_inbound: asyncio.Queue[AudioChunk | None] = asyncio.Queue(maxsize=128)
         self._cancel_tts: asyncio.Event = asyncio.Event()
+        # Track whether we're currently mid-speak so the VAD task can
+        # decide whether a speech_start should actually trigger interrupt.
+        # We only want to barge in if we're actively producing TTS audio —
+        # interrupting the user while they're talking to us is nonsense.
+        self._speaking: bool = False
+        # Background task that drains the VAD stream. Lives for the whole
+        # session lifetime and is cancelled in run()'s `finally`.
+        self._vad_task: asyncio.Task | None = None
+        # Most recent server-side VAD timestamp of speech_start, in
+        # monotonic ms. Useful for measuring interrupt latency in tests
+        # (see scripts/measure_interrupt.py).
+        self._last_vad_speech_start_ms: int = 0
         # Once TTS errors out for a turn, stop hammering the API for every
         # remaining sentence — surface a single friendly error and let the
         # text response complete.
@@ -125,12 +179,42 @@ class VoiceSession:
     # ── Public: feed audio in, get events out ────────────────────────
     async def push_audio(self, chunk: AudioChunk) -> None:
         await self._inbound.put(chunk)
+        # Tee to VAD if active. Use put_nowait + drop on overflow rather
+        # than block — VAD lagging shouldn't backpressure the STT path.
+        if self._vad_task is not None:
+            try:
+                self._vad_inbound.put_nowait(chunk)
+            except asyncio.QueueFull:
+                logger.debug("vad queue full — dropping frame for detection")
 
     async def end_audio(self) -> None:
         await self._inbound.put(None)
+        if self._vad_task is not None:
+            try:
+                self._vad_inbound.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
 
     async def run(self) -> AsyncIterator[TurnEvent]:
         """Drive the pipeline. Yields TurnEvents until the session ends."""
+        # Spin up the VAD background task if a provider was supplied and
+        # is actually available (silero-vad may be missing in some envs).
+        if self._vad is not None and self._vad.is_available():
+            await self._vad.warmup()
+            self._vad_task = asyncio.create_task(self._vad_loop())
+
+        try:
+            async for ev in self._run_inner():
+                yield ev
+        finally:
+            if self._vad_task is not None:
+                self._vad_task.cancel()
+                try:
+                    await self._vad_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+    async def _run_inner(self) -> AsyncIterator[TurnEvent]:
         # Optional greeting before the user speaks.
         if self._cfg.greeting:
             async for ev in self._speak(self._cfg.greeting):
@@ -175,6 +259,42 @@ class VoiceSession:
                 return
             yield chunk
 
+    async def _vad_audio_iterator(self) -> AsyncIterator[AudioChunk]:
+        while True:
+            chunk = await self._vad_inbound.get()
+            if chunk is None:
+                return
+            yield chunk
+
+    async def _vad_loop(self) -> None:
+        """Drain the VAD provider's event stream for the whole session.
+
+        On `speech_start`, if we're currently producing TTS audio
+        (`_speaking == True`), set the cancel flag so the in-flight TTS
+        stream aborts on its next iteration. We do NOT interrupt when
+        the user is the one talking (the natural case during _listen_one_turn)
+        because the user-side speech is what STT is *supposed* to be
+        eating right now.
+        """
+        if self._vad is None:
+            return
+        try:
+            async for ev in self._vad.detect_stream(self._vad_audio_iterator(), VADConfig()):
+                if ev.kind == "speech_start":
+                    self._last_vad_speech_start_ms = ev.timestamp_ms
+                    if self._speaking:
+                        logger.debug(
+                            "vad: speech_start at %d ms (prob=%.2f) — interrupting",
+                            ev.timestamp_ms, ev.prob,
+                        )
+                        self._cancel_tts.set()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # VAD lives in the background — if it goes sideways, log and
+            # exit quietly. The main pipeline still works without it.
+            logger.exception("vad loop crashed; falling back to client-driven interrupt")
+
     async def _listen_one_turn(self) -> AsyncIterator[TurnEvent]:
         try:
             async for r in self._stt.transcribe_stream(self._audio_iterator(), self._cfg.stt):
@@ -187,9 +307,52 @@ class VoiceSession:
                     if hasattr(self._skills, "_ctx") and self._skills._ctx is not None:
                         self._skills._ctx.metadata["last_language"] = r.language
                         self._skills._ctx.metadata["last_language_confidence"] = r.confidence
+                # ── ASR hallucination + filler-affix defence ─────
+                # Only applied to FINAL transcripts — partials are
+                # cosmetic, flicker, and get replaced before the user
+                # can act on them. Filters `continue` rather than
+                # `return` so the STT stream stays open for the next,
+                # real utterance.
+                final_text = r.text
+                if r.is_final:
+                    # Layer 1: explicit confidence floor. Catches
+                    # providers that report a low score for their own
+                    # hallucinations. confidence==0 means "no value
+                    # reported" — pass through.
+                    if 0.0 < r.confidence < _MIN_STT_FINAL_CONFIDENCE:
+                        logger.info(
+                            "dropping low-confidence STT final: text=%r confidence=%.2f language=%s",
+                            r.text, r.confidence, r.language,
+                        )
+                        continue
+                    # Layer 2: trim leading/trailing filler chars
+                    # ("嗯。create" → "create") AND drop pure-filler
+                    # finals. Centralised in utils.text so the
+                    # behaviour is unit-testable and reused across
+                    # telephony / batch transcription paths.
+                    from openvox.utils.text import sanitize_user_final
+                    cleaned, reason = sanitize_user_final(
+                        r.text, self._cfg.stt.language
+                    )
+                    if cleaned is None:
+                        logger.info(
+                            "dropping ASR hallucination (%s) — text=%r confidence=%.2f detected_language=%s",
+                            reason, r.text, r.confidence, r.language,
+                        )
+                        continue
+                    if cleaned != r.text:
+                        logger.info(
+                            "trimmed ASR filler affix: %r → %r confidence=%.2f",
+                            r.text, cleaned, r.confidence,
+                        )
+                    final_text = cleaned
+                    logger.info(
+                        "STT user_final accepted: text=%r confidence=%.2f language=%s",
+                        final_text, r.confidence, r.language,
+                    )
                 yield TurnEvent(
                     kind="user_final" if r.is_final else "user_partial",
-                    text=r.text,
+                    text=final_text,
                     data={"confidence": r.confidence, "language": r.language},
                 )
                 if r.is_final:
@@ -199,6 +362,23 @@ class VoiceSession:
             yield TurnEvent(kind="error", text=str(e))
 
     async def _llm_turn(self) -> AsyncIterator[TurnEvent]:
+        """One user turn → one (or more, if tools are called) LLM rounds.
+
+        Used to recurse on every tool-call round which made a runaway
+        skill loop fatal (Python stack blew, session crashed). Now bounded
+        by `SessionConfig.max_tool_iterations`:
+
+            for _ in range(max_tool_iterations):
+                stream LLM tokens + flush sentences to TTS
+                accumulate tool_calls
+                if no tool_calls: return  ← happy path, most turns
+                run tools, append results to history, loop
+            else: emit error("max tool iterations exceeded")
+
+        Wrapping the cap in `SessionConfig` so per-agent overrides are
+        possible (some skills genuinely chain — e.g. SDR with
+        fetch_next_lead → get_lead → record_disposition → book_demo).
+        """
         cfg = LLMConfig(
             model=self._cfg.llm_model,
             temperature=self._cfg.temperature,
@@ -206,41 +386,77 @@ class VoiceSession:
             stream=True,
             tools=self._skills.tool_specs() or None,
         )
-        try:
-            buffer = ""
-            # OpenAI-style streaming sends tool_call arguments in fragments
-            # (one chunk per few characters of JSON). We must accumulate
-            # them by `index` to get the final list of well-formed calls.
-            tool_calls_by_idx: dict[int, dict[str, Any]] = {}
 
-            async for chunk in self._llm.chat_stream(self._history, cfg):
-                if chunk.tool_calls:
-                    _merge_tool_call_deltas(tool_calls_by_idx, chunk.tool_calls)
-                if chunk.delta:
-                    buffer += chunk.delta
-                    yield TurnEvent(kind="assistant_token", text=chunk.delta)
-                    # Flush completed sentences to TTS for low latency.
-                    while True:
-                        m = _SENTENCE_BREAK.search(buffer)
-                        if not m:
-                            break
-                        sentence = buffer[: m.end()].strip()
-                        buffer = buffer[m.end():]
-                        if sentence:
-                            async for ev in self._speak(sentence):
-                                yield ev
-                if chunk.finish_reason:
-                    break
-            # Flush trailing buffer.
-            if buffer.strip():
-                async for ev in self._speak(buffer.strip()):
-                    yield ev
+        for iteration in range(self._cfg.max_tool_iterations):
+            try:
+                buffer = ""
+                # OpenAI-style streaming sends tool_call arguments in
+                # fragments (one chunk per few chars of JSON). We must
+                # accumulate them by `index` to get well-formed calls.
+                tool_calls_by_idx: dict[int, dict[str, Any]] = {}
+                # Reasoning-tag filter — Seed-2-Pro emits chain-of-
+                # thought inside `<think>…</think_HASH>` blocks (and
+                # the close tag carries a per-session random hash so
+                # naive regex strips don't work across chunks). The
+                # streaming stripper holds back partial tags until
+                # they resolve, so downstream consumers (display,
+                # TTS, history) only ever see clean text. See
+                # openvox.utils.text.ReasoningStripper.
+                from openvox.utils.text import ReasoningStripper
+                stripper = ReasoningStripper()
 
-            tool_calls = _finalise_tool_calls(tool_calls_by_idx)
-            if tool_calls:
-                # OpenAI / Ark protocol requires the assistant message that
-                # *issued* the tool_calls to appear in history before the
-                # tool reply. Without it the next request returns 400.
+                async for chunk in self._llm.chat_stream(self._history, cfg):
+                    if chunk.tool_calls:
+                        _merge_tool_call_deltas(tool_calls_by_idx, chunk.tool_calls)
+                    if chunk.delta:
+                        # Filter out reasoning tags + their content.
+                        # Returns "" while inside an open <think>…
+                        # block — we suppress display/TTS/history
+                        # writes until the block closes.
+                        visible = stripper.feed(chunk.delta)
+                        if visible:
+                            buffer += visible
+                            yield TurnEvent(kind="assistant_token", text=visible)
+                            # Flush completed sentences to TTS for low latency.
+                            while True:
+                                m = _SENTENCE_BREAK.search(buffer)
+                                if not m:
+                                    break
+                                sentence = buffer[: m.end()].strip()
+                                buffer = buffer[m.end():]
+                                if sentence:
+                                    async for ev in self._speak(sentence):
+                                        yield ev
+                    # Provider-reported usage usually arrives in the
+                    # terminal chunk (after we set stream_options.
+                    # include_usage on the request). Surface it as its
+                    # own TurnEvent so the WS forwarder / pricing
+                    # calculator can overwrite the word-count proxy
+                    # with the real number.
+                    if chunk.usage:
+                        yield TurnEvent(kind="llm_usage", data=dict(chunk.usage))
+                    if chunk.finish_reason:
+                        break
+                # End-of-stream: release any clean text the stripper
+                # was holding back. Unclosed reasoning at EOS is
+                # dropped (model was cut off mid-think).
+                tail = stripper.flush()
+                if tail:
+                    buffer += tail
+                    yield TurnEvent(kind="assistant_token", text=tail)
+                # Flush trailing buffer.
+                if buffer.strip():
+                    async for ev in self._speak(buffer.strip()):
+                        yield ev
+
+                tool_calls = _finalise_tool_calls(tool_calls_by_idx)
+                if not tool_calls:
+                    # No tools called → LLM is done, end the turn.
+                    return
+
+                # OpenAI / Ark protocol requires the assistant message
+                # that issued the tool_calls to appear in history before
+                # the tool replies. Without it the next request returns 400.
                 self._history.append(
                     LLMMessage(role="assistant", content=buffer, tool_calls=tool_calls)
                 )
@@ -256,12 +472,12 @@ class VoiceSession:
                     if not isinstance(parsed_args, dict):
                         parsed_args = {"_value": parsed_args}
 
-                    yield TurnEvent(kind="skill_call", text=name, data=parsed_args)
+                    yield TurnEvent(kind="skill_call", text=name, data={"args": parsed_args})
                     result = await self._skills.invoke(name, parsed_args)
                     yield TurnEvent(kind="skill_result", text=name, data=result)
 
-                    # Tool-result message must reference the call's id, not
-                    # the function name (OpenAI / Ark contract).
+                    # Tool-result message must reference the call's id,
+                    # not the function name (OpenAI / Ark contract).
                     self._history.append(
                         LLMMessage(
                             role="tool",
@@ -270,18 +486,42 @@ class VoiceSession:
                             content=json.dumps(result, ensure_ascii=False),
                         )
                     )
-                # Recurse — let the LLM continue with the tool result.
-                async for ev in self._llm_turn():
-                    yield ev
-        except Exception as e:
-            logger.exception("llm error")
-            yield TurnEvent(kind="error", text=str(e))
+                # Loop: ask the LLM to continue with the tool result.
+                # If the LLM responds with another tool_calls, we'll do
+                # this dance again — but only up to max_tool_iterations.
+            except Exception as e:
+                logger.exception("llm error on iteration %d", iteration)
+                yield TurnEvent(kind="error", text=str(e))
+                return
+
+        # Fell out of the for-loop → exceeded the iteration cap.
+        # Emit a clear error rather than failing silently.
+        logger.warning(
+            "tool-call loop exceeded max_tool_iterations=%d — ending turn",
+            self._cfg.max_tool_iterations,
+        )
+        yield TurnEvent(
+            kind="error",
+            text=(
+                f"tool-call loop exceeded {self._cfg.max_tool_iterations} iterations; "
+                "ending turn — your agent's skills may be calling each other in a cycle."
+            ),
+        )
 
 
     async def _speak(self, sentence: str) -> AsyncIterator[TurnEvent]:
         # If TTS already failed in this turn, stop retrying — the LLM text
         # will still finish but we won't generate audio.
         if self._tts_disabled_for_turn:
+            return
+        # TTS sanitisation: LLMs emit text optimised for reading, not
+        # listening — markdown emphasis, URLs, emoji, repeated
+        # punctuation, hyphens in compound words all read terribly.
+        # Strip / normalise before synthesis. Cheap (regex over a
+        # sentence). See openvox/utils/text.py for the full list.
+        from openvox.utils.text import clean_for_tts
+        spoken = clean_for_tts(sentence)
+        if not spoken:
             return
         # Multilingual support: if the agent's voice_map has an entry for
         # the currently-detected language, swap the speaker for this
@@ -295,8 +535,13 @@ class VoiceSession:
                 # Use a copy so we don't mutate the shared config.
                 from dataclasses import replace
                 tts_cfg = replace(tts_cfg, voice_id=picked, language=self._last_language)
+        # `_speaking` toggles the VAD background task's decision: a
+        # speech_start while `_speaking == True` means user is barging in,
+        # so we cancel TTS. Outside this block, user audio is the expected
+        # input (during _listen_one_turn) and shouldn't trigger interrupt.
+        self._speaking = True
         try:
-            async for chunk in self._tts.synthesize_stream(sentence, tts_cfg):
+            async for chunk in self._tts.synthesize_stream(spoken, tts_cfg):
                 if self._cancel_tts.is_set():
                     self._cancel_tts.clear()
                     yield TurnEvent(kind="interrupt")
@@ -319,10 +564,41 @@ class VoiceSession:
                     text=str(e),
                     data={"hint": "Set BYTEPLUS_TTS_DEFAULT_VOICE in .env to a voice your BytePlus key is licensed for, or change the agent's Voice ID."},
                 )
+        finally:
+            # Important: clear the speaking flag before returning so a
+            # follow-up user utterance during _listen_one_turn doesn't
+            # get treated as an interrupt-mid-TTS.
+            self._speaking = False
 
     def interrupt(self) -> None:
-        """User started speaking again — cut current playback."""
+        """User started speaking again — cut current playback.
+
+        Called from two sites today:
+          - WS receives `{"type":"interrupt"}` (dashboard Stop button
+            or browser-native stop-word listener).
+          - VAD background loop sees `speech_start` while we're
+            mid-TTS (server-side echo / barge-in).
+
+        The flag is checked once per TTS chunk in `_speak()`, so
+        cancellation lands within one chunk (~20-40 ms) of being set.
+        """
+        was_speaking = self._speaking
         self._cancel_tts.set()
+        logger.info(
+            "interrupt() called — speaking=%s (cancel flag set; next "
+            "TTS chunk will yield 'interrupt' event)",
+            was_speaking,
+        )
+
+    # ── Observability ────────────────────────────────────────────────
+    @property
+    def last_vad_speech_start_ms(self) -> int:
+        """Monotonic timestamp (ms) of the most recent VAD speech_start.
+
+        Read by `scripts/measure_interrupt.py` to compute interrupt
+        latency: (time TTS cancel event is observed) - (this value).
+        """
+        return self._last_vad_speech_start_ms
 
 
 # ──────────────────────────────────────────────────────────────────────

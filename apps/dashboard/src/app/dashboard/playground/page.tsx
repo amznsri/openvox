@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ArrowRight, Bot, FileUp, Loader2, Mic as MicIcon, Search, Send, Sparkles, Square, Upload, User2 } from "lucide-react";
 
@@ -15,16 +16,48 @@ import { AudioPlaybackQueue, captureMicrophone } from "@/lib/voice/audio";
 
 type Line = { role: "user" | "assistant" | "skill" | "system"; text: string; pending?: boolean };
 
-export default function PlaygroundPage() {
+// Default export wrapped in <Suspense> so useSearchParams works under
+// Next.js `output: 'export'` (static export). Same pattern as
+// agents/edit/page.tsx and integrations/page.tsx — see CLAUDE.md §8
+// #93 for the build-time error this prevents.
+export default function PlaygroundPageWrapper() {
+  return (
+    <Suspense fallback={<div className="container py-12 text-muted-foreground">Loading…</div>}>
+      <PlaygroundPage />
+    </Suspense>
+  );
+}
+
+function PlaygroundPage() {
   const { data: agents = [] } = useSWR<Agent[]>("agents", () => api.listAgents());
   const { data: providers = [] } = useSWR<Provider[]>("providers", () => api.listProviders());
 
-  const [selectedAgent, setSelectedAgent] = useState<string>("");
+  // Pre-select an agent when the page is opened via "Test" buttons
+  // (Agents list, Agent edit page, voice/typed "test <name>" command).
+  // All four entry points pass `?agent=<id>` in the URL; without this,
+  // the Configuration card stuck on "Ad-hoc (use settings below)"
+  // regardless of which agent the user had just clicked Test for.
+  const searchParams = useSearchParams();
+  const agentParam = searchParams.get("agent") ?? "";
+  const [selectedAgent, setSelectedAgent] = useState<string>(agentParam);
+  // The query param may arrive BEFORE the agents SWR has resolved; we
+  // accept it eagerly and let the "apply settings" effect below run
+  // once `agents` loads. If the URL param is later changed while the
+  // page is open (e.g. back-button to a previous Test click), sync
+  // the dropdown to match.
+  useEffect(() => {
+    if (agentParam) setSelectedAgent(agentParam);
+  }, [agentParam]);
   const [systemPrompt, setSystemPrompt] = useState(
     "You are a helpful voice assistant. Keep responses under 2 sentences.",
   );
   const [llmProvider, setLlmProvider] = useState("byteplus");
-  const [llmModel, setLlmModel] = useState("doubao-seed-1.6-250615");
+  // Empty string is the canonical "use settings default" sentinel —
+  // BytePlus / OpenAI providers resolve it to their configured model
+  // (settings.byteplus_llm_model = "seed-2-0-pro-260328" by default).
+  // The previous hardcoded "doubao-seed-1.6-250615" was stale and
+  // didn't exist on the user's key — see CLAUDE.md §8 #45.
+  const [llmModel, setLlmModel] = useState("");
   const [sttProvider, setSttProvider] = useState("byteplus");
   const [ttsProvider, setTtsProvider] = useState("byteplus");
 
@@ -123,12 +156,83 @@ export default function PlaygroundPage() {
     setMicState("idle");
   }
 
+  // Aggressive lifecycle cleanup — if the user navigates away (tab
+  // switch, page hide, component unmount) we MUST stop the mic and
+  // close the WebSocket. Otherwise the open mic keeps streaming
+  // background audio, BytePlus STT transcribes it as garbage
+  // utterances, and the LLM responds — playing TTS audio "every few
+  // seconds" with no apparent trigger from the user's side.
+  useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState === "hidden") stopVoice();
+    };
+    const onPagehide = () => stopVoice();
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", onPagehide);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", onPagehide);
+      stopVoice();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function handleEvent(ev: Record<string, unknown>) {
     const type = ev.type as string;
     const text = (ev.text as string) || "";
     if (type === "user_partial") {
+      // Barge-in detection. If the assistant's audio queue is
+      // currently playing (or has pending buffers), the user
+      // starting to speak means INTERRUPT, not "wait until current
+      // utterance finishes".
+      //
+      // Two parallel actions:
+      //   1. LOCAL: drain the playback queue immediately. The server
+      //      may already have synthesised 20-30 seconds of audio
+      //      ahead of realtime (BytePlus TTS streams faster than
+      //      audio plays); without this the user hears the rest
+      //      even though the server stops generating new chunks.
+      //   2. REMOTE: send {type:"interrupt"} to the WS. The
+      //      orchestrator's interrupt() sets _cancel_tts, which the
+      //      _speak() loop checks each chunk — kills in-flight TTS
+      //      generation on the server side too.
+      //
+      // The user-spotted bug this fixes: with BytePlus pipeline,
+      // mid-response "Stop" was transcribed (we see USER: Stop in
+      // the transcript) and the LLM produced a new "Got it" turn,
+      // but the dashboard kept playing audio for the PREVIOUS
+      // turn's pre-buffered bullets. Reported 2026-05-27.
+      //
+      // Why on user_partial (not user_final): partial fires within
+      // ~150ms of speech start; final waits for end-of-utterance
+      // (which can be 1-2 seconds later). Cutting audio at partial
+      // matches human conversational barge-in timing.
+      if (playerRef.current?.isPlaying()) {
+        playerRef.current.stopAll();
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(
+            JSON.stringify({ type: "interrupt", source: "client-stt-partial" })
+          );
+        }
+      }
       setLines((ls) => upsertPending(ls, "user", text));
     } else if (type === "user_final") {
+      // Defence-in-depth: if the STT provider doesn't emit
+      // user_partial (some adapters only fire user_final on
+      // end-of-utterance), the barge-in branch above never ran.
+      // Repeat the check here so audio still drains, just with
+      // slightly more delay than the partial-driven path.
+      // The stopAll() is a no-op if the queue is already empty
+      // (e.g. partial already fired this turn), so it's safe to
+      // call unconditionally.
+      if (playerRef.current?.isPlaying()) {
+        playerRef.current.stopAll();
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(
+            JSON.stringify({ type: "interrupt", source: "client-stt-final" })
+          );
+        }
+      }
       setLines((ls) => finalisePending(ls, "user", text));
     } else if (type === "assistant_token") {
       setLines((ls) => appendAssistantToken(ls, text));
@@ -169,6 +273,8 @@ export default function PlaygroundPage() {
           model: llmModel,
           system: systemPrompt,
           user: userMsg,
+          // Surfaces this turn on Observability when an agent is picked.
+          agent_id: selectedAgent || undefined,
         },
         (tok) => {
           setLines((ls) => {
@@ -209,6 +315,43 @@ export default function PlaygroundPage() {
               ))}
             </Select>
           </div>
+          {/*
+            S2S-mode banner. Pulled from the selected agent's
+            `s2s_provider` field — populated only when the user
+            opted into S2S on the agent edit page. We don't
+            re-implement the toggle here; the playground is for
+            EXERCISING the agent's saved config, not editing it.
+
+            Showing the banner above the system prompt / providers
+            grid (rather than below) means the user sees "this is
+            S2S mode" before scanning the fields that LOOK like
+            they're active. Without this header the saved BytePlus
+            values in the LLM / STT / TTS dropdowns read as
+            "BytePlus is being used right now", when in reality
+            the WS voice route ignores them entirely in S2S mode.
+          */}
+          {(() => {
+            const a = agents.find((x) => x.id === selectedAgent);
+            const s2s = (a?.s2s_provider || "").trim();
+            if (!s2s) return null;
+            return (
+              <div className="rounded-md border border-violet-500/30 bg-violet-500/5 px-3 py-2 text-xs text-violet-200/90 space-y-1">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="h-3.5 w-3.5 text-violet-300" />
+                  <span className="font-semibold">
+                    {s2s === "openai_realtime"
+                      ? "S2S — OpenAI Realtime"
+                      : `S2S — ${s2s}`}
+                  </span>
+                </div>
+                <p>
+                  Single-WS voice. The provider fields below are saved
+                  fallback only and <em>not consulted</em> while S2S is
+                  engaged. To change voice mode, open Agents → Edit.
+                </p>
+              </div>
+            );
+          })()}
           <div>
             <Label>System prompt</Label>
             <Textarea
@@ -217,10 +360,23 @@ export default function PlaygroundPage() {
               onChange={(e) => setSystemPrompt(e.target.value)}
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          {(() => {
+            const a = agents.find((x) => x.id === selectedAgent);
+            const s2sActive = !!(a?.s2s_provider || "").trim();
+            return (
+              <div
+                className={`grid grid-cols-2 gap-3 ${
+                  s2sActive ? "opacity-50 pointer-events-none" : ""
+                }`}
+                aria-disabled={s2sActive}
+              >
             <div>
               <Label>LLM</Label>
-              <Select value={llmProvider} onChange={(e) => setLlmProvider(e.target.value)}>
+              <Select
+                value={llmProvider}
+                onChange={(e) => setLlmProvider(e.target.value)}
+                disabled={s2sActive}
+              >
                 {provFor("llm").map((p) => (
                   <option key={p.id} value={p.id} disabled={!p.available}>
                     {p.display_name}
@@ -231,11 +387,24 @@ export default function PlaygroundPage() {
             </div>
             <div>
               <Label>Model</Label>
-              <Input value={llmModel} onChange={(e) => setLlmModel(e.target.value)} />
+              <Input
+                value={llmModel}
+                onChange={(e) => setLlmModel(e.target.value)}
+                disabled={s2sActive}
+                // Leaving blank is the canonical "use the provider's
+                // configured default" sentinel — surfaced as a
+                // placeholder so users don't think the field is
+                // broken when an agent has no explicit model set.
+                placeholder="(use provider default from .env)"
+              />
             </div>
             <div>
               <Label>STT</Label>
-              <Select value={sttProvider} onChange={(e) => setSttProvider(e.target.value)}>
+              <Select
+                value={sttProvider}
+                onChange={(e) => setSttProvider(e.target.value)}
+                disabled={s2sActive}
+              >
                 {provFor("stt").map((p) => (
                   <option key={p.id} value={p.id} disabled={!p.available}>
                     {p.display_name}
@@ -246,7 +415,11 @@ export default function PlaygroundPage() {
             </div>
             <div>
               <Label>TTS</Label>
-              <Select value={ttsProvider} onChange={(e) => setTtsProvider(e.target.value)}>
+              <Select
+                value={ttsProvider}
+                onChange={(e) => setTtsProvider(e.target.value)}
+                disabled={s2sActive}
+              >
                 {provFor("tts").map((p) => (
                   <option key={p.id} value={p.id} disabled={!p.available}>
                     {p.display_name}
@@ -255,7 +428,9 @@ export default function PlaygroundPage() {
                 ))}
               </Select>
             </div>
-          </div>
+              </div>
+            );
+          })()}
         </CardContent>
       </Card>
 

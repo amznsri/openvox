@@ -1,0 +1,9 @@
+# WinGet version manifest — the top-level entry that ties the
+# installer + locale files together. Schema docs:
+#   https://learn.microsoft.com/en-us/windows/package-manager/package/manifest
+
+PackageIdentifier: OpenVox.OpenVox
+PackageVersion: 0.0.0
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

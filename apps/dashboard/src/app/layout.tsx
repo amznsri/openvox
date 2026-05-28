@@ -6,9 +6,9 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
 export const metadata: Metadata = {
-  title: "OpenVox — Local-first voice agent platform",
+  title: "OpenVox — Self-hosted voice agent platform",
   description:
-    "Build, test, and deploy voice agents with BytePlus, ElevenLabs, OpenAI, Anthropic and more. Runs on your machine.",
+    "Build, test, and deploy voice agents with BytePlus, ElevenLabs, OpenAI, Anthropic and more. Runs on your machine — no cloud middle-man.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

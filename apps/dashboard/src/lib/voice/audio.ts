@@ -112,6 +112,24 @@ export class AudioPlaybackQueue {
     this.cursor = this.ctx.currentTime + LOOKAHEAD_S;
   }
 
+  /**
+   * Are any audio buffers currently playing OR pending playback?
+   *
+   * Used by the playground (and any other voice consumer) to decide
+   * whether a fresh STT `user_partial` event represents a BARGE-IN
+   * (user interrupted mid-response) vs. a NEW TURN (user starting
+   * to speak when assistant was silent). Barge-in requires draining
+   * the queue + notifying the server; new-turn doesn't.
+   *
+   * Implementation note: `active` tracks every AudioBufferSourceNode
+   * we've started. The `onended` handler removes each entry on
+   * natural completion. So `active.length > 0` is true iff at
+   * least one node is scheduled and hasn't finished playing yet.
+   */
+  isPlaying(): boolean {
+    return this.active.length > 0;
+  }
+
   close() {
     this.stopAll();
     this.ctx.close().catch(() => {});

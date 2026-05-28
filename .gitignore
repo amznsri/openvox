@@ -17,6 +17,11 @@ build/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+# pytest-cov scratch files — generated on every `pytest --cov` run
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 .venv/
 venv/
 env/
@@ -32,6 +37,11 @@ env/
 .idea/
 *.swp
 .DS_Store
+
+# Claude Code — per-developer local config (launch.json for the preview
+# server, settings.local.json for permission grants). These shouldn't
+# travel with the repo; each contributor's setup is their own.
+.claude/
 
 # Local data (local-first)
 data/
@@ -50,6 +60,17 @@ pnpm-debug.log*
 
 # OpenVox local state directory
 .openvox/
+/packages/core/openvox/_dashboard/*
+!/packages/core/openvox/_dashboard/.gitkeep
 
-# Local reference repos (not tracked)
-openclaw/
+# Next.js / npm — auto-generated, not source
+apps/dashboard/next-env.d.ts
+apps/dashboard/package-lock.json
+
+# Internal-only working files. CLAUDE.md (project memory for the
+# coding agent) and docs/ (planning notes, session logs, internal
+# READMEs) are maintained in the local clone but NOT pushed to
+# GitHub. The repo's public surface stays code + the top-level
+# README + LICENSE.
+CLAUDE.md
+docs/

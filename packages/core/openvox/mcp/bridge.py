@@ -66,6 +66,11 @@ class MCPSessionManager:
         self._exit_stack: AsyncExitStack | None = None
         self.sessions: dict[str, Any] = {}  # server-name → ClientSession
         self.skills: list[BaseSkill] = []
+        # Per-server connect errors. Empty when everything succeeded.
+        # Surfaced via list_mcp_tools() so the dashboard Probe can show
+        # the real reason a server returned zero tools instead of a
+        # silent green-check-zero-tools UX.
+        self.errors: dict[str, str] = {}
 
     async def __aenter__(self) -> "MCPSessionManager":
         if not self._configs:
@@ -104,7 +109,17 @@ class MCPSessionManager:
                     self.skills.append(_make_skill(name, session, tool))
                 logger.info("mcp: connected %s (%d tools)", name, len(tools_result.tools))
             except Exception as e:
-                logger.warning("mcp: failed to connect server %s: %s", name, e)
+                # Compose a user-friendly error message. Common cases the
+                # dashboard's Probe UI should be able to show verbatim:
+                #   - `[Errno 2] No such file or directory: 'npx'` →
+                #     "command not found; install Node + npm, then
+                #     `openvox restart`."
+                #   - JSON-RPC initialize timeout from `ClientSession`
+                #     when the subprocess crashed at startup.
+                #   - Specific MCP-server errors written to stderr.
+                msg = _humanise_mcp_error(name, cfg, e)
+                self.errors[name] = msg
+                logger.warning("mcp: failed to connect server %s: %s", name, msg)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -122,17 +137,64 @@ def _safe_id(s: str) -> str:
     return "".join(c if (c.isalnum() or c == "_") else "_" for c in s)
 
 
+def _humanise_mcp_error(name: str, cfg: dict[str, Any], exc: Exception) -> str:
+    """Translate the raw exception text into something a dashboard user
+    can act on. Falls back to the raw string if no pattern matches.
+
+    Patterns we currently recognise:
+      - "[Errno 2] No such file or directory" → missing executable
+        (typical: npx not on PATH because daemon was launched without
+        /opt/homebrew/bin)
+      - "OAuth keys file not found" → MCP server wants a credentials
+        JSON file at a specific path; common with @gongrzhe/...
+      - "asyncio.exceptions.CancelledError" raised during initialize →
+        subprocess crashed during startup; check the daemon log for
+        the subprocess stderr (the official mcp SDK pipes it to the
+        parent's stderr).
+    """
+    raw = str(exc).strip() or exc.__class__.__name__
+    command = cfg.get("command") or ""
+    transport = cfg.get("transport") or "stdio"
+
+    if "no such file or directory" in raw.lower():
+        return (
+            f"command not found: {command!r}. "
+            "Make sure the binary is on the daemon's PATH "
+            "(see launchd plist EnvironmentVariables.PATH on macOS, "
+            "systemd unit Environment=PATH= on Linux). "
+            f"Original error: {raw}"
+        )
+    if "oauth" in raw.lower() and "not found" in raw.lower():
+        return (
+            f"{name}: the MCP server needs an OAuth credentials file "
+            f"that isn't in place. {raw}"
+        )
+    if transport == "sse" and ("connection" in raw.lower() or "timed out" in raw.lower()):
+        return f"{name}: SSE connect failed — is the URL reachable? {raw}"
+    return raw
+
+
 def _make_skill(server_name: str, session: Any, tool: Any) -> BaseSkill:
     skill_id = f"mcp__{_safe_id(server_name)}__{_safe_id(tool.name)}"
-    description = (tool.description or "").strip() or f"MCP tool {tool.name} on server {server_name}"
-    parameters = tool.inputSchema or {"type": "object", "properties": {}}
+    # Capture under different names so the class body below can reference
+    # them safely. Python class-body scope has a footgun: an assignment
+    # like `description = description[:1000]` inside the class body tries
+    # to look up `description` in the class's local scope (not yet
+    # populated by THIS assignment) — class bodies don't see enclosing
+    # function locals, so the lookup raises NameError. Was eating EVERY
+    # tool the MCP server returned silently — Probe always showed 0
+    # tools. Fixed: rename outer vars + use clean RHS in the class body.
+    desc_str = (
+        (tool.description or "").strip()
+        or f"MCP tool {tool.name} on server {server_name}"
+    )[:1000]
+    params_dict = tool.inputSchema or {"type": "object", "properties": {}}
 
     class _MCPSkill(BaseSkill):
         id = skill_id  # type: ignore[misc]
         display_name = f"{server_name}: {tool.name}"
-        # Limit description to keep the LLM tool-spec compact.
-        description = description[:1000]  # type: ignore[misc]
-        parameters = parameters  # type: ignore[misc]
+        description = desc_str  # type: ignore[misc]
+        parameters = params_dict  # type: ignore[misc]
 
         async def run(self, args: dict[str, Any], ctx: SkillContext) -> Any:
             try:
@@ -174,11 +236,39 @@ async def build_mcp_skills(configs: list[dict[str, Any]]) -> tuple[list[BaseSkil
 
 
 async def list_mcp_tools(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Quick one-shot: connect to a single server, return tool descriptors,
-    disconnect. Used by the dashboard for the "Probe" button on the MCP
-    config form."""
+    """Backward-compatible wrapper around probe_mcp_server that returns
+    just the tools list (no error). Pre-existing callers that don't
+    care about per-server connect errors use this. For the Probe API
+    route (which needs the error to show in the dashboard) use
+    `probe_mcp_server` instead.
+    """
+    result = await probe_mcp_server(config)
+    return result["tools"]
+
+
+async def probe_mcp_server(config: dict[str, Any]) -> dict[str, Any]:
+    """Connect to a single MCP server, list its tools, return both tools
+    AND any error encountered while connecting. Disconnect on exit.
+
+    Returns a dict with:
+      - `tools`: list of `{id, display_name, description}` per tool
+      - `error`: human-friendly string when the connect failed, or
+                 None when it worked
+      - `count`: convenience, equals `len(tools)`
+
+    Used by the dashboard "Probe" button on the MCP config form so
+    users see WHY a server returned zero tools instead of staring at
+    a silent "0 tools" badge.
+    """
+    name = (config.get("name") or "").strip() or "probe"
     async with MCPSessionManager([config]) as mgr:
-        return [
-            {"id": sk.id, "display_name": sk.display_name, "description": sk.description}
+        tools = [
+            {
+                "id": sk.id,
+                "display_name": sk.display_name,
+                "description": sk.description,
+            }
             for sk in mgr.skills
         ]
+        error = mgr.errors.get(name)
+    return {"tools": tools, "count": len(tools), "error": error}

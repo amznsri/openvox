@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -38,26 +39,231 @@ router = APIRouter()
 
 class TextRequest(BaseModel):
     provider: str = "byteplus"
-    model: str = "doubao-seed-1.6-250615"
+    # Empty string → providers resolve their own default
+    # (byteplus → settings.byteplus_llm_model). Hard-coding a model
+    # here used to silently override the configured one with a stale
+    # name; see orchestrator.py SessionConfig.llm_model for the
+    # canonical pattern.
+    model: str = ""
     system: str = "You are a helpful voice assistant."
     user: str
     temperature: float = 0.7
     max_tokens: int = 1024
+    # Optional — when present, we persist a Session row so the
+    # Observability page has something to show. Sent by the playground
+    # Text tab once an agent is selected.
+    agent_id: str = ""
 
 
 @router.post("/text")
 async def text_chat(req: TextRequest) -> StreamingResponse:
     llm = get_registry().get(ProviderType.LLM, req.provider)
     if llm is None or not isinstance(llm, LLMProvider) or not llm.is_available():
-        raise HTTPException(400, f"LLM provider '{req.provider}' is not available — set its API key in .env")
+        raise HTTPException(
+            400,
+            f"LLM provider '{req.provider}' is not configured. "
+            f"Add an API key via the dashboard setup wizard "
+            f"(http://localhost:8000/dashboard/setup) "
+            f"or set the provider's API key env var (e.g. "
+            f"BYTEPLUS_LLM_API_KEY / OPENAI_API_KEY / "
+            f"ANTHROPIC_API_KEY) in your .env file.",
+        )
 
-    msgs = [LLMMessage(role="system", content=req.system), LLMMessage(role="user", content=req.user)]
-    cfg = LLMConfig(model=req.model, temperature=req.temperature, max_tokens=req.max_tokens, stream=True)
+    # Persist a "text" session up-front so Observability has a row even
+    # mid-stream. We update duration + first_token at end-of-gen below.
+    from datetime import datetime, timezone
+
+    from openvox.db import db_session
+    from openvox.db.models import Agent
+    from openvox.db.models import Session as DBSession
+    from openvox.db.models import Transcript
+
+    # ── Load the agent's skills + MCP servers if agent_id supplied ──
+    # When the playground Text tab is targeted at a specific agent,
+    # we must run the same skill-loop the voice WS + /turn run. Without
+    # it, agents whose prompt instructs the LLM to call tools (every
+    # productivity template post-Phase 1.6) emit their function-call
+    # markup as plain content text — Seed-2-Pro's
+    # ``<|FunctionCallBegin|>…<|FunctionCallEnd|>`` artefact. Same family
+    # as CLAUDE.md §8 #92 — the /turn + Telegram fix — extended to
+    # /playground/text.
+    skill_ids: list[str] = []
+    mcp_servers: list[dict] = []
+    system_prompt = req.system  # default fallback when no agent_id
+    if req.agent_id:
+        try:
+            async with db_session() as s:
+                a = await s.get(Agent, req.agent_id)
+                if a is not None:
+                    skill_ids = list(a.skills or [])
+                    mcp_servers = list(a.mcp_servers or [])
+                    # Use the agent's own system prompt — the caller's
+                    # `req.system` is a generic fallback that doesn't
+                    # know about the agent's skill toolkit.
+                    if a.system_prompt:
+                        system_prompt = a.system_prompt
+        except Exception:
+            logger.exception("could not load agent config for text playground")
+
+    started = datetime.now(timezone.utc)
+    session_id: str = ""
+    if req.agent_id:
+        try:
+            async with db_session() as s:
+                row = DBSession(
+                    agent_id=req.agent_id,
+                    channel="web",
+                    caller_id="text-playground",
+                    started_at=started,
+                    status="active",
+                )
+                s.add(row)
+                await s.flush()
+                session_id = row.id
+                s.add(Transcript(session_id=session_id, role="user", text=req.user[:4000]))
+        except Exception:
+            logger.exception("could not persist text session row")
+
+    # Skill loop runs inside the streaming generator. `open_agent_mcp`
+    # + the streaming tool-call merge helpers are imported lazily so
+    # the no-tools fast path stays trivial.
+    from openvox.mcp import open_agent_mcp
+    from openvox.pipeline.orchestrator import (
+        _finalise_tool_calls,
+        _merge_tool_call_deltas,
+    )
 
     async def gen():
-        async for chunk in llm.chat_stream(msgs, cfg):
-            if chunk.delta:
-                yield chunk.delta
+        first_token_ms = 0
+        full = ""
+        # Track real provider-reported usage when it arrives in the
+        # terminal chunk; fall back to a word-count proxy if not.
+        usage_in_real = 0
+        usage_out_real = 0
+
+        # Open MCP for this turn (no-op fast path when mcp_servers
+        # is empty). Same async-context helper /turn + Telegram use.
+        async with open_agent_mcp(mcp_servers) as mcp_extras:
+            runner = SkillRunner(
+                skill_ids=skill_ids,
+                ctx=SkillContext(
+                    agent_id=req.agent_id or "",
+                    metadata={"source": "playground_text"},
+                ),
+                extra_skills=mcp_extras,
+            )
+
+            messages = [
+                LLMMessage(role="system", content=system_prompt),
+                LLMMessage(role="user", content=req.user),
+            ]
+            tool_specs = runner.tool_specs() or None
+            cfg = LLMConfig(
+                model=req.model,
+                temperature=req.temperature,
+                max_tokens=req.max_tokens,
+                stream=True,
+                tools=tool_specs,
+            )
+
+            # Bounded tool-call loop — same cap as orchestrator
+            # `max_tool_iterations` + agent_text_turn. 6 is enough
+            # for any reasonable chain (CLAUDE.md §8 #46).
+            max_iters = 6
+            for iteration in range(max_iters):
+                # Stream this round's LLM tokens. Accumulate text +
+                # MERGE streaming tool_call fragments by index.
+                #
+                # CRITICAL: BytePlus Ark (and OpenAI-compatible
+                # providers in general) stream tool_calls in MANY
+                # fragments — each chunk carries part of the JSON
+                # `arguments` string. The first fragment for a given
+                # index has the function name; subsequent fragments
+                # only have args pieces. We MUST accumulate per-index
+                # (CLAUDE.md §8 #17 — repeat offender), not just take
+                # the last fragment. Hence the shared
+                # ``_merge_tool_call_deltas`` helper from the
+                # orchestrator — exactly the same code path the voice
+                # WS uses.
+                round_text = ""
+                tool_calls_by_idx: dict[int, dict[str, Any]] = {}
+                async for chunk in llm.chat_stream(messages, cfg):
+                    if chunk.delta:
+                        if first_token_ms == 0:
+                            first_token_ms = int(
+                                (datetime.now(timezone.utc) - started).total_seconds() * 1000
+                            )
+                        round_text += chunk.delta
+                        full += chunk.delta
+                        yield chunk.delta
+                    if chunk.tool_calls:
+                        _merge_tool_call_deltas(tool_calls_by_idx, chunk.tool_calls)
+                    if chunk.usage:
+                        usage_in_real = int(chunk.usage.get("prompt_tokens") or 0)
+                        usage_out_real = int(chunk.usage.get("completion_tokens") or 0)
+
+                final_tool_calls = _finalise_tool_calls(tool_calls_by_idx)
+                if not final_tool_calls:
+                    # No tool wants to fire — LLM is done. Exit loop.
+                    break
+
+                # Tools to run. Append the assistant tool_calls message
+                # to history (Ark / OpenAI contract — see CLAUDE.md §8
+                # #18). Then invoke each and feed the result back.
+                messages.append(
+                    LLMMessage(role="assistant", content=round_text, tool_calls=final_tool_calls)
+                )
+                # Brief status marker so the user sees something is
+                # happening between LLM rounds. Kept terse — the
+                # LLM's NEXT round will produce the real user-facing
+                # text. Streaming-render-friendly: newline-delimited.
+                for tc in final_tool_calls:
+                    name = (tc.get("function") or {}).get("name") or ""
+                    yield f"\n_…calling {name}…_\n"
+                    raw_args = (tc.get("function") or {}).get("arguments") or "{}"
+                    try:
+                        parsed = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except json.JSONDecodeError:
+                        parsed = {"_raw": raw_args}
+                    if not isinstance(parsed, dict):
+                        parsed = {"_value": parsed}
+                    result = await runner.invoke(name, parsed)
+                    messages.append(
+                        LLMMessage(
+                            role="tool",
+                            tool_call_id=tc.get("id") or "",
+                            name=name,
+                            content=json.dumps(result, ensure_ascii=False),
+                        )
+                    )
+            else:
+                yield "\n\n_(stopped after tool-call iteration cap)_"
+        # Finalize the session row once the LLM stream completes. We do
+        # this in a fresh db_session because the request-scoped one above
+        # closed at the yield boundary.
+        if session_id:
+            try:
+                ended = datetime.now(timezone.utc)
+                duration_ms = int((ended - started).total_seconds() * 1000)
+                # Prefer real over approx (word-count). Approx is the
+                # length-of-words heuristic — fine for a fallback, bad
+                # for billing.
+                tokens_in = usage_in_real if usage_in_real > 0 else max(1, len(req.user.split()))
+                tokens_out = usage_out_real if usage_out_real > 0 else max(1, len(full.split()))
+                async with db_session() as s:
+                    sess = await s.get(DBSession, session_id)
+                    if sess is not None:
+                        sess.ended_at = ended
+                        sess.duration_ms = duration_ms
+                        sess.first_token_ms = first_token_ms
+                        sess.turn_count = 1
+                        sess.llm_tokens_in = tokens_in
+                        sess.llm_tokens_out = tokens_out
+                        sess.tts_chars = len(full)
+                        sess.status = "completed"
+                    s.add(Transcript(session_id=session_id, role="assistant", text=full[:8000]))
+            except Exception:
+                logger.exception("could not finalize text session row")
 
     return StreamingResponse(gen(), media_type="text/plain")
 
@@ -75,9 +281,11 @@ def _decode_to_pcm16k(data: bytes, content_type: str | None, filename: str | Non
 
     name = (filename or "").lower()
     fmt = None
-    for ext in ("mp3", "wav", "m4a", "mp4", "ogg", "flac", "aac", "webm", "opus"):
+    # `oga` is Telegram's voice-note extension (OGG container, Opus codec).
+    # Map onto "ogg" so pydub / ffmpeg pick the right demuxer.
+    for ext in ("mp3", "wav", "m4a", "mp4", "ogg", "oga", "flac", "aac", "webm", "opus"):
         if name.endswith("." + ext):
-            fmt = "mp4" if ext == "m4a" else ext
+            fmt = "mp4" if ext == "m4a" else ("ogg" if ext == "oga" else ext)
             break
     if fmt is None:
         ct = (content_type or "").lower()
@@ -164,7 +372,11 @@ async def audio_analyze(
     stt = get_registry().get(ProviderType.STT, "byteplus")
     if stt is None or not isinstance(stt, STTProvider) or not stt.is_available():
         raise HTTPException(
-            400, "BytePlus STT unavailable — set BYTEPLUS_VOICE_API_KEY in .env"
+            400,
+            "BytePlus STT is not configured. "
+            "Add your BytePlus Voice API key via the dashboard setup wizard "
+            "(http://localhost:8000/dashboard/setup) "
+            "or set BYTEPLUS_VOICE_API_KEY in your .env file.",
         )
 
     transcript, utterances = await _stream_pcm_to_stt(pcm, duration_ms, stt, language=language)
@@ -283,7 +495,11 @@ async def transcribe(
     stt = get_registry().get(ProviderType.STT, "byteplus")
     if stt is None or not isinstance(stt, STTProvider) or not stt.is_available():
         raise HTTPException(
-            400, "BytePlus STT unavailable — set BYTEPLUS_VOICE_API_KEY in .env"
+            400,
+            "BytePlus STT is not configured. "
+            "Add your BytePlus Voice API key via the dashboard setup wizard "
+            "(http://localhost:8000/dashboard/setup) "
+            "or set BYTEPLUS_VOICE_API_KEY in your .env file.",
         )
 
     transcript, _ = await _stream_pcm_to_stt(pcm, duration_ms, stt, language=language)
@@ -312,7 +528,11 @@ async def synthesize(req: SynthesizeRequest) -> Response:
     tts = get_registry().get(ProviderType.TTS, "byteplus")
     if tts is None or not isinstance(tts, TTSProvider) or not tts.is_available():
         raise HTTPException(
-            400, "BytePlus TTS unavailable — set BYTEPLUS_VOICE_API_KEY in .env"
+            400,
+            "BytePlus TTS is not configured. "
+            "Add your BytePlus Voice API key via the dashboard setup wizard "
+            "(http://localhost:8000/dashboard/setup) "
+            "or set BYTEPLUS_VOICE_API_KEY in your .env file.",
         )
 
     settings = get_settings()

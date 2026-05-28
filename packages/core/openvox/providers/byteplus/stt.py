@@ -233,9 +233,29 @@ class BytePlusSTT(STTProvider):
                     "show_utterances": True,
                     "enable_nonstream": True,  # dual-pass for accurate finals
                     "result_type": "full",
-                    "end_window_size": 800,
+                    # End-of-utterance silence window. 800ms cuts users
+                    # off mid-thought during natural pauses ("...search
+                    # web …[thinks]… for stock news") — they say "search
+                    # web", pause, the LLM fires, then the user's
+                    # follow-on is treated as a new turn. 1500ms is the
+                    # industry-standard endpoint-detection window for
+                    # conversational AI (Twilio, Vapi, LiveKit Agents
+                    # all default in the 1.2-1.8s range). Tunable per
+                    # agent later if needed.
+                    "end_window_size": 1500,
                 },
             }
+            # Pin Seed-ASR to the agent's configured language. Without this
+            # the model runs in auto-detect mode and defaults to Chinese on
+            # silence/breath/lip-smack, producing 嗯/啊/哦 filler-word
+            # hallucinations inside English (or any other-language) sessions.
+            # We mirror the batch endpoint's convention (transcribe_file_url
+            # below puts the hint under audio.language). Empty/None falls
+            # through to auto-detect, matching the previous behaviour for any
+            # caller that genuinely wants multilingual.
+            if config.language:
+                start["audio"]["language"] = config.language
+                logger.info("stt language hint: %s", config.language)
             await ws.send(_frame_full_request(json.dumps(start).encode("utf-8")))
 
             send_done = asyncio.Event()

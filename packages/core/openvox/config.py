@@ -15,6 +15,33 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _default_data_dir() -> Path:
+    """Resolve the canonical OpenVox data directory.
+
+    Always absolute: `~/.openvox` on every machine. The old default
+    was `./.openvox` (CWD-relative), which combined with the daemon's
+    `WorkingDirectory=~/.openvox/` setting produced the surprising
+    nested path `~/.openvox/.openvox/openvox.db`. Worse, running
+    `openvox run` from any other directory created a fresh empty
+    DB at that directory's `./.openvox/openvox.db`, so users running
+    the daemon AND the foreground command would see different data.
+
+    Override via the `OPENVOX_DATA_DIR` env var if you want to put
+    it elsewhere — fully-qualified absolute paths only.
+    """
+    return Path.home() / ".openvox"
+
+
+def _default_database_url() -> str:
+    """SQLite URL pinned to an absolute path under the data dir.
+
+    `sqlite+aiosqlite:///<absolute-path>` — note the THREE slashes
+    after the scheme (RFC 3986 file-URI form). The `/path/to/file`
+    after them is the absolute filesystem path.
+    """
+    return f"sqlite+aiosqlite:///{_default_data_dir()}/openvox.db"
+
+
 class Settings(BaseSettings):
     """Application settings.
 
@@ -35,7 +62,7 @@ class Settings(BaseSettings):
     core_port: int = 8000
     server_port: int = 3001
     dashboard_port: int = 3000
-    data_dir: Path = Path("./.openvox")
+    data_dir: Path = Field(default_factory=_default_data_dir)
 
     # ── Auth (off by default — local-first) ───────────────────────────
     openvox_auth: Literal["disabled", "enabled"] = "disabled"
@@ -46,7 +73,11 @@ class Settings(BaseSettings):
     google_oauth_client_secret: str = ""
 
     # ── Database / cache ──────────────────────────────────────────────
-    database_url: str = "sqlite+aiosqlite:///./.openvox/openvox.db"
+    # default_factory because Path.home() can't be evaluated at module
+    # import time on some systems (e.g. when HOME is unset in CI). Also
+    # — using a factory means the value computes ONCE per Settings()
+    # instance, not at every attribute access.
+    database_url: str = Field(default_factory=_default_database_url)
     redis_url: str = "redis://localhost:6379"
 
     # ── BytePlus (default provider stack) ─────────────────────────────

@@ -1,0 +1,524 @@
+# OpenVox release pipeline.
+#
+# Triggered by a tag push that matches `v*` (e.g. `v0.2.0`). Fans out
+# into the four publish paths in PLANNING_SESSION15.md Phase 4:
+#
+#   Path A — PyPI:       build + upload openvox_core-<v>.tar.gz / .whl
+#                        via PyPI Trusted Publishing (no API token needed).
+#   Path B — install.sh: upload scripts/install.sh + SHA256 to the
+#                        GitHub Release for the curl-bash one-liner.
+#   Path C — Homebrew:   regenerate resource blocks (poet), substitute
+#                        url + sha256, push to amznsri/homebrew-openvox.
+#   Path D — WinGet:     substitute version/url/sha256 into the manifest
+#                        templates and PR to microsoft/winget-pkgs via
+#                        wingetcreate.
+#
+# Cutting a release:
+#   1. Bump version in packages/core/pyproject.toml AND
+#      packages/core/openvox/__init__.py:__version__. CI asserts
+#      they match (tests/test_version_sync.py).
+#   2. Commit + tag: `git tag v0.2.0 && git push origin v0.2.0`.
+#   3. This workflow does the rest.
+#
+# Recovery — tag push didn't trigger the workflow:
+#   GitHub Actions occasionally drops a `push: tags` event (~5%
+#   incident rate, hit once in 20 OpenVox releases — see CLAUDE.md
+#   §8 #96). When that happens the tag is on the remote but no
+#   workflow run appears. Manual dispatch reuses the same .yml:
+#
+#       gh workflow run release.yml --ref vX.Y.Z -f version=X.Y.Z
+#
+#   This re-runs every job below against the tagged commit. No data
+#   migration concerns; PyPI's idempotent re-upload would reject a
+#   duplicate but the workflow has skip_existing=false so a normal
+#   failure shows up loudly if the artefact's already there.
+#
+# Prerequisites (one-time setup; not on the critical path of this PR):
+#   - PyPI: configure Trusted Publishing for openvox-core pointing at
+#     this workflow's environment `pypi` (https://docs.pypi.org/trusted-publishers/).
+#   - Homebrew tap: create amznsri/homebrew-openvox; add a PAT with
+#     `repo` scope as the HOMEBREW_TAP_TOKEN secret here.
+#   - WinGet: add a PAT for amznsri/winget-pkgs (a fork of
+#     microsoft/winget-pkgs) as the WINGET_PAT secret.
+#
+# Until those secrets exist the corresponding jobs are skipped via
+# `continue-on-error: true` + secret-presence guards so a tag push
+# without one of them still publishes the rest.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.2.0). Tag must already exist."
+        required: true
+
+permissions:
+  contents: write   # upload GitHub Release assets
+  id-token: write   # PyPI Trusted Publishing (OIDC)
+
+jobs:
+
+  # ── Preflight: tests must pass on the tagged commit ────────────────
+  #
+  # The .github/workflows/test.yml workflow runs on `push: main` and
+  # `pull_request` — NOT on tag pushes. Without this preflight, a tag
+  # pushed against a known-broken main would still trigger the full
+  # publish fan-out and ship the breakage to PyPI / Homebrew (PyPI is
+  # immutable once a version uploads, so the damage is permanent).
+  #
+  # We rerun the unit suite here against the EXACT commit the tag
+  # points at. Cheap (~10s) and decisive. The e2e suite isn't repeated
+  # because (a) it's slower, (b) the publish jobs that follow are
+  # themselves an e2e-of-sorts — wheel build + twine check exercise
+  # the real install path.
+  preflight-tests:
+    name: Preflight — unit tests on tagged commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install in editable mode + dev deps
+        working-directory: packages/core
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Run pytest (excluding e2e)
+        working-directory: packages/core
+        # Same selector as test.yml's unit-tests job. If this passes
+        # in the per-PR / per-main-push test.yml run, it should also
+        # pass here — the only thing that's "new" is the tag pointing
+        # at this commit. A failure means somebody force-pushed main
+        # or tagged an out-of-band commit; either way we want a stop.
+        run: pytest -m "not e2e"
+
+  # ── Build wheel + sdist once, share across jobs via an artefact ────
+  build:
+    name: Build wheel + sdist
+    needs: preflight-tests
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      wheel_name: ${{ steps.artefact.outputs.wheel }}
+      wheel_sha256: ${{ steps.artefact.outputs.wheel_sha256 }}
+      sdist_name: ${{ steps.artefact.outputs.sdist }}
+      sdist_sha256: ${{ steps.artefact.outputs.sdist_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            v="${{ inputs.version }}"
+          else
+            v="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+          echo "Releasing OpenVox v$v"
+      - name: Verify tag matches openvox/__init__.py __version__
+        # PyPI is immutable: once 0.x.y uploads, that version number is
+        # burnt forever. If we tag v0.2.0 but forget to bump the dunder,
+        # the wheel still says 0.1.0 → PyPI rejects as a duplicate. Fail
+        # fast here so the mistake is obvious in the workflow log
+        # rather than in the upload step.
+        #
+        # Source of truth: openvox/__init__.py:__version__. After PR #53
+        # (v0.2.21, D.hatch-version) pyproject.toml's version is
+        # dynamic — declared via `[tool.hatch.version]` reading from the
+        # dunder at build time. The earlier check grepped
+        # `^version = ` from pyproject.toml and silently emitted an
+        # empty `file_ver` after the dynamic switch; that's how
+        # v0.2.23's release pipeline tagged-out with an empty mismatch
+        # and PyPI got stuck on v0.2.20 for several releases.
+        # Re-anchoring here to the dunder closes the gap.
+        run: |
+          tag_ver="${{ steps.version.outputs.value }}"
+          file_ver=$(grep -E '^__version__\s*=' packages/core/openvox/__init__.py | head -1 | sed -E 's/__version__[^"]+"([^"]+)".*/\1/')
+          if [ -z "$file_ver" ]; then
+            echo "::error::Could not extract __version__ from packages/core/openvox/__init__.py."
+            echo "If the dunder format changed, update the regex in release.yml."
+            exit 1
+          fi
+          if [ "$tag_ver" != "$file_ver" ]; then
+            echo "::error::Tag v$tag_ver does not match openvox/__init__.py __version__ $file_ver."
+            echo "Bump packages/core/openvox/__init__.py's __version__ to $tag_ver, commit, then re-tag."
+            exit 1
+          fi
+          echo "✓ tag v$tag_ver matches openvox/__init__.py __version__ $file_ver"
+      - name: Set up Node (for dashboard static build)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build dashboard for static-export bundling
+        # Pre-build step: turn apps/dashboard/ into a static export
+        # (out/) and copy it into packages/core/openvox/_dashboard/
+        # so the wheel ships the dashboard alongside the API. Without
+        # this, `pipx install openvox-core && openvox start` serves
+        # API at :8000 but /dashboard returns 404.
+        #
+        # The pyproject.toml [tool.hatch.build.targets.wheel.force-
+        # include] block expects this exact path. The FastAPI mount
+        # in packages/core/openvox/api/app.py picks it up at runtime.
+        run: |
+          cd apps/dashboard
+          npm install --include=dev --ignore-scripts --no-audit --no-fund
+          BUILD_OUTPUT=export npm run build
+          cd ../..
+          mkdir -p packages/core/openvox/_dashboard
+          cp -r apps/dashboard/out/. packages/core/openvox/_dashboard/
+          # Sanity — fail fast if the expected entry file is missing.
+          test -f packages/core/openvox/_dashboard/index.html
+          echo "✓ dashboard built; $(find packages/core/openvox/_dashboard -type f | wc -l) files staged for wheel"
+      - name: Install build tools
+        run: pip install --upgrade build twine
+      - name: Build
+        working-directory: packages/core
+        run: python -m build
+      - name: Twine check
+        working-directory: packages/core
+        run: twine check dist/*
+      - name: Capture artefact names + SHA256s
+        id: artefact
+        working-directory: packages/core/dist
+        run: |
+          wheel=$(ls *.whl)
+          sdist=$(ls *.tar.gz)
+          echo "wheel=$wheel" >> "$GITHUB_OUTPUT"
+          echo "sdist=$sdist" >> "$GITHUB_OUTPUT"
+          echo "wheel_sha256=$(sha256sum "$wheel" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "sdist_sha256=$(sha256sum "$sdist" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: packages/core/dist/
+
+  # ── Path A: PyPI via Trusted Publishing (no token) ─────────────────
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/openvox-core
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # ── End-to-end install verification ────────────────────────────────
+  # Why this job exists:
+  #   `publish-pypi` returns green the moment Twine's upload endpoint
+  #   accepts the wheel. But PyPI's SIMPLE INDEX (which `pip install`
+  #   actually reads) propagates separately — typically 30 s - 2 min
+  #   later. The user-facing signal "v0.2.x release succeeded" was
+  #   firing before that propagation completed, leading to:
+  #
+  #     $ pipx upgrade openvox-core    # ran the moment workflow was green
+  #     upgraded ... from 0.x to 0.(x-1)    # got the PREVIOUS version
+  #
+  #   This job blocks the overall workflow from completing until a
+  #   FRESH machine, with no caches involved, can actually
+  #   `pip install openvox-core==<new>` and run `openvox version`.
+  #
+  # Bonus: also catches a class of bugs where the upload succeeded
+  # but the wheel is somehow unusable on a clean install (e.g. CLAUDE.md
+  # §8 #76 — missing audioop-lts conditional dep, only visible on a
+  # fresh install). Previously this only surfaced when a real user
+  # reported a broken upgrade days later.
+  verify-pypi-install:
+    name: Verify fresh `pip install` works
+    needs: [build, publish-pypi]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Wait for PyPI simple index to show the new version
+        # `pip index versions` reads the SAME endpoint pip uses for
+        # actual installs, so once it sees the new version `pip install`
+        # is guaranteed to find it. Poll up to 5 min then give up —
+        # propagation usually completes in 30-120 s but Cloudflare
+        # cache invalidation has occasional 4-min outliers.
+        run: |
+          for i in $(seq 1 30); do
+            if pip index versions openvox-core 2>/dev/null | grep -q "${{ needs.build.outputs.version }}"; then
+              echo "✓ openvox-core ${{ needs.build.outputs.version }} is visible in the simple index"
+              exit 0
+            fi
+            echo "PyPI simple index doesn't show ${{ needs.build.outputs.version }} yet (attempt $i/30)"
+            sleep 10
+          done
+          echo "::error::PyPI never indexed ${{ needs.build.outputs.version }} within 5 min"
+          exit 1
+
+      - name: Install the just-published version into a fresh venv
+        # Fresh venv + --no-cache-dir + --index-url=https://pypi.org/simple
+        # so we're testing exactly what a real user's `pipx install`
+        # does, not whatever the runner's pip caches might hold.
+        run: |
+          python -m venv /tmp/verify-venv
+          /tmp/verify-venv/bin/pip install --no-cache-dir \
+            --index-url https://pypi.org/simple/ \
+            "openvox-core==${{ needs.build.outputs.version }}"
+
+      - name: Smoke-check the CLI
+        # Three asserts: CLI launches, reports the right version
+        # string, and the wheel actually shipped its dashboard
+        # bundle (catches a regression class where _dashboard/ is
+        # missing from the wheel — would silently break the
+        # `localhost:8000/dashboard` route on every install).
+        run: |
+          VER=$(/tmp/verify-venv/bin/openvox version | awk '{print $NF}')
+          echo "openvox CLI reports: $VER"
+          test "$VER" = "${{ needs.build.outputs.version }}"
+          /tmp/verify-venv/bin/python -c "
+          from importlib.resources import files
+          import openvox
+          dash = files('openvox') / '_dashboard'
+          assert dash.is_dir(), 'wheel missing _dashboard/'
+          assert (dash / 'index.html').is_file(), 'wheel missing _dashboard/index.html'
+          print('✓ dashboard bundle present in wheel')
+          "
+
+  # ── GitHub Release: attach wheel + sdist + install.sh + checksums ──
+  publish-github-release:
+    name: Attach assets to GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Compute install.sh checksum
+        run: |
+          sha256sum scripts/install.sh > install.sh.sha256
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "v${{ needs.build.outputs.version }}"
+          body: |
+            ## Install OpenVox v${{ needs.build.outputs.version }}
+
+            ```bash
+            # Path A: PyPI
+            pip install openvox-core==${{ needs.build.outputs.version }}
+
+            # Path B: curl-bash (macOS / Linux)
+            curl -fsSL https://github.com/amznsri/openvox/releases/download/v${{ needs.build.outputs.version }}/install.sh | bash
+
+            # Path C: Homebrew (after Phase 4 PR-5 tap setup)
+            brew install amznsri/openvox/openvox
+
+            # Path D: WinGet (after Phase 4 PR-5 WinGet PR is accepted)
+            winget install OpenVox.OpenVox
+            ```
+
+            ### Artefact checksums (SHA256)
+            - `${{ needs.build.outputs.wheel_name }}`: `${{ needs.build.outputs.wheel_sha256 }}`
+            - `${{ needs.build.outputs.sdist_name }}`: `${{ needs.build.outputs.sdist_sha256 }}`
+
+            See [docs/SESSION_LOG.md](https://github.com/amznsri/openvox/blob/main/docs/SESSION_LOG.md) for what's new.
+          files: |
+            dist/*
+            scripts/install.sh
+            install.sh.sha256
+
+  # ── Path C: Homebrew tap bump ──────────────────────────────────────
+  publish-homebrew:
+    name: Update Homebrew tap
+    needs: [build, publish-pypi]
+    runs-on: ubuntu-latest
+    if: ${{ vars.ENABLE_HOMEBREW_PUBLISH == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Wait for PyPI to index the new version
+        # PyPI's upload endpoint and the install index are eventually-
+        # consistent; propagation usually takes 30 s - 2 min. Without
+        # this, the next step's `pip install openvox-core==<new>` races
+        # the index and fails with "Could not find a version that
+        # satisfies the requirement". Poll up to 5 min then give up.
+        run: |
+          for i in $(seq 1 30); do
+            if pip index versions openvox-core 2>/dev/null | grep -q "${{ needs.build.outputs.version }}"; then
+              echo "✓ openvox-core ${{ needs.build.outputs.version }} is on PyPI"
+              exit 0
+            fi
+            echo "PyPI index doesn't show ${{ needs.build.outputs.version }} yet (attempt $i/30)"
+            sleep 10
+          done
+          echo "::error::PyPI never indexed ${{ needs.build.outputs.version }} within 5 min"
+          exit 1
+      - name: Generate resource blocks
+        # `homebrew-pypi-poet` (our previous generator) is doubly broken:
+        # it emits empty sha256s for wheel-only deps like `audioop-lts`,
+        # and it crashes on import because newer pip releases no longer
+        # ship `pkg_resources`. `scripts/gen_homebrew_resources.py`
+        # replaces it — pip-driven resolution + PyPI JSON API artefact
+        # picker. See the module docstring for the full rationale.
+        #
+        # Note on torch / silero-vad: those moved to
+        # `[project.optional-dependencies] vad` in v0.2.1 because PyPI's
+        # Linux torch wheel pulls in 15+ nvidia-* deps with no macOS
+        # counterparts (which broke the v0.2.0 Homebrew publish).
+        # Users who want server-side VAD via brew install do:
+        #   $(brew --prefix openvox)/libexec/bin/pip install 'openvox-core[vad]'
+        # The runtime gracefully degrades to client-driven interrupts
+        # if the [vad] extra isn't installed.
+        run: |
+          mkdir -p out
+          python scripts/gen_homebrew_resources.py \
+            "openvox-core==${{ needs.build.outputs.version }}" \
+            > out/resources.rb
+      - name: Render formula from template
+        run: |
+          # Substitute version + sha256 into the template, then inject
+          # the freshly-generated resource list between the BEGIN/END
+          # markers.
+          python - <<'PY'
+          import pathlib, re
+          tmpl = pathlib.Path("packaging/homebrew/openvox.rb").read_text()
+          # `rstrip` (not `strip`) — the generator emits each block
+          # indented two spaces, and `strip` would chop the leading
+          # indent off the first line.
+          resources = pathlib.Path("out/resources.rb").read_text().rstrip()
+          version = "${{ needs.build.outputs.version }}"
+          sha = "${{ needs.build.outputs.sdist_sha256 }}"
+          tmpl = tmpl.replace("0.0.0", version)
+          tmpl = re.sub(r'sha256 "0+"', f'sha256 "{sha}"', tmpl)
+          tmpl = re.sub(
+              r"# ─── BEGIN GENERATED RESOURCES.*?# ─── END GENERATED RESOURCES ───",
+              "# ─── BEGIN GENERATED RESOURCES ───\n" + resources + "\n  # ─── END GENERATED RESOURCES ───",
+              tmpl,
+              flags=re.DOTALL,
+          )
+          pathlib.Path("out/openvox.rb").write_text(tmpl)
+          PY
+      - name: Push formula to tap repo
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/amznsri/homebrew-openvox.git" tap
+          mkdir -p tap/Formula
+          cp out/openvox.rb tap/Formula/openvox.rb
+          cd tap
+          git config user.email "actions@github.com"
+          git config user.name "openvox-release-bot"
+          git add Formula/openvox.rb
+          git commit -m "openvox ${{ needs.build.outputs.version }}" || echo "no changes"
+          git push
+
+  # ── Path D: WinGet manifest submission ─────────────────────────────
+  #
+  # DISABLED PENDING REDESIGN. The wheel-as-portable-zip approach this
+  # job was built around doesn't work: WinGet's portable installer
+  # type just extracts the zip and expects a runnable .exe inside,
+  # but the wheel's openvox.exe is generated by pip's console-scripts
+  # machinery AT INSTALL TIME, not bundled in the zip. Microsoft's
+  # validator rejected v0.1.8 (PR #378787, closed) with
+  # "Unable to locate nested installer at ...\Scripts\openvox.exe"
+  # because that path doesn't exist inside the wheel.
+  #
+  # Proper WinGet support needs a PyInstaller-packaged single-file
+  # openvox.exe that bundles Python + all deps. That's ~50-100 MB and
+  # triggers Windows SmartScreen warnings without a code-signing cert
+  # ($300-400/yr). Tracked as a follow-up; not blocking v0.1.x.
+  #
+  # ENABLE_WINGET_PUBLISH stays in repo Variables but is now gated by
+  # an additional condition (PYINSTALLER_BUILT) which we don't set
+  # anywhere — effectively a kill-switch until the proper installer
+  # lands. To re-enable: build the .exe in a preceding step, update
+  # this job's installer URL/sha to point at it, set
+  # PYINSTALLER_BUILT=true in repo Variables.
+  publish-winget:
+    name: Submit to winget-pkgs
+    needs: [build, publish-github-release]
+    runs-on: windows-latest
+    if: ${{ vars.ENABLE_WINGET_PUBLISH == 'true' && vars.PYINSTALLER_BUILT == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install wingetcreate
+        # wingetcreate isn't preinstalled on windows-latest and isn't on
+        # NuGet either. Canonical install per https://github.com/
+        # microsoft/winget-create#installation is the standalone .exe
+        # via Microsoft's pinned redirect URL.
+        run: |
+          $wc = "$env:RUNNER_TEMP\wingetcreate.exe"
+          Invoke-WebRequest -Uri https://aka.ms/wingetcreate/latest -OutFile $wc
+          echo "WINGETCREATE=$wc" >> $env:GITHUB_ENV
+      - name: Decide submission mode
+        # `wingetcreate update` only works for packages that already
+        # exist in microsoft/winget-pkgs. For the FIRST submission of
+        # OpenVox we have to use `submit` against our local manifest
+        # templates instead. Probe the upstream catalog to decide which
+        # path to take. Future releases (after the first PR merges)
+        # will fall into the `update` branch.
+        id: mode
+        run: |
+          $exists = $false
+          try {
+            $resp = Invoke-WebRequest -Uri "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/o/OpenVox/OpenVox" -UseBasicParsing
+            if ($resp.StatusCode -eq 200) { $exists = $true }
+          } catch {
+            # 404 = package doesn't exist yet → first submission
+          }
+          if ($exists) {
+            echo "mode=update" >> $env:GITHUB_OUTPUT
+            echo "Package exists upstream; will use 'wingetcreate update'"
+          } else {
+            echo "mode=submit" >> $env:GITHUB_OUTPUT
+            echo "Package does NOT exist upstream; will use 'wingetcreate submit' (first publish)"
+          }
+      - name: Submit (first publish) — render local manifests, then wingetcreate submit
+        if: steps.mode.outputs.mode == 'submit'
+        env:
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+        run: |
+          $version = "${{ needs.build.outputs.version }}"
+          $wheelUrl = "https://github.com/amznsri/openvox/releases/download/v$version/${{ needs.build.outputs.wheel_name }}"
+          $wheelSha = "${{ needs.build.outputs.wheel_sha256 }}".ToUpper()
+          # Render the templates in packaging/winget/ with real values
+          # into a new folder layout that wingetcreate expects.
+          $out = "$env:RUNNER_TEMP\manifests"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Get-ChildItem packaging/winget/*.yaml | ForEach-Object {
+            $content = Get-Content $_.FullName -Raw
+            $content = $content -replace 'PackageVersion: 0\.0\.0', "PackageVersion: $version"
+            $content = $content -replace 'InstallerSha256: 0+', "InstallerSha256: $wheelSha"
+            $content = $content -replace 'InstallerUrl: https://github.com/amznsri/openvox/releases/download/v0\.0\.0/openvox_core-0\.0\.0-py3-none-any\.whl', "InstallerUrl: $wheelUrl"
+            $content = $content -replace 'ReleaseNotesUrl: https://github.com/amznsri/openvox/releases/tag/v0\.0\.0', "ReleaseNotesUrl: https://github.com/amznsri/openvox/releases/tag/v$version"
+            Set-Content -Path "$out\$($_.Name)" -Value $content
+          }
+          & $env:WINGETCREATE submit `
+            --token $env:WINGET_PAT `
+            --prtitle "New package: OpenVox.OpenVox $version" `
+            $out
+      - name: Update (subsequent releases)
+        if: steps.mode.outputs.mode == 'update'
+        env:
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
+        run: |
+          $version = "${{ needs.build.outputs.version }}"
+          $wheelUrl = "https://github.com/amznsri/openvox/releases/download/v$version/${{ needs.build.outputs.wheel_name }}"
+          & $env:WINGETCREATE update OpenVox.OpenVox `
+            --version $version `
+            --urls $wheelUrl `
+            --token $env:WINGET_PAT `
+            --submit

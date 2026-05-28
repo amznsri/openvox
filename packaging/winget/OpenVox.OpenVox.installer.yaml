@@ -1,0 +1,43 @@
+# WinGet installer manifest for OpenVox.
+#
+# This file is the source-of-truth in the OpenVox repo. The release
+# pipeline (Phase 4 PR-5) copies it (with InstallerUrl / Sha256 /
+# PackageVersion substituted from the release tag) into a checkout of
+# microsoft/winget-pkgs and opens the PR.
+#
+# Final location in winget-pkgs:
+#   manifests/o/OpenVox/OpenVox/<version>/OpenVox.OpenVox.installer.yaml
+#
+# Install command after the PR is accepted:
+#   winget install OpenVox.OpenVox
+#
+# Manifest schema docs:
+#   https://learn.microsoft.com/en-us/windows/package-manager/package/manifest
+#
+# Why we ship the wheel as the InstallerType=zip artefact, not a .msi:
+#   * No code signing required (saves $300/yr cert + the entire EV
+#     identity dance). winget supports zip installers since v1.6.
+#   * The wheel is the same artefact PyPI users get, so the install
+#     surface is unified and we don't maintain a separate .msi build.
+#   * Downside: winget needs an "ExtractFile" + "NestedInstallerFile"
+#     spec to teach it how to actually install the wheel — see below.
+
+PackageIdentifier: OpenVox.OpenVox
+PackageVersion: 0.0.0
+InstallerType: zip
+NestedInstallerType: portable
+# Architecture is filled in by the release pipeline once we know which
+# wheel we're shipping (`py3-none-any` works for both arches in our
+# case since OpenVox is pure-Python).
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/amznsri/openvox/releases/download/v0.0.0/openvox_core-0.0.0-py3-none-any.whl
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    NestedInstallerFiles:
+      # The wheel is itself a zip; we point winget at the entry-point
+      # shim that pip installs (`openvox.exe`). On winget's portable
+      # install path this gets symlinked into the user's PATH.
+      - RelativeFilePath: Scripts\openvox.exe
+        PortableCommandAlias: openvox
+ManifestType: installer
+ManifestVersion: 1.6.0

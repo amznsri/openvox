@@ -74,7 +74,7 @@ export default function AgentsPage() {
                   Updated {formatDate(a.updated_at)}
                 </div>
                 <div className="mt-4 flex gap-2">
-                  <Link href={`/dashboard/agents/${a.id}`} className="flex-1">
+                  <Link href={`/dashboard/agents/edit?id=${a.id}`} className="flex-1">
                     <Button variant="outline" size="sm" className="w-full">
                       <Pencil className="h-3.5 w-3.5" />
                       Edit

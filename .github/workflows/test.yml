@@ -1,0 +1,238 @@
+# Test workflow — runs on every PR + push to main.
+#
+# Matrix (Phase 6 of PLANNING_SESSION17.md):
+#   OS:     ubuntu-latest, macos-latest
+#   Python: 3.11, 3.12, 3.13
+#   → 6 (os × python) combinations for unit tests + e2e tests.
+#
+# Windows isn't in this matrix on purpose. The Windows daemon-mode
+# install path is covered by .github/workflows/install-smoke.yml
+# (workflow_dispatch only — slow runner, no per-PR regression to
+# guard). Unit tests on Windows are a follow-up; the audioop-lts
+# conditional dep is the highest-risk thing and that's covered by
+# the 3.13 row on Linux + macOS already.
+#
+# Two job groups:
+#
+#   unit-tests — fast (~5-10s per cell). conftest + 6 unit-test
+#     files. Excludes e2e via `-m "not e2e"`. Coverage runs on
+#     the ubuntu/py3.12 cell only (Codecov upload there) — running
+#     it on all six is duplicative and would just make the report
+#     noisier.
+#
+#   e2e-tests — slower (~30-60s per cell). Spawns 'openvox run' as
+#     a real subprocess + drives it over HTTP. Catches the v0.1.7-
+#     class bugs (provider key flow, mount config) at the system
+#     level. HTTP-only — no browser/Playwright.
+#
+# Why no Playwright (yet):
+#   The plan (PLANNING_SESSION17.md §Phase 2) called for a
+#   Playwright walk through the dashboard UI. An HTTP-only test
+#   caught the v0.1.7 bug (#77 + #78) faithfully and runs in 5s
+#   rather than 30s+ with Chromium overhead. Browser-level tests
+#   are deferred until there's a visual/interaction regression
+#   an HTTP test can't catch.
+
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: unit tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # fail-fast=false so a Python 3.11 failure doesn't cancel
+      # the 3.13 run — we want signal from EVERY cell for triage.
+      # The matrix is small enough that running all six even after
+      # one fails is cheap.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install openvox-core in editable mode + dev deps
+        # Editable install pulls in all runtime deps; .[dev] adds
+        # pytest + pytest-cov + respx. The dashboard isn't needed
+        # for unit tests, so no Node setup here.
+        working-directory: packages/core
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run pytest (excluding e2e)
+        # The coverage gate only runs on the ubuntu/py3.12 cell
+        # below; this step is the same pytest invocation minus
+        # --cov flags to keep the other five cells fast.
+        if: ${{ !(matrix.os == 'ubuntu-latest' && matrix.python == '3.12') }}
+        working-directory: packages/core
+        run: pytest -m "not e2e"
+
+      - name: Run pytest with coverage (ubuntu/py3.12 only)
+        # --cov= uses [tool.coverage.run]'s source list.
+        # --cov-report=xml + Codecov upload happen in the next
+        # two steps. The terminal report stays so a contributor
+        # debugging a coverage drop from the run log doesn't
+        # have to round-trip through Codecov.
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        working-directory: packages/core
+        run: pytest -m "not e2e" --cov=openvox --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage to Codecov
+        # Public repo + OIDC means no token needed. The Codecov
+        # action uploads coverage.xml AND posts a per-PR comment
+        # showing the diff in coverage. Phase 6.2 of the planning
+        # doc explicitly calls this out as the replacement for the
+        # workflow-artifact-only flow we had pre-matrix.
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        uses: codecov/codecov-action@v4
+        with:
+          files: packages/core/coverage.xml
+          flags: unit
+          fail_ci_if_error: false  # Codecov outages shouldn't break CI
+
+      - name: Upload coverage XML as workflow artifact
+        # Belt-and-braces backup of the coverage report in case
+        # Codecov is down or a contributor wants the raw XML.
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: packages/core/coverage.xml
+          retention-days: 14
+
+  e2e-tests:
+    name: e2e tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    # No `needs:` — e2e and unit are independent; failing unit
+    # tests shouldn't block e2e from reporting its own failures.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install openvox-core in editable mode + dev deps
+        working-directory: packages/core
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      # Note: NOT building the dashboard for e2e here. Today's e2e
+      # tests are HTTP-only (don't load the dashboard UI). When a
+      # Playwright walk lands, this is where we'd add:
+      #   - actions/setup-node@v4 (Node 20)
+      #   - cd apps/dashboard && npm ci
+      #   - BUILD_OUTPUT=export npm run build
+      #   - cp -r out/. ../../packages/core/openvox/_dashboard/
+      # plus a `npx playwright install chromium --with-deps` step.
+
+      - name: Run e2e tests
+        # Default pytest filter excludes network tests; explicit -m
+        # selects only e2e. Total runtime should be <60s per cell.
+        working-directory: packages/core
+        run: pytest -m e2e -v
+
+      - name: Upload daemon logs on failure
+        # The e2e fixture writes daemon stdout/stderr to the test's
+        # tempdir. On failure we want those for debugging, but
+        # tempdirs get cleaned up. Findable via tmp_path's
+        # pattern; we strip the per-OS prefix difference here by
+        # checking BOTH the Linux and macOS-default locations.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-daemon-logs-${{ matrix.os }}-py${{ matrix.python }}
+          path: |
+            /tmp/pytest-of-runner/**/daemon.*.log
+            /private/var/folders/**/pytest-of-runner/**/daemon.*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  dashboard-export-build:
+    # Catch Next.js static-export errors on every PR — before they
+    # hit the release pipeline's "Build wheel + sdist" step, which is
+    # where v0.2.6 blew up with the `useSearchParams()` Suspense-
+    # boundary regression on the new Integrations page.
+    #
+    # Why a dedicated job (vs folding into unit-tests):
+    #   - Different toolchain (Node, not Python) — no point setting
+    #     up Node on every Python matrix cell.
+    #   - Fast enough to gate on (one runner, ~45-90s end-to-end).
+    #   - Only triggered by `apps/dashboard/**` changes via the
+    #     `paths` filter on the workflow trigger above would be
+    #     cleaner, but the existing workflow runs on every PR so
+    #     the cost is acceptable for now. Optimisation candidate.
+    #
+    # What this catches that the dev workflow doesn't:
+    #   `next dev` is permissive about Suspense-around-search-params,
+    #   `output: 'export'` mode is NOT. The bug only manifests in the
+    #   second mode, which the release pipeline uses to bundle the
+    #   dashboard into the wheel. Catching it here means contributors
+    #   see the error in their PR run, not in a v0.2.x release tag.
+    name: dashboard export build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          # No `cache: npm` here — apps/dashboard/package-lock.json is
+          # `.gitignore`d (see .gitignore:68) so setup-node@v4's cache
+          # config can't find a key to hash against. Same reason
+          # release.yml uses `npm install` without caching. Cost is
+          # ~30s of cold dependency install per PR run.
+
+      - name: Install dashboard dependencies
+        # `npm install` (NOT `npm ci`) because there's no committed
+        # lockfile to install against — same convention as release.yml.
+        # Flags mirror release.yml exactly so this step is a faithful
+        # rehearsal of the wheel-bundling path.
+        working-directory: apps/dashboard
+        run: npm install --include=dev --ignore-scripts --no-audit --no-fund
+
+      - name: Lint Tailwind colour classes
+        # Guard against the "phantom class" failure mode documented in
+        # CLAUDE.md §8 #100 — `bg-popover` looks legitimate but the
+        # theme has no `popover` key in tailwind.config.ts, so Tailwind
+        # emits no CSS rule and the element renders with NO background.
+        # This script (scripts/lint-tailwind-classes.mjs) parses the
+        # tailwind config + every TSX file's `bg-*` / `ring-*` /
+        # `fill-*` / `stroke-*` / etc. classes and fails on any
+        # reference to a colour key that isn't in the theme.
+        working-directory: apps/dashboard
+        run: node scripts/lint-tailwind-classes.mjs
+
+      - name: Build dashboard in static-export mode
+        # Same incantation as release.yml's "Build dashboard for
+        # static-export bundling" step. If THIS passes, that one
+        # passes (modulo node version drift — both pinned to 20).
+        # The trailing find / wc -l confirms artefacts landed.
+        working-directory: apps/dashboard
+        run: |
+          BUILD_OUTPUT=export npm run build
+          test -d out
+          test -f out/dashboard/integrations/index.html
+          echo "✓ dashboard exported; $(find out -type f | wc -l) files"

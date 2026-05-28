@@ -91,12 +91,17 @@ class SkillRegistry:
                 logger.warning("entry-point skill %s failed: %s", ep.name, e)
 
     def _load_local_folder(self) -> None:
-        path = get_settings().data_dir / "skills"
-        if not path.exists():
+        path = self.local_skills_dir()
+        if path is None or not path.exists():
             return
         for f in path.glob("*.py"):
             try:
-                spec = importlib.util.spec_from_file_location(f"openvox_local_{f.stem}", f)
+                # Use a stable module name keyed on the *resolved* path
+                # so a re-load swaps the class table cleanly. Stem alone
+                # collides if two files happen to share the same name
+                # across different mounted dirs.
+                mod_name = f"openvox_local_{f.stem}_{abs(hash(str(f.resolve()))) % 10_000_000}"
+                spec = importlib.util.spec_from_file_location(mod_name, f)
                 if spec is None or spec.loader is None:
                     continue
                 mod = importlib.util.module_from_spec(spec)
@@ -107,6 +112,40 @@ class SkillRegistry:
                         self.register(obj)
             except Exception as e:
                 logger.warning("local skill %s failed to load: %s", f, e)
+
+    # ── Hot reload (Session 9) ───────────────────────────────────────
+    def local_skills_dir(self) -> Path | None:
+        """Return the directory we watch for hot-reload, or None if it
+        hasn't been configured. Honours OPENVOX_SKILLS_DIR for users who
+        want to point at their own folder (e.g. a shared volume in
+        production) — falls back to data_dir/skills otherwise.
+        """
+        import os
+        override = os.environ.get("OPENVOX_SKILLS_DIR", "").strip()
+        if override:
+            return Path(override).expanduser()
+        s = get_settings()
+        return Path(s.data_dir) / "skills"
+
+    def reload_local(self) -> list[str]:
+        """Re-scan the local folder and (re)register every skill found.
+
+        Returns the list of skill ids that were re-loaded. We *don't*
+        evict ids no longer in the folder — old VoiceSessions may still
+        hold their classes via Python's GC. New sessions pick up the
+        latest binding via `get(sid)` constructing a fresh instance.
+        """
+        before = set(self._classes.keys())
+        # Drop cached *instances* — a hot-reload must give next callers
+        # a freshly-constructed object so they pick up new `run()`
+        # signatures, new `parameters` schemas, etc.
+        with self._lock:
+            self._instances.clear()
+        self._load_local_folder()
+        with self._lock:
+            after = set(self._classes.keys())
+        new = sorted(after - before)
+        return new
 
 
 _registry: SkillRegistry | None = None

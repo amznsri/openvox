@@ -25,16 +25,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from openvox.db import db_session
-from openvox.db.models import Agent
+from openvox.db.models import Agent, Transcript
+from openvox.db.models import Session as DBSession
 from openvox.pipeline.orchestrator import SessionConfig, VoiceSession
+from openvox.pipeline.s2s_bridge import S2SBridge
 from openvox.providers import ProviderType, get_registry
 from openvox.providers.base import (
     AudioChunk,
     LLMProvider,
+    S2SConfig,
+    S2SProvider,
     STTConfig,
     STTProvider,
     TTSConfig,
@@ -51,6 +56,27 @@ async def voice_ws(ws: WebSocket) -> None:
     session: VoiceSession | None = None
     mcp_mgr = None
     forward_task: asyncio.Task | None = None
+    # Observability bookkeeping. We persist one DB row per voice call so
+    # the dashboard's Observability page has something to render, plus
+    # the pricing-calculator telemetry counters.
+    db_session_id: str = ""
+    started_at: datetime | None = None
+    metrics = {
+        "turn_count": 0,
+        "first_token_ms": 0,
+        # Word-count proxy (always populated) — used as fallback when
+        # the provider doesn't return usage.
+        "llm_tokens_in_approx": 0,
+        "llm_tokens_out_approx": 0,
+        # Provider-reported counts (populated by `llm_usage` events
+        # when stream_options.include_usage is honoured).
+        "llm_tokens_in_real": 0,
+        "llm_tokens_out_real": 0,
+        "tts_chars": 0,
+        # ASR-side: char count of finalised user transcripts. Feeds
+        # per-character STT pricing (BytePlus Seed ASR, Aliyun, etc.).
+        "stt_chars": 0,
+    }
 
     try:
         while True:
@@ -64,12 +90,41 @@ async def voice_ws(ws: WebSocket) -> None:
                         await ws.send_text(json.dumps({"type": "error", "message": "agent not found or providers unavailable"}))
                         return
                     session, mcp_mgr = built
-                    forward_task = asyncio.create_task(_forward_events(session, ws))
+                    # Record the session row before forwarding starts so a
+                    # client disconnect partway still leaves a trace.
+                    agent_id = ctrl.get("agent_id") or ""
+                    if agent_id:
+                        started_at = datetime.now(timezone.utc)
+                        try:
+                            async with db_session() as s:
+                                row = DBSession(
+                                    agent_id=agent_id,
+                                    channel=ctrl.get("channel") or "web",
+                                    caller_id=ctrl.get("caller_id") or "voice-playground",
+                                    started_at=started_at,
+                                    status="active",
+                                )
+                                s.add(row)
+                                await s.flush()
+                                db_session_id = row.id
+                        except Exception:
+                            logger.exception("could not create voice session row")
+                    forward_task = asyncio.create_task(_forward_events(session, ws, metrics, started_at, db_session_id))
                 elif kind == "end":
                     if session:
                         await session.end_audio()
                 elif kind == "interrupt":
                     if session:
+                        # Source tag tells us whether the dashboard's
+                        # Stop button or its browser-native stop-word
+                        # listener fired this — useful when debugging
+                        # "stop didn't work" reports. Optional field;
+                        # older clients omit it. (`ctrl` is the parsed
+                        # JSON envelope; `msg` is the WS frame.)
+                        source = ctrl.get("source") or "unknown"
+                        logger.info(
+                            "interrupt requested via WS (source=%s)", source,
+                        )
                         session.interrupt()
             elif "bytes" in msg and msg["bytes"] is not None:
                 if session is None:
@@ -81,7 +136,21 @@ async def voice_ws(ws: WebSocket) -> None:
         logger.info("voice ws disconnected")
     finally:
         if session is not None:
-            await session.end_audio()
+            try:
+                await session.end_audio()
+            except Exception:
+                logger.exception("session.end_audio() failed during teardown")
+            # S2SBridge is an async context manager — it owns a live
+            # WS connection to the upstream S2S provider that MUST be
+            # closed or the OpenAI Realtime / similar server will keep
+            # the slot until its idle timeout. VoiceSession isn't a
+            # context manager (pipeline mode owns no provider socket
+            # itself), so the hasattr-check is the discriminator.
+            if hasattr(session, "__aexit__"):
+                try:
+                    await session.__aexit__(None, None, None)
+                except Exception:
+                    logger.exception("S2S session teardown failed")
         if forward_task is not None:
             forward_task.cancel()
             try:
@@ -94,10 +163,54 @@ async def voice_ws(ws: WebSocket) -> None:
                 await mcp_mgr.__aexit__(None, None, None)
             except Exception as e:
                 logger.warning("mcp teardown failed: %s", e)
+        # Finalize the persisted session row. If the row creation failed
+        # above (e.g. ad-hoc session with no agent_id), there's nothing
+        # to update — just exit.
+        if db_session_id and started_at is not None:
+            try:
+                ended = datetime.now(timezone.utc)
+                duration_ms = int((ended - started_at).total_seconds() * 1000)
+                async with db_session() as s:
+                    row = await s.get(DBSession, db_session_id)
+                    if row is not None:
+                        row.ended_at = ended
+                        row.duration_ms = duration_ms
+                        row.turn_count = metrics["turn_count"]
+                        row.first_token_ms = metrics["first_token_ms"]
+                        # Prefer provider-reported usage when any landed
+                        # (some providers return 0 for sub-token finals);
+                        # else fall back to the word-count proxy.
+                        in_real = metrics.get("llm_tokens_in_real", 0)
+                        out_real = metrics.get("llm_tokens_out_real", 0)
+                        row.llm_tokens_in = (
+                            in_real if in_real > 0 else metrics.get("llm_tokens_in_approx", 0)
+                        )
+                        row.llm_tokens_out = (
+                            out_real if out_real > 0 else metrics.get("llm_tokens_out_approx", 0)
+                        )
+                        row.tts_chars = metrics.get("tts_chars", 0)
+                        row.stt_chars = metrics.get("stt_chars", 0)
+                        row.status = "completed"
+            except Exception:
+                logger.exception("could not finalize voice session row")
 
 
-async def _build_session(ctrl: dict) -> tuple[VoiceSession, "MCPSessionManager | None"] | None:
-    """Build a VoiceSession + (optional) MCP manager.
+async def _build_session(ctrl: dict) -> tuple[object, "MCPSessionManager | None"] | None:
+    """Build a voice session + (optional) MCP manager.
+
+    Two session shapes today:
+      - :class:`VoiceSession` — pipeline mode (STT → LLM → TTS)
+      - :class:`S2SBridge` — S2S mode (single WS to OpenAI Realtime,
+        with the bridge translating events to the same TurnEvent
+        shape the WS forwarder already understands)
+
+    Selection rule:
+      1. If ``agent.s2s_provider`` is non-empty AND the named provider
+         is registered AND available (key present), build the bridge.
+      2. Otherwise fall through to pipeline mode.
+      3. If bridge construction throws (e.g. WS connect fails), log
+         + fall back to pipeline. The user gets a working call rather
+         than a hard error.
 
     Returns a tuple so the caller can close the MCP manager when the WS
     ends. None on failure (agent missing or providers unavailable).
@@ -123,13 +236,19 @@ async def _build_session(ctrl: dict) -> tuple[VoiceSession, "MCPSessionManager |
             voice_map = dict(a.voice_map or {})
             temperature = a.temperature
             max_tokens = a.max_tokens
+            vad_id = (getattr(a, "vad_provider", None) or "silero")
+            s2s_id = (getattr(a, "s2s_provider", None) or "")
     else:
         stt_id = ctrl.get("stt_provider", "byteplus")
         tts_id = ctrl.get("tts_provider", "byteplus")
         llm_id = ctrl.get("llm_provider", "byteplus")
         sys_prompt = ctrl.get("system_prompt", "You are a helpful voice assistant.")
         greeting = ctrl.get("greeting", "")
-        llm_model = ctrl.get("llm_model", "doubao-seed-1.6-250615")
+        # Empty string → BytePlus provider falls back to
+        # settings.byteplus_llm_model (currently seed-2-0-pro-260328).
+        # The stale hard-coded "doubao-seed-1.6-250615" default used to
+        # silently override the configured model for ad-hoc sessions.
+        llm_model = ctrl.get("llm_model", "")
         voice_id = ctrl.get("voice_id", "")
         voice_lang = ctrl.get("voice_language", "en-US")
         voice_speed = float(ctrl.get("voice_speed", 1.0))
@@ -138,10 +257,89 @@ async def _build_session(ctrl: dict) -> tuple[VoiceSession, "MCPSessionManager |
         voice_map = dict(ctrl.get("voice_map", {}))
         temperature = float(ctrl.get("temperature", 0.7))
         max_tokens = int(ctrl.get("max_tokens", 2048))
+        vad_id = (ctrl.get("vad_provider") or "silero")
+        s2s_id = (ctrl.get("s2s_provider") or "")
+
+    # ── S2S mode branch (Phase 3 PR-B) ─────────────────────────────
+    #
+    # When the agent (or ad-hoc ctrl) picks an S2S provider, skip
+    # the STT/LLM/TTS lookup entirely — the single S2S session
+    # subsumes all three. The bridge handles MCP-bridged skills the
+    # same way pipeline mode does, so we still spin up the manager
+    # below for tool calling.
+    if s2s_id:
+        s2s_provider = reg.get(ProviderType.S2S, s2s_id)
+        if isinstance(s2s_provider, S2SProvider) and s2s_provider.is_available():
+            # Build MCP first — bridge needs the runner with bridged
+            # skills, same as the pipeline path below.
+            mcp_mgr = None
+            extra_skills: list = []
+            if mcp_servers:
+                from openvox.mcp import MCPSessionManager
+                mcp_mgr = MCPSessionManager(mcp_servers)
+                try:
+                    await mcp_mgr.__aenter__()
+                    extra_skills = list(mcp_mgr.skills)
+                except Exception as e:
+                    logger.warning("mcp: setup failed in S2S mode: %s", e)
+                    mcp_mgr = None
+                    extra_skills = []
+            from openvox.skills import SkillContext
+            from openvox.skills.runner import SkillRunner
+            runner = SkillRunner(
+                skill_ids=skills,
+                ctx=SkillContext(agent_id=agent_id or "", metadata={"source": "ws_voice_s2s"}),
+                extra_skills=extra_skills,
+            )
+            s2s_cfg = S2SConfig(
+                model=llm_model or "",
+                instructions=sys_prompt,
+                # OpenAI Realtime voices are alloy/echo/shimmer/etc.
+                # Agent.voice_id may carry a BytePlus voice id from a
+                # legacy config — pass it through; the adapter falls
+                # back to "alloy" on unknown values.
+                voice=(voice_id or "alloy"),
+                temperature=temperature,
+                tools=runner.tool_specs() or None,
+            )
+            try:
+                bridge = S2SBridge(
+                    provider=s2s_provider,
+                    config=s2s_cfg,
+                    skill_runner=runner,
+                    input_sample_rate=int(ctrl.get("sample_rate", 16000)),
+                )
+                await bridge.__aenter__()
+                logger.info("S2S session opened via %s (agent_id=%s)", s2s_id, agent_id or "<ad-hoc>")
+                return bridge, mcp_mgr
+            except Exception as e:
+                # Failover to pipeline. Tear down the MCP manager
+                # we opened above so we don't leak subprocesses.
+                logger.warning("S2S bridge build failed (%s) — falling back to pipeline", e)
+                if mcp_mgr is not None:
+                    try:
+                        await mcp_mgr.__aexit__(None, None, None)
+                    except Exception:
+                        pass
+                    mcp_mgr = None
+        else:
+            logger.info(
+                "S2S provider %r not available (registered=%s) — using pipeline",
+                s2s_id, isinstance(s2s_provider, S2SProvider),
+            )
 
     stt = reg.get(ProviderType.STT, stt_id)
     tts = reg.get(ProviderType.TTS, tts_id)
     llm = reg.get(ProviderType.LLM, llm_id)
+    # VAD is optional — looking up an "none"/missing id returns None and
+    # the orchestrator falls back to the client-driven interrupt path.
+    vad = None
+    if vad_id and vad_id.lower() != "none":
+        candidate = reg.get(ProviderType.VAD, vad_id)
+        # Late-binding type check to avoid a circular import at module load.
+        from openvox.providers.vad.base import VADProvider as _VADProvider
+        if isinstance(candidate, _VADProvider):
+            vad = candidate
     if not isinstance(stt, STTProvider) or not isinstance(tts, TTSProvider) or not isinstance(llm, LLMProvider):
         return None
     if not (stt.is_available() and tts.is_available() and llm.is_available()):
@@ -184,13 +382,85 @@ async def _build_session(ctrl: dict) -> tuple[VoiceSession, "MCPSessionManager |
         ctx=SkillContext(agent_id=agent_id or "", metadata={"source": "ws_voice"}),
         extra_skills=extra_skills,
     )
-    session = VoiceSession(stt=stt, llm=llm, tts=tts, config=cfg, skill_runner=runner)
+    session = VoiceSession(stt=stt, llm=llm, tts=tts, config=cfg, skill_runner=runner, vad=vad)
     return session, mcp_mgr
 
 
-async def _forward_events(session: VoiceSession, ws: WebSocket) -> None:
+async def _forward_events(
+    session: object,
+    ws: WebSocket,
+    metrics: dict | None = None,
+    started_at: datetime | None = None,
+    db_session_id: str = "",
+) -> None:
+    """Forward events from either a VoiceSession or an S2SBridge.
+
+    Both expose ``run()`` yielding TurnEvents with the same shape
+    (kind / text / audio / sample_rate / encoding / data). The
+    forwarder doesn't care which is which — it just iterates and
+    routes audio frames to the WS binary channel + text events to
+    the JSON channel.
+    """
     try:
         async for ev in session.run():
+            # Persist user_final + assistant_done as Transcript rows so
+            # Observability shows turn-by-turn detail AND "Save as recording"
+            # captures something the eval replay runner can feed back in.
+            # Without this, voice recordings end up with transcript=[] and
+            # replay evals always fail with "no agent dialogue in transcript".
+            if db_session_id and ev.kind in ("user_final", "assistant_done") and (ev.text or "").strip():
+                try:
+                    async with db_session() as s:
+                        s.add(Transcript(
+                            session_id=db_session_id,
+                            role="user" if ev.kind == "user_final" else "assistant",
+                            text=(ev.text or "")[:8000],
+                        ))
+                except Exception:
+                    logger.exception("could not persist transcript row")
+            # Update observability counters as events flow past us.
+            if metrics is not None:
+                if ev.kind == "assistant_done":
+                    metrics["turn_count"] = metrics.get("turn_count", 0) + 1
+                    # On turn end, "speak" was the assistant's full text;
+                    # count chars as a TTS-billing approximation. (Each
+                    # turn pushes one full transcript through TTS.)
+                    metrics["tts_chars"] = metrics.get("tts_chars", 0) + len(ev.text or "")
+                if (
+                    ev.kind == "assistant_token"
+                    and started_at is not None
+                    and not metrics.get("first_token_ms")
+                ):
+                    metrics["first_token_ms"] = int(
+                        (datetime.now(timezone.utc) - started_at).total_seconds() * 1000
+                    )
+                # Token accounting — we track *both* a word-count proxy
+                # (`_approx`) and provider-reported usage (`_real`).
+                # When the call finalises we prefer real if any landed,
+                # else fall back to approx. This way pricing stays
+                # honest even when a provider doesn't return usage.
+                if ev.kind == "assistant_token":
+                    metrics["llm_tokens_out_approx"] = metrics.get(
+                        "llm_tokens_out_approx", 0
+                    ) + max(1, len((ev.text or "").split()))
+                if ev.kind == "user_final":
+                    metrics["llm_tokens_in_approx"] = metrics.get(
+                        "llm_tokens_in_approx", 0
+                    ) + max(1, len((ev.text or "").split()))
+                    # Per-character STT billing — accumulate raw char
+                    # length of the finalised user utterance.
+                    metrics["stt_chars"] = metrics.get(
+                        "stt_chars", 0
+                    ) + len(ev.text or "")
+                # Real usage arrives on the terminal stream chunk —
+                # accumulate so multi-turn sessions report correctly.
+                if ev.kind == "llm_usage" and ev.data:
+                    metrics["llm_tokens_in_real"] = metrics.get(
+                        "llm_tokens_in_real", 0
+                    ) + int(ev.data.get("prompt_tokens") or 0)
+                    metrics["llm_tokens_out_real"] = metrics.get(
+                        "llm_tokens_out_real", 0
+                    ) + int(ev.data.get("completion_tokens") or 0)
             if ev.kind == "assistant_audio":
                 await ws.send_bytes(ev.audio)
             else:
