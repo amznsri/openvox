@@ -152,7 +152,8 @@ brain (and voice). You need **at least one**.
      *configured* or *missing key*.
    - Click a provider's row, paste your key, and hit **Save**:
      - **Easiest:** **BytePlus** — a single key covers the LLM *and* the voice, so one paste gets
-       you fully working. (Create one in the BytePlus ModelArk console.)
+       you fully working. Create one in the
+       [BytePlus ModelArk console](https://console.byteplus.com/ark/region:ark+ap-southeast-1/apiKey).
      - **Already have OpenAI?** Paste it in the **OpenAI** row instead — get a key at
        <https://platform.openai.com/api-keys>. (Anthropic, Gemini, Deepgram, ElevenLabs, etc. all
        work the same way.)
