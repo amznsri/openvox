@@ -162,16 +162,17 @@ cat <<EOF
 
 ${C_BOLD}> Next:${C_RESET}
 
-  Start the background daemon:
+  Run OpenVox as an always-on background service (recommended):
     ${C_BOLD}openvox start${C_RESET}
 
-  Or run in the foreground (Ctrl-C to stop):
-    ${C_BOLD}openvox run${C_RESET}
+  This prints your dashboard URL — usually http://localhost:8000/dashboard,
+  but if port 8000 is taken it auto-picks a free one and tells you which.
+  Check it any time with ${C_BOLD}openvox status${C_RESET}.
 
-  Then open: http://localhost:8000/dashboard
+  Prefer to watch logs live in this terminal instead? Use:
+    ${C_BOLD}openvox run${C_RESET}      (foreground; Ctrl-C to stop)
 
-  See ${C_BLUE}$("$OPENVOX_BIN" --help 2>/dev/null | head -1)${C_RESET}
-       or 'openvox <command> --help' for per-command flags.
+  Manage the service:  openvox status | stop | logs -f
 
 EOF
 

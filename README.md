@@ -82,8 +82,9 @@ openvox start
 ```
 
 ~45 seconds end-to-end. The installer detects Python 3.11+, picks `pipx` (or a venv fallback),
-drops the `openvox` binary on `$PATH`, then `openvox start` boots the daemon and serves the
-dashboard at <http://localhost:8000/dashboard>. No compile step, no Docker required.
+drops the `openvox` binary on `$PATH`, then `openvox start` runs OpenVox as a background service
+and **prints your dashboard URL** — usually <http://localhost:8000/dashboard>, but if port 8000 is
+already taken it auto-picks a free port and tells you which. No compile step, no Docker required.
 
 <details>
 <summary><b>Alternative installers</b> (pipx · pip · Homebrew · Windows)</summary>
@@ -104,23 +105,42 @@ brew install amznsri/openvox/openvox
 
 </details>
 
-### Start the daemon
+### Run it: `start` vs `run`
+
+**Most people want `openvox start`** — it runs OpenVox as an always-on background service
+(launchd on macOS, systemd on Linux, Windows Service), survives terminal closes, and restarts
+at login. It prints your dashboard URL and returns you to the prompt.
 
 ```bash
-openvox run              # foreground; Ctrl-C to stop. Auto-opens dashboard.
-openvox start            # background daemon (launchd / systemd / Windows Service).
-                         # Starts at login. Stop with `openvox stop`.
-openvox status           # is it running?
+openvox start            # ← background service. The one you usually want.
+openvox status           # is it running? prints the dashboard URL
+openvox stop             # stop the service
 openvox logs -f          # tail ~/.openvox/logs/openvox.log
+openvox restart          # restart (after changing a provider key, etc.)
+```
+
+Use **`openvox run`** instead only when you want the server in the **foreground** with live logs
+in your terminal (handy for debugging) — `Ctrl-C` stops it, and it closes when you close the
+terminal. Don't run both at once; they'd fight over the same port.
+
+```bash
+openvox run              # foreground; Ctrl-C to stop. Auto-opens the dashboard.
 openvox info             # resolved config, secrets redacted
 ```
 
+> **Which port?** Both commands bind 8000 by default, but auto-switch to the next free port if
+> it's taken — so always open the URL they print (or run `openvox status`), not a hard-coded
+> `:8000`. The chosen port is remembered across restarts.
+
 ### Your first agent (~2 minutes)
 
-1. **Add a provider key.** Open <http://localhost:8000/dashboard/settings/>, click any provider row
+> The URLs below assume the default port 8000. If `openvox start` reported a different port, use
+> that — e.g. `localhost:8001/dashboard`. `openvox status` always shows the right one.
+
+1. **Add a provider key.** Open `/dashboard/settings/`, click any provider row
    (OpenAI, BytePlus, Anthropic, …), paste your key, Save. Keys are encrypted at rest in
    `~/.openvox/openvox.db`. Run `openvox restart` once so the new key loads.
-2. **Pick a template.** Open <http://localhost:8000/dashboard/templates> and click *Copy template*.
+2. **Pick a template.** Open `/dashboard/templates` and click *Copy template*.
    E-commerce Support and Multilingual Support work with just an LLM + voice key; Email Assistant
    and Calendar Scheduler want a Google account connected on the Integrations tab.
 3. **Test it.** Click *Test* on the new agent → Playground opens → **Tap to talk** and have a

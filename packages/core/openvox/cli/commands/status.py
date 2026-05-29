@@ -19,4 +19,14 @@ def status_cmd() -> None:
     status = backend.status()
     typer.echo(f"openvox daemon: {status.state}")
     typer.echo(f"  {status.detail}")
+    # Surface the actual dashboard URL — the port may differ from the
+    # default 8000 if it was occupied when the daemon started (see
+    # portutil). Reading the persisted port means `openvox status`
+    # always tells the user the right URL to open, even after a
+    # restart that auto-switched ports.
+    from openvox.cli.portutil import load_persisted_port
+
+    port = load_persisted_port()
+    if port is not None:
+        typer.echo(f"  dashboard: http://localhost:{port}/dashboard")
     typer.echo(f"  logs: {backend.log_path}")

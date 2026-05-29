@@ -31,10 +31,24 @@ def start_cmd(
     ),
 ) -> None:
     """Install + start OpenVox as a background daemon."""
-    from openvox.config import get_settings
+    from openvox.cli.portutil import resolve_port, save_runtime
 
-    settings = get_settings()
-    effective_port = port if port is not None else settings.core_port
+    # Resolve a FREE port before baking it into the service definition.
+    # Precedence: --port → persisted (so a stop/start cycle keeps the
+    # same URL) → settings.core_port. Auto-switch + warn if the
+    # preferred port is occupied — otherwise the daemon's uvicorn
+    # would fail to bind, the service manager would still report
+    # "running", and the user would hit whatever else owns :8000.
+    effective_port, preferred_port = resolve_port(port, host=host, use_persisted=True)
+    if effective_port != preferred_port:
+        typer.secho(
+            f"  ⚠  port {preferred_port} is in use — using {effective_port} instead.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+    # Persist BEFORE install so the baked-in --port and the runtime
+    # record agree, and a later `openvox run` lands on the same port.
+    save_runtime(effective_port, host)
 
     backend = get_backend()
     backend_name = type(backend).__name__

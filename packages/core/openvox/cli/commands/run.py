@@ -96,12 +96,24 @@ def run_cmd(
     Press Ctrl-C to stop. For persistent / always-on operation, see
     `openvox start` (Phase 4 — daemon mode).
     """
-    # Resolve config — settings.core_port wins unless --port overrides.
+    # Resolve config + a FREE port. Precedence: --port → persisted →
+    # settings.core_port. If the preferred port is busy, auto-switch
+    # upward + warn loudly rather than crashing with uvicorn's
+    # "address already in use".
     from openvox.api.app import create_app
+    from openvox.cli.portutil import resolve_port, save_runtime
     from openvox.config import get_settings
 
     settings = get_settings()
-    effective_port = port if port is not None else settings.core_port
+    effective_port, preferred_port = resolve_port(port, host=host)
+    if effective_port != preferred_port:
+        typer.secho(
+            f"  ⚠  port {preferred_port} is in use — using {effective_port} instead.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+    # Persist so the next `openvox run` (and the daemon) reuse this port.
+    save_runtime(effective_port, host)
 
     app = create_app()
 
