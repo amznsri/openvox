@@ -195,10 +195,21 @@ class LaunchdBackend(DaemonBackend):
                 detail="launchctl not found — is this really macOS?",
             )
         if res.returncode != 0:
+            # `launchctl list` is non-zero whenever the job isn't LOADED —
+            # which includes the perfectly-normal "installed but stopped"
+            # state after `openvox stop` unloads it. The plist file is
+            # still on disk in that case, so don't tell the user it's
+            # "not registered" (which reads as "your install is gone").
+            if self.plist_path.exists():
+                return DaemonStatus(
+                    state="stopped",
+                    pid=None,
+                    detail="installed but stopped — run `openvox start` to start it",
+                )
             return DaemonStatus(
                 state="stopped",
                 pid=None,
-                detail="not registered — run `openvox start` to install + start",
+                detail="not installed — run `openvox start` to install + start",
             )
         pid_match = re.search(r'"PID"\s*=\s*(\d+);', res.stdout)
         if pid_match:
@@ -213,6 +224,11 @@ class LaunchdBackend(DaemonBackend):
             pid=None,
             detail="registered but not running",
         )
+
+    def is_installed(self) -> bool:
+        # Registration == the plist exists on disk. Stays True after
+        # `stop` (which only unloads); becomes False after `uninstall`.
+        return self.plist_path.exists()
 
     # ── internals ─────────────────────────────────────────────────────
 

@@ -195,6 +195,11 @@ class SystemdBackend(DaemonBackend):
             detail=f"systemd reports ActiveState={active_state}",
         )
 
+    def is_installed(self) -> bool:
+        # Registration == the unit file exists on disk. Survives `stop`;
+        # removed by `uninstall`.
+        return self.unit_path.exists()
+
     # ── internals ─────────────────────────────────────────────────────
 
     def _systemctl(self, *args: str, check: bool) -> subprocess.CompletedProcess[str]:

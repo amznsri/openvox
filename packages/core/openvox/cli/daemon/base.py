@@ -73,6 +73,25 @@ class DaemonBackend(ABC):
     def status(self) -> DaemonStatus:
         """Return current state of the service."""
 
+    def is_installed(self) -> bool:
+        """Whether the service is REGISTERED with the OS — independent of
+        whether it's currently running.
+
+        This distinction matters: after `openvox stop`, the daemon is
+        installed-but-stopped (the plist/unit still exists on disk). A
+        check based purely on "is it running?" would wrongly report the
+        service as gone and tell the user to re-install.
+
+        Default implementation infers from ``status()`` — anything other
+        than the explicit "not installed" detail counts as installed.
+        Backends that can check the on-disk plist/unit directly override
+        this for accuracy (and to avoid a second service-manager call).
+        """
+        st = self.status()
+        if st.state == "unknown":
+            return False
+        return "not installed" not in st.detail and "not registered" not in st.detail
+
     def restart(self) -> None:
         """Default stop + start. Backends with a native restart verb
         (systemd does) override for cleaner semantics."""

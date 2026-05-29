@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import plistlib
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 
@@ -147,17 +147,51 @@ def test_launchd_status_parses_pid_from_list_output() -> None:
     assert result.pid == 12345
 
 
-def test_launchd_status_returns_stopped_when_not_registered() -> None:
+def _patch_plist_exists(exists: bool):
+    """Patch LaunchdBackend.plist_path so `.exists()` returns `exists`."""
     from openvox.cli.daemon.launchd import LaunchdBackend
 
-    with patch("openvox.cli.daemon.launchd.subprocess") as mock_sp:
+    fake_plist = MagicMock()
+    fake_plist.exists.return_value = exists
+    return patch.object(
+        LaunchdBackend, "plist_path", new_callable=PropertyMock,
+        return_value=fake_plist,
+    )
+
+
+def test_launchd_status_not_installed_when_no_plist() -> None:
+    """launchctl list non-zero AND no plist on disk → 'not installed'."""
+    from openvox.cli.daemon.launchd import LaunchdBackend
+
+    with patch("openvox.cli.daemon.launchd.subprocess") as mock_sp, _patch_plist_exists(False):
         mock_sp.run.return_value.returncode = 1
         mock_sp.run.return_value.stdout = ""
         result = LaunchdBackend().status()
 
     assert result.state == "stopped"
     assert result.pid is None
+    assert "not installed" in result.detail
     assert "openvox start" in result.detail
+
+
+def test_launchd_status_installed_but_stopped_when_plist_exists() -> None:
+    """launchctl list non-zero BUT plist on disk → 'installed but stopped'.
+
+    Regression guard for the bug where `openvox stop` (which unloads the
+    job) made status report 'not registered', as if the install had
+    vanished.
+    """
+    from openvox.cli.daemon.launchd import LaunchdBackend
+
+    with patch("openvox.cli.daemon.launchd.subprocess") as mock_sp, _patch_plist_exists(True):
+        mock_sp.run.return_value.returncode = 1
+        mock_sp.run.return_value.stdout = ""
+        result = LaunchdBackend().status()
+
+    assert result.state == "stopped"
+    assert result.pid is None
+    assert "installed but stopped" in result.detail
+    assert "not registered" not in result.detail
 
 
 # ── status parsing — systemd ─────────────────────────────────────────
@@ -187,6 +221,52 @@ def test_systemd_status_treats_inactive_as_stopped() -> None:
 
     assert result.state == "stopped"
     assert result.pid is None
+
+
+# ── stop command messaging ───────────────────────────────────────────
+
+
+def _fake_backend(*, running: bool, installed: bool):
+    """A stand-in backend with controllable state for stop_cmd tests."""
+    from openvox.cli.daemon.base import DaemonStatus
+
+    backend = MagicMock()
+    if running:
+        backend.status.return_value = DaemonStatus("running", 4242, "running as PID 4242")
+    elif installed:
+        backend.status.return_value = DaemonStatus("stopped", None, "installed but stopped — run `openvox start` to start it")
+    else:
+        backend.status.return_value = DaemonStatus("stopped", None, "not installed — run `openvox start` to install + start")
+    backend.is_installed.return_value = installed
+    return backend
+
+
+def test_stop_cmd_reports_stopped_not_not_registered(capsys: object) -> None:
+    """Regression: stopping a RUNNING daemon must confirm 'stopped', not
+    echo back 'not registered' (the post-unload status) as if it failed."""
+    from openvox.cli.commands import stop as stop_mod
+
+    backend = _fake_backend(running=True, installed=True)
+    with patch.object(stop_mod, "get_backend", return_value=backend):
+        stop_mod.stop_cmd()
+
+    backend.stop.assert_called_once()
+    out = capsys.readouterr().out
+    assert "stopped" in out
+    assert "not registered" not in out
+    assert "PID 4242" in out
+
+
+def test_stop_cmd_when_not_installed_says_nothing_to_stop(capsys: object) -> None:
+    from openvox.cli.commands import stop as stop_mod
+
+    backend = _fake_backend(running=False, installed=False)
+    with patch.object(stop_mod, "get_backend", return_value=backend):
+        stop_mod.stop_cmd()
+
+    backend.stop.assert_not_called()
+    out = capsys.readouterr().out
+    assert "nothing to stop" in out
 
 
 # Keep pytest happy if run standalone
