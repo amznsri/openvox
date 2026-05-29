@@ -132,22 +132,56 @@ openvox info             # resolved config, secrets redacted
 > it's taken — so always open the URL they print (or run `openvox status`), not a hard-coded
 > `:8000`. The chosen port is remembered across restarts.
 
-### Your first agent (~2 minutes)
+### Your first agent (~3 minutes, no coding)
 
-> The URLs below assume the default port 8000. If `openvox start` reported a different port, use
-> that — e.g. `localhost:8001/dashboard`. `openvox status` always shows the right one.
+Once `openvox start` is running, **everything below happens in your browser** — you won't need
+the terminal again except for the one `openvox restart` in step 2.
 
-1. **Add a provider key.** Open `/dashboard/settings/`, click any provider row
-   (OpenAI, BytePlus, Anthropic, …), paste your key, Save. Keys are encrypted at rest in
-   `~/.openvox/openvox.db`. Run `openvox restart` once so the new key loads.
-2. **Pick a template.** Open `/dashboard/templates` and click *Copy template*.
-   E-commerce Support and Multilingual Support work with just an LLM + voice key; Email Assistant
-   and Calendar Scheduler want a Google account connected on the Integrations tab.
-3. **Test it.** Click *Test* on the new agent → Playground opens → **Tap to talk** and have a
-   conversation. Say "Stop" mid-response to interrupt; audio cuts within ~150 ms.
+> The links assume the default port **8000**. If `openvox start` printed a different port (it does
+> that automatically when 8000 is busy), use that one instead — `openvox status` always shows the
+> current URL.
 
-Then edit the system prompt, attach documents, add MCP tools, or publish to a channel from the
-agent's Channels tab.
+**1. Open the dashboard.**
+Go to **<http://localhost:8000/dashboard>**. The left sidebar is your home base: *Agents*,
+*Templates*, *Playground*, *Settings*.
+
+**2. Add one AI provider key.** This is the only required setup — it's what powers the agent's
+brain (and voice). You need **at least one**.
+
+   - Click **Settings** in the sidebar. You'll see a list of providers, each marked
+     *configured* or *missing key*.
+   - Click a provider's row, paste your key, and hit **Save**:
+     - **Easiest:** **BytePlus** — a single key covers the LLM *and* the voice, so one paste gets
+       you fully working. (Create one in the BytePlus ModelArk console.)
+     - **Already have OpenAI?** Paste it in the **OpenAI** row instead — get a key at
+       <https://platform.openai.com/api-keys>. (Anthropic, Gemini, Deepgram, ElevenLabs, etc. all
+       work the same way.)
+   - Back in your terminal, run **`openvox restart`** once so the key loads, then refresh the
+     page — the provider row should now say **configured**. (Keys are encrypted on your machine in
+     `~/.openvox/openvox.db`; they never leave it except to the provider you chose.)
+
+**3. Create an agent from a template.**
+
+   - Click **Templates** in the sidebar → browse the 33 ready-made agents → click **Copy
+     template** on one.
+   - Good first picks that work with just one key: **E-commerce Support** or **Multilingual
+     Support**. (Email Assistant / Calendar Scheduler need a Google account connected first, on
+     the *Integrations* tab — skip those for your first try.)
+   - Your new, fully-editable agent opens.
+
+**4. Talk to it.**
+
+   - Click **Test** (top-right) → the **Playground** opens.
+   - **By voice:** click the big **Tap to talk** button, allow microphone access, and just speak.
+     Say *"Stop"* any time to cut the agent off mid-sentence.
+   - **Prefer to type?** Switch to the **Text** tab and send a message — no microphone needed.
+     This is the quickest way to confirm everything works.
+
+**That's your first working agent.** 🎉 From here you can:
+- rewrite its personality + instructions on the **Behaviour** tab (the system prompt),
+- swap its **voice** on the *Voice & model* tab,
+- upload PDFs for it to answer from on the **Documents** tab,
+- or put it on a phone number / WhatsApp / Telegram from the **Channels** tab.
 
 ---
 
