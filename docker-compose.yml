@@ -116,6 +116,14 @@ services:
     build:
       context: .
       dockerfile: apps/dashboard/Dockerfile
+      # NEXT_PUBLIC_* are inlined into the client bundle at BUILD time, so
+      # they must be passed as build ARGS — a runtime `environment:` value
+      # is ignored by the already-compiled JS. Docker needs an explicit URL
+      # because the dashboard (:3000) and API (:8000) are different origins;
+      # the wheel build leaves these empty and falls back to same-origin.
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+        NEXT_PUBLIC_WS_URL: ws://localhost:8000
     container_name: openvox-dashboard
     ports:
       - "${DASHBOARD_PORT:-3000}:3000"
@@ -123,6 +131,8 @@ services:
       - NODE_ENV=production
       # Dashboard now talks DIRECTLY to core (was: gateway on :3001).
       # See phase1-audit.md — the gateway was a passthrough proxy.
+      # (These runtime values are kept for any server-side reads; the
+      # client bundle uses the build args above.)
       - NEXT_PUBLIC_API_URL=http://localhost:8000
       - NEXT_PUBLIC_WS_URL=ws://localhost:8000
       - NEXT_PUBLIC_OPENVOX_AUTH=${OPENVOX_AUTH:-disabled}

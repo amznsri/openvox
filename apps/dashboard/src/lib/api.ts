@@ -4,11 +4,46 @@
  * which proxies to the Python core.
  */
 
-// Defaults point directly at the FastAPI core (port 8000). The Node gateway
-// at :3001 was deleted in Phase 1 (docs/phase1-audit.md) — these defaults
-// match the new docker-compose.yml NEXT_PUBLIC_API_URL/WS_URL values.
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const WS = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
+// API + WS base resolution — must be PORT-AGNOSTIC.
+//
+// The wheel-bundled daemon serves BOTH the dashboard and the API/WS on
+// the SAME port — and since v0.2.32 that port is no longer guaranteed
+// to be 8000: when 8000 is busy the daemon auto-switches to a free one
+// (e.g. 8001). A hard-coded `http://localhost:8000` then breaks — the
+// dashboard loads from :8001 but its fetches go to :8000 (whatever
+// else owns that port) and every request 404s. That is exactly how the
+// Provider-credentials section came up empty for a user whose daemon
+// had auto-switched ports.
+//
+// Resolution order:
+//   1. NEXT_PUBLIC_API_URL / _WS_URL if explicitly set at BUILD time.
+//      Docker mode sets these via a build ARG (apps/dashboard/Dockerfile
+//      + docker-compose.yml) because there the dashboard (:3000) and the
+//      API (:8000) are DIFFERENT origins, so same-origin won't work.
+//   2. In the browser: the SAME ORIGIN the dashboard was served from —
+//      this makes the wheel daemon work on whatever port it picked.
+//   3. SSR / build-time fallback (no window): localhost:8000.
+function resolveHttpBase(): string {
+  const envBase = process.env.NEXT_PUBLIC_API_URL;
+  if (envBase) return envBase;
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin;
+  }
+  return "http://localhost:8000";
+}
+
+function resolveWsBase(): string {
+  const envWs = process.env.NEXT_PUBLIC_WS_URL;
+  if (envWs) return envWs;
+  if (typeof window !== "undefined" && window.location?.host) {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}`;
+  }
+  return "ws://localhost:8000";
+}
+
+const BASE = resolveHttpBase();
+const WS = resolveWsBase();
 
 async function http<T>(path: string, init: RequestInit = {}): Promise<T> {
   // Only attach `Content-Type: application/json` when there's a body
