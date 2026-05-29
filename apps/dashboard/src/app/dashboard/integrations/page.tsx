@@ -257,18 +257,15 @@ function GoogleOAuthClientForm({ onSaved }: { onSaved: () => void }) {
   // Inline form for the maintainer's Google OAuth client credentials.
   // Posts to /api/v1/admin/setup/keys with provider="google" — the
   // generic key-store endpoint that every other provider also uses.
-  // On success the daemon's lifespan hydration (api/app.py:
-  // _hydrate_secrets_into_env) re-exports these as env vars on the
-  // NEXT restart, so we need to tell the user to restart for the
-  // change to take effect.
   //
-  // Why not just store + auto-hydrate without restart? The Settings
-  // class uses pydantic-settings with an lru_cache — busted by
-  // _hydrate_secrets_into_env at lifespan-start ONCE. Hot-reloading
-  // mid-process would mean tearing down + re-bootstrapping every
-  // provider that already cached the (formerly empty) Google client.
-  // Cleaner to require a restart for now; auto-reload is a future
-  // refinement.
+  // The endpoint now re-runs _hydrate_secrets_into_env() on save, so
+  // the credentials are exported into the running process + the
+  // settings lru_cache is busted immediately. That means the OAuth
+  // flow (which reads get_settings().google_oauth_client_id fresh on
+  // every /start + /status call) sees them WITHOUT a restart — the
+  // "Connect Gmail" button enables the moment this saves. (Long-lived
+  // LLM/TTS provider instances still need a restart for their badge,
+  // but the OAuth client doesn't, because it has no cached instance.)
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [busy, setBusy] = useState(false);
@@ -290,14 +287,12 @@ function GoogleOAuthClientForm({ onSaved }: { onSaved: () => void }) {
         oauth_client_id: cid,
         oauth_client_secret: csec,
       });
-      // Status won't flip to configured=true until the daemon
-      // restarts (see component docstring). Tell the user that
-      // explicitly — silent UX of "saved but button still
-      // disabled" would be confusing.
-      setSavedMsg(
-        "Saved. Restart the OpenVox daemon to load the new credentials, " +
-          "then refresh this page.",
-      );
+      // The backend re-hydrates secrets into the running process on
+      // save (api/routes/admin.py), so the OAuth client is live
+      // immediately — no daemon restart needed. onSaved() refetches
+      // /status, which now reports configured=true, hiding this form
+      // and enabling the "Connect Gmail" button.
+      setSavedMsg("Saved — you can connect Gmail now.");
       setClientId("");
       setClientSecret("");
       onSaved();

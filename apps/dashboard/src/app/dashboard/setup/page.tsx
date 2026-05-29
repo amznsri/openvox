@@ -29,6 +29,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { mutate } from "swr";
 import { CheckCircle2, KeyRound, Loader2, Sparkles } from "lucide-react";
 
 import { api } from "@/lib/api";
@@ -88,7 +89,13 @@ export default function SetupPage() {
   useEffect(() => {
     api.setupStatus()
       .then((s) => {
-        if (s.complete) router.replace("/dashboard/agents");
+        if (s.complete) {
+          // Prime the shared cache so SetupGate doesn't bounce us off
+          // /dashboard/agents (a non-self-serve page) with a stale
+          // complete:false before its own SWR fetch resolves.
+          mutate("setup-status", s, { revalidate: false });
+          router.replace("/dashboard/agents");
+        }
       })
       .catch(() => {
         // status check failed (core not reachable?) — surface in UI
@@ -132,6 +139,16 @@ export default function SetupPage() {
         return;
       }
       // Done — show success briefly, then redirect.
+      //
+      // Prime the SHARED setup-status cache before navigating. SetupGate
+      // (mounted in the dashboard layout) reads this exact SWR key; the
+      // destination here (/dashboard/templates) is NOT a setup
+      // self-serve page, so if SetupGate still has the stale
+      // complete:false from first load it would bounce us back to
+      // /setup — the flicker a first-time user sees right after saving
+      // their first keys. Writing the fresh status into the cache (no
+      // revalidate) makes the gate see complete:true on arrival.
+      mutate("setup-status", res.status, { revalidate: false });
       setDone(true);
       setTimeout(() => router.replace("/dashboard/templates"), 1200);
     } catch (e: any) {

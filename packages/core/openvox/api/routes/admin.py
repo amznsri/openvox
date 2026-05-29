@@ -112,6 +112,33 @@ async def setup_keys(req: SetupKeysRequest) -> dict[str, Any]:
         provider, saved, deleted,
     )
 
+    # Make the just-saved keys take effect in THIS running process so the
+    # user doesn't have to restart the daemon before they "take". We
+    # re-run the same env-hydration bridge the daemon runs at startup:
+    # it exports newly-stored keys into os.environ and busts the
+    # get_settings() lru_cache so the next read sees them.
+    #
+    # The concrete win: the Integrations "Connect Gmail" button is gated
+    # on `get_settings().google_oauth_client_id` (via the /status route).
+    # Before this, saving the OAuth client left that setting empty until
+    # a restart, so the button stayed disabled and the flow looked
+    # broken. Re-hydrating here flips it live immediately.
+    #
+    # Caveat: LLM/TTS/STT provider INSTANCES are built once at startup
+    # and cache their key, so their is_available() badge still needs a
+    # restart to turn green. But setup-status (store-backed) and the
+    # Google OAuth flow (settings read per-call) go live now. Best-effort
+    # — a failure here never blocks the save (restart is the fallback).
+    try:
+        from openvox.api.app import _hydrate_secrets_into_env
+
+        await _hydrate_secrets_into_env()
+    except Exception as e:  # noqa: BLE001 — never fail the save on this
+        logger.warning(
+            "setup_keys: live re-hydration failed (restart will still apply keys): %s",
+            e,
+        )
+
     return {
         "ok": True,
         "saved": saved,
