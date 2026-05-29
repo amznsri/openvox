@@ -86,10 +86,23 @@ ok "$PY_VER on $PLATFORM/$ARCH"
 
 INSTALLER="${OPENVOX_INSTALLER:-auto}"
 if [ "$INSTALLER" = "auto" ]; then
-  if command -v pipx >/dev/null 2>&1; then
-    INSTALLER="pipx"
+  # STICKY backend selection. Re-running this script is the canonical
+  # upgrade path, so we must keep using whatever backend already owns
+  # the install — otherwise a user who got the venv fallback (no pipx
+  # at first), THEN installed pipx, and re-ran us would end up with a
+  # second, pipx-based copy while the venv copy lingers. Worse, they'd
+  # try `pipx upgrade openvox-core` and hit "Package is not installed".
+  # Detect an existing install first; only fall back to fresh logic.
+  EXISTING_VENV="${OPENVOX_PREFIX:-$HOME/.openvox/venv}/bin/openvox"
+  if [ -x "$EXISTING_VENV" ]; then
+    INSTALLER="venv"        # prior venv install — stay on venv
+  elif command -v pipx >/dev/null 2>&1 \
+       && pipx list 2>/dev/null | grep -q "openvox-core"; then
+    INSTALLER="pipx"        # prior pipx install — stay on pipx
+  elif command -v pipx >/dev/null 2>&1; then
+    INSTALLER="pipx"        # fresh install, pipx available — prefer it
   else
-    INSTALLER="venv"
+    INSTALLER="venv"        # fresh install, no pipx — venv fallback
   fi
 fi
 
@@ -173,6 +186,8 @@ ${C_BOLD}> Next:${C_RESET}
     ${C_BOLD}openvox run${C_RESET}      (foreground; Ctrl-C to stop)
 
   Manage the service:  openvox status | stop | logs -f
+
+  Update later:        ${C_BOLD}openvox upgrade${C_RESET}   (or just re-run this installer)
 
 EOF
 

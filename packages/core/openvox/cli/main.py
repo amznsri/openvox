@@ -16,6 +16,7 @@ from openvox.cli.commands import (
     start,
     status,
     stop,
+    upgrade,
     version,
 )
 
@@ -33,6 +34,10 @@ app = typer.Typer(
 
 # Foreground + introspection commands (Phase 1 PR-2).
 app.command("version", help="Print the installed OpenVox version.")(version.version_cmd)
+app.command(
+    "upgrade",
+    help="Update OpenVox to the latest version (auto-detects pipx / venv / Homebrew).",
+)(upgrade.upgrade_cmd)
 app.command("info", help="Show resolved configuration + service health.")(info.info_cmd)
 app.command(
     "run",

@@ -86,6 +86,12 @@ drops the `openvox` binary on `$PATH`, then `openvox start` runs OpenVox as a ba
 and **prints your dashboard URL** — usually <http://localhost:8000/dashboard>, but if port 8000 is
 already taken it auto-picks a free port and tells you which. No compile step, no Docker required.
 
+> **Prerequisite: just Python 3.11+.** You do **not** need to install `pipx` (or anything else)
+> first — if `pipx` isn't present, the installer creates its own isolated environment at
+> `~/.openvox/venv`. Don't install `pipx` *after* the fact and then run `pipx upgrade openvox-core`:
+> pipx won't know about a venv-based install and will error with *"Package is not installed."* Use
+> **`openvox upgrade`** (below) instead — it always picks the right method.
+
 <details>
 <summary><b>Alternative installers</b> (pipx · pip · Homebrew · Windows)</summary>
 
@@ -104,6 +110,26 @@ brew install amznsri/openvox/openvox
   is on the roadmap once a code-signing cert is in place.
 
 </details>
+
+### Updating
+
+```bash
+openvox upgrade        # auto-detects how you installed (pipx / venv / Homebrew) and updates
+openvox stop && openvox start   # restart the daemon to load the new version
+```
+
+`openvox upgrade` is the one command to remember — it figures out the right mechanism for you.
+Other options:
+
+- **Re-run the installer** — equivalent and backend-agnostic (also how you get `openvox upgrade`
+  itself if you're on an older build): `curl -fsSL …/install.sh | bash`
+- **Pin a version:** `openvox upgrade 0.2.40`
+- **Homebrew installs:** `brew update && brew upgrade openvox`
+- Check what's installed any time with `openvox version`.
+
+> ⚠️ Don't use `pipx upgrade openvox-core` unless you originally installed via pipx. If the curl
+> installer used its venv fallback, pipx doesn't know about it and errors with *"Package is not
+> installed."* `openvox upgrade` avoids this entirely.
 
 ### Run it: `start` vs `run`
 
