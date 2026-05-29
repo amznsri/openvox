@@ -216,6 +216,87 @@ def _load_env_files() -> None:
     logger.info("loaded env file: %s", env_path)
 
 
+# Starter template dropped at ~/.openvox/.env.example on first run, so a
+# user who prefers a file over the dashboard has something to copy. Kept
+# deliberately short — just the keys most people need — with a pointer to
+# the dashboard + the full .env.example in the repo for everything else.
+_ENV_EXAMPLE_TEMPLATE = """\
+# ─── OpenVox — provider keys (optional file-based setup) ──────────────
+#
+# You do NOT need this file — the dashboard (Settings / Setup) stores keys
+# encrypted and is the simplest path. Use this only if you prefer a file.
+#
+# HOW TO USE
+#   1. Copy this file to ".env" in the SAME folder:
+#        cp ~/.openvox/.env.example ~/.openvox/.env
+#   2. Fill in AT LEAST one LLM key + one voice key below.
+#   3. Apply it:  openvox stop && openvox start
+#
+# This exact path (~/.openvox/.env) is read in every run mode — both
+# `openvox run` and the background `openvox start` daemon.
+# Precedence: an exported shell env var > this file > the dashboard store.
+# Keys never leave your machine.
+
+# ── LLM — pick one (or more) ─────────────────────────────────────────
+# BytePlus gives you LLM + voice under one account — lowest friction.
+#   LLM key:   https://console.byteplus.com/ → ModelArk → API Keys
+BYTEPLUS_LLM_API_KEY=
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+GEMINI_API_KEY=
+DEEPSEEK_API_KEY=
+
+# ── Voice (TTS + STT) — pick one ─────────────────────────────────────
+# BytePlus voice is a SEPARATE key from the LLM key above.
+#   Voice key: https://console.byteplus.com/ (Speech console)
+# Note: OPENAI_API_KEY above already covers OpenAI TTS — no extra key.
+BYTEPLUS_VOICE_API_KEY=
+ELEVENLABS_API_KEY=
+DEEPGRAM_API_KEY=
+ASSEMBLYAI_API_KEY=
+CARTESIA_API_KEY=
+
+# ── Browser real-time voice rooms (optional) ─────────────────────────
+# https://console.byteplus.com/ → RTC → AppID
+BYTEPLUS_RTC_APP_ID=
+BYTEPLUS_RTC_APP_KEY=
+
+# ── Gmail + Calendar (optional) — bring your own Google OAuth client ──
+# Desktop App client from Google Cloud Console. See docs/integrations/google.md
+GOOGLE_OAUTH_CLIENT_ID=
+GOOGLE_OAUTH_CLIENT_SECRET=
+
+# ── Phone calls via Twilio (optional) ────────────────────────────────
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+
+# Everything else (storage backends, routing, observability, more
+# channels) lives in the full template:
+#   https://github.com/amznsri/openvox/blob/main/.env.example
+"""
+
+
+def _write_env_example(data_dir) -> None:
+    """Drop a starter ``~/.openvox/.env.example`` on first run.
+
+    Runs for EVERY install method (pipx / venv / Homebrew / Docker)
+    because it lives in the daemon startup, not the curl installer.
+    Only writes when the file is absent, so we never clobber a template
+    a user has edited. Never the live ``.env`` — that's the user's to
+    create. Best-effort: a write failure must not block startup.
+    """
+    from pathlib import Path
+
+    try:
+        path = Path(data_dir) / ".env.example"
+        if path.exists():
+            return
+        path.write_text(_ENV_EXAMPLE_TEMPLATE, encoding="utf-8")
+        logger.info("wrote starter template: %s", path)
+    except Exception as e:  # noqa: BLE001 — informational only
+        logger.warning("could not write .env.example: %s", e)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     # FIRST: pull ~/.openvox/.env into os.environ so a file-based setup
@@ -224,6 +305,9 @@ async def _lifespan(app: FastAPI):
     _load_env_files()
     settings = get_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
+    # Leave a starter template next to the data dir so file-based setup
+    # is discoverable. No-op if it already exists.
+    _write_env_example(settings.data_dir)
     # CRITICAL ORDER: init_db → hydrate_secrets → register_builtins.
     # register_builtins() instantiates each provider, and the providers
     # cache settings.<provider>_api_key in their __init__ — so the env

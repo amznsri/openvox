@@ -226,11 +226,11 @@ Provider-neutral by design. Mix and match per agent through the dashboard or `.e
 
 > **Where keys live:** the dashboard (Settings / Setup) stores keys encrypted at
 > `~/.openvox/openvox.db` — the simplest path, works in every run mode. Prefer a
-> file? Put them in **`~/.openvox/.env`** (e.g. `OPENAI_API_KEY=sk-…`). That exact
-> path is read on startup regardless of how you launch OpenVox — `openvox run`
-> **and** the background `openvox start` daemon. An exported shell env var wins
-> over the file, which wins over the dashboard store. Editing the file or env vars
-> takes effect after `openvox stop && openvox start`.
+> file? OpenVox drops a starter **`~/.openvox/.env.example`** on first run — copy it
+> to `~/.openvox/.env`, fill in one LLM + one voice key, then `openvox stop &&
+> openvox start`. That exact path is read regardless of how you launch OpenVox —
+> `openvox run` **and** the background `openvox start` daemon. An exported shell env
+> var wins over the file, which wins over the dashboard store.
 
 Live interpretation and voice-podcast generation are scaffolded as future provider slots.
 
