@@ -72,91 +72,176 @@ env-flag toggles. Provider keys are encrypted at rest.
 
 ---
 
-## Quick start
+## Get started
 
-### Install
+New to this? Follow the four steps in order. On a **fresh Mac you start from
+zero** — no Python, maybe no Homebrew — so Step 1 matters. If `python3 --version`
+already prints 3.11 or newer, skip to Step 2.
+
+### Step 1 — Prerequisites (one-time)
+
+OpenVox is a Python program. You need **Python 3.11+** on your machine first —
+the installer does *not* install Python for you.
+
+<details open>
+<summary><b>macOS</b></summary>
+
+```bash
+# 1a. Homebrew (macOS package manager) — skip if `brew --version` already works.
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+#     IMPORTANT: when it finishes it prints two/three lines under "Next steps"
+#     starting with `echo ... >> ~/.zprofile`. Run those lines (they put `brew`
+#     on your PATH), or just quit and reopen Terminal. Then verify:
+brew --version
+
+# 1b. Python 3.11+ — skip if `python3 --version` shows 3.11 or newer.
+brew install python@3.12
+python3 --version
+
+# 1c. (optional) pipx — ONLY if you want the pipx install method in Step 2.
+brew install pipx
+pipx ensurepath          # then quit + reopen Terminal so PATH updates
+```
+</details>
+
+<details>
+<summary><b>Linux</b></summary>
+
+```bash
+# Debian / Ubuntu
+sudo apt update && sudo apt install -y python3 python3-venv python3-pip
+# Fedora
+sudo dnf install -y python3 python3-pip
+# (optional) pipx
+python3 -m pip install --user pipx && python3 -m pipx ensurepath
+```
+</details>
+
+<details>
+<summary><b>Windows</b></summary>
+
+Install **Python 3.11+** from [python.org](https://www.python.org/downloads/) and
+tick **"Add python.exe to PATH"** in the installer. Then, in PowerShell:
+
+```powershell
+python -m pip install --user pipx
+python -m pipx ensurepath     # reopen PowerShell afterwards
+```
+</details>
+
+### Step 2 — Install OpenVox
+
+**Pick ONE method and stick with it.** Mixing methods (e.g. installing with the
+script and later running `pipx install`) creates two copies and confusing
+"which version am I running?" errors. Method A is recommended.
+
+<details open>
+<summary><b>A. One-line installer (recommended)</b></summary>
 
 ```bash
 curl -fsSL https://github.com/amznsri/openvox/releases/latest/download/install.sh | bash
-openvox start
 ```
 
-~45 seconds end-to-end. The installer detects Python 3.11+, picks `pipx` (or a venv fallback),
-drops the `openvox` binary on `$PATH`, then `openvox start` runs OpenVox as a background service
-and **prints your dashboard URL** — usually <http://localhost:8000/dashboard>, but if port 8000 is
-already taken it auto-picks a free port and tells you which. No compile step, no Docker required.
-
-> **Prerequisite: just Python 3.11+.** You do **not** need to install `pipx` (or anything else)
-> first — if `pipx` isn't present, the installer creates its own isolated environment at
-> `~/.openvox/venv`. Don't install `pipx` *after* the fact and then run `pipx upgrade openvox-core`:
-> pipx won't know about a venv-based install and will error with *"Package is not installed."* Use
-> **`openvox upgrade`** (below) instead — it always picks the right method.
+It auto-detects the best backend: it uses **pipx** if you installed it in Step
+1c, otherwise it creates its own isolated environment at `~/.openvox/venv`. No
+compiling, ~45 seconds. **Re-running this exact command later is also how you
+upgrade** — it remembers which backend it used.
+</details>
 
 <details>
-<summary><b>Alternative installers</b> (pipx · pip · Homebrew · Windows)</summary>
+<summary><b>B. pipx (if you already use pipx)</b></summary>
 
 ```bash
-# Already use pipx / pip? — works on macOS, Linux, Windows
 pipx install openvox-core
-pip install openvox-core      # ditto, but conflicts with PEP 668 systems
+```
 
-# Homebrew on macOS — slower (compiles from source) but more brew-native
+Use this *or* the one-liner — not both. (The one-liner already uses pipx
+automatically when pipx is present, so there's no benefit to running both.)
+</details>
+
+<details>
+<summary><b>C. pip</b></summary>
+
+```bash
+pip install openvox-core
+```
+
+Works everywhere, but on Homebrew/Debian Python you'll likely hit a PEP 668
+"externally-managed-environment" error — in that case use a virtualenv
+(`python3 -m venv ~/.openvox/venv && ~/.openvox/venv/bin/pip install openvox-core`)
+or just use Method A.
+</details>
+
+<details>
+<summary><b>D. Homebrew</b></summary>
+
+```bash
 brew install amznsri/openvox/openvox
 ```
 
-- **Homebrew speed:** brew installs from sdists (compiles ~5 native deps via clang + rust), so
-  expect 2-5 min vs the one-liner's ~45s. Same binary; only the install path differs.
-- **Windows:** pipx is supported (`pipx install openvox-core`); a self-contained `.exe` via WinGet
-  is on the roadmap once a code-signing cert is in place.
-
+The most "Mac-native" option, but slower (2–5 min — it compiles a few native
+deps) than the one-liner. Same program either way.
 </details>
+
+### Step 3 — Put `openvox` on your PATH
+
+The `openvox` command lives in `~/.local/bin`. If your first command fails with
+**`zsh: command not found: openvox`**, that folder isn't on your PATH yet:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc        # or simply quit and reopen Terminal
+openvox version        # should now print a version
+```
+
+(Homebrew installs in Method D don't need this — brew is already on PATH.)
+
+### Step 4 — Start it
+
+These commands are **identical no matter how you installed** — they manage the
+background service:
+
+```bash
+openvox start      # start as an always-on background service; prints your dashboard URL
+openvox status     # is it running? shows the dashboard URL
+openvox stop       # stop the service
+openvox restart    # restart (e.g. after adding a provider key from a file)
+openvox logs -f    # follow the log at ~/.openvox/logs/openvox.log
+```
+
+Then open the dashboard URL it printed — usually
+**<http://localhost:8000/dashboard>** (it auto-picks a free port if 8000 is busy,
+so trust the printed URL or `openvox status`).
+
+> Prefer to watch logs live in your terminal instead of running a background
+> service? Use `openvox run` (foreground, `Ctrl-C` to stop). Don't run `start`
+> and `run` at the same time — they'd fight over the port.
 
 ### Updating
 
-```bash
-openvox upgrade        # auto-detects how you installed (pipx / venv / Homebrew) and updates
-openvox stop && openvox start   # restart the daemon to load the new version
-```
-
-`openvox upgrade` is the one command to remember — it figures out the right mechanism for you.
-Other options:
-
-- **Re-run the installer** — equivalent and backend-agnostic (also how you get `openvox upgrade`
-  itself if you're on an older build): `curl -fsSL …/install.sh | bash`
-- **Pin a version:** `openvox upgrade 0.2.40`
-- **Homebrew installs:** `brew update && brew upgrade openvox`
-- Check what's installed any time with `openvox version`.
-
-> ⚠️ Don't use `pipx upgrade openvox-core` unless you originally installed via pipx. If the curl
-> installer used its venv fallback, pipx doesn't know about it and errors with *"Package is not
-> installed."* `openvox upgrade` avoids this entirely.
-
-### Run it: `start` vs `run`
-
-**Most people want `openvox start`** — it runs OpenVox as an always-on background service
-(launchd on macOS, systemd on Linux, Windows Service), survives terminal closes, and restarts
-at login. It prints your dashboard URL and returns you to the prompt.
+The day-to-day commands above are the same for every install method — **only the
+upgrade command differs by how you installed.** The easy button:
 
 ```bash
-openvox start            # ← background service. The one you usually want.
-openvox status           # is it running? prints the dashboard URL
-openvox stop             # stop the service
-openvox logs -f          # tail ~/.openvox/logs/openvox.log
-openvox restart          # restart (after changing a provider key, etc.)
+openvox upgrade               # auto-detects pipx / venv / Homebrew and updates
+openvox stop && openvox start # restart to load the new version
 ```
 
-Use **`openvox run`** instead only when you want the server in the **foreground** with live logs
-in your terminal (handy for debugging) — `Ctrl-C` stops it, and it closes when you close the
-terminal. Don't run both at once; they'd fight over the same port.
+If you're on an older build that doesn't have `openvox upgrade` yet, use the
+command for your method:
 
-```bash
-openvox run              # foreground; Ctrl-C to stop. Auto-opens the dashboard.
-openvox info             # resolved config, secrets redacted
-```
+| Installed with…            | Upgrade command                                            |
+| -------------------------- | ---------------------------------------------------------- |
+| One-line installer / venv  | re-run the installer, **or** `openvox upgrade`             |
+| pipx                       | `pipx upgrade openvox-core`                                |
+| pip                        | `pip install --upgrade openvox-core`                       |
+| Homebrew                   | `brew update && brew upgrade openvox`                      |
 
-> **Which port?** Both commands bind 8000 by default, but auto-switch to the next free port if
-> it's taken — so always open the URL they print (or run `openvox status`), not a hard-coded
-> `:8000`. The chosen port is remembered across restarts.
+> ⚠️ **Don't run `pipx upgrade openvox-core` unless you installed *with* pipx.**
+> If the one-liner used its venv fallback, pipx doesn't own that install and
+> errors with *"Package is not installed."* `openvox upgrade` always picks the
+> right path.
 
 ### Your first agent (~3 minutes, no coding)
 
@@ -183,9 +268,10 @@ brain (and voice). You need **at least one**.
      - **Already have OpenAI?** Paste it in the **OpenAI** row instead — get a key at
        <https://platform.openai.com/api-keys>. (Anthropic, Gemini, Deepgram, ElevenLabs, etc. all
        work the same way.)
-   - Back in your terminal, run **`openvox restart`** once so the key loads, then refresh the
-     page — the provider row should now say **configured**. (Keys are encrypted on your machine in
-     `~/.openvox/openvox.db`; they never leave it except to the provider you chose.)
+   - The key applies immediately — refresh the page and the provider row should say **configured**.
+     (If a row's badge doesn't turn green, run **`openvox restart`** once in your terminal and
+     refresh again.) Keys are encrypted on your machine in `~/.openvox/openvox.db`; they never
+     leave it except to the provider you chose.
 
 **3. Create an agent from a template.**
 
