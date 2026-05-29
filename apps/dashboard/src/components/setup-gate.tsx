@@ -29,6 +29,32 @@ import useSWR from "swr";
 
 import { api } from "@/lib/api";
 
+/**
+ * Pages the gate must NEVER redirect away from when setup is
+ * incomplete — because these are the pages where a user ADDS the
+ * missing keys. Redirecting off them traps the user:
+ *
+ *   - `/dashboard/setup`        the first-run wizard itself
+ *   - `/dashboard/settings`     the per-provider key editor (this is
+ *                               how you add a second key — e.g. the
+ *                               BytePlus VOICE key on top of an
+ *                               already-saved LLM key)
+ *   - `/dashboard/integrations` Google OAuth connect lives here
+ *
+ * The bug this fixes: `complete` requires BOTH an LLM key AND a voice
+ * key. A user who'd saved only the LLM key had `complete=false`, so
+ * the gate bounced them off /dashboard/settings back to /setup every
+ * time they tried to add the voice key — an unwinnable loop that
+ * also flickered the screen (paint Settings → status resolves →
+ * router.replace to /setup → repeat). Exempting the self-serve
+ * pages breaks the trap.
+ */
+const SETUP_SELF_SERVE_PREFIXES = [
+  "/dashboard/setup",
+  "/dashboard/settings",
+  "/dashboard/integrations",
+];
+
 export function SetupGate() {
   const router = useRouter();
   const pathname = usePathname();
@@ -47,8 +73,13 @@ export function SetupGate() {
     // initial render before we know the state.
     if (!data) return;
     if (data.complete) return;
-    // Already on the setup page — no redirect loop.
-    if (pathname === "/dashboard/setup") return;
+    // Never redirect away from the pages where the user adds keys —
+    // doing so traps them (and flickers the screen). Covers the page
+    // itself + any sub-route (e.g. /dashboard/settings/...).
+    const p = pathname || "";
+    if (SETUP_SELF_SERVE_PREFIXES.some((base) => p === base || p.startsWith(base + "/"))) {
+      return;
+    }
     router.replace("/dashboard/setup");
   }, [data, pathname, router]);
 
