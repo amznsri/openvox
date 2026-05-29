@@ -167,8 +167,61 @@ async def _hydrate_secrets_into_env() -> None:
                     len(hydrated), ", ".join(hydrated))
 
 
+def _load_env_files() -> None:
+    """Load ``~/.openvox/.env`` into ``os.environ`` at startup.
+
+    Why this exists — making a ``.env`` file work *consistently*:
+
+      - pydantic-settings' ``env_file`` is read RELATIVE TO THE CWD and
+        only populates Settings FIELDS — it never touches os.environ.
+      - But the env-first resolver (``secrets.resolve_provider_key`` →
+        ``setup_complete`` → the dashboard's setup + Integrations
+        status) reads ``os.environ`` directly.
+
+    Net effect before this: a key placed only in a ``.env`` file showed
+    up in AGENTS (provider modules read Settings) but NOT in the
+    dashboard's "configured" status (which reads os.environ) — and the
+    background daemon (``openvox start``), which has no fixed working
+    directory, usually didn't pick the file up at all.
+
+    Loading the canonical ``~/.openvox/.env`` into os.environ here makes
+    every reader agree, regardless of how OpenVox was launched
+    (foreground ``run`` or background ``start``). ``override=False`` so
+    a genuinely-exported shell env var still wins over the file. The
+    data dir honours ``OPENVOX_DATA_DIR`` to match the rest of config.
+
+    Best-effort: a missing file is normal (dashboard-only setups), and
+    any failure here must never block startup.
+    """
+    import os
+    from pathlib import Path
+
+    try:
+        from dotenv import load_dotenv
+    except Exception:  # noqa: BLE001 — python-dotenv ships with pydantic-settings
+        return
+
+    base = os.environ.get("OPENVOX_DATA_DIR") or str(Path.home() / ".openvox")
+    env_path = Path(base) / ".env"
+    if not env_path.is_file():
+        return
+    try:
+        load_dotenv(env_path, override=False)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("could not load %s: %s", env_path, e)
+        return
+    # Bust the settings cache so the next get_settings() re-reads the
+    # values we just injected into os.environ.
+    get_settings.cache_clear()
+    logger.info("loaded env file: %s", env_path)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # FIRST: pull ~/.openvox/.env into os.environ so a file-based setup
+    # is visible to BOTH Settings and the env-first resolver before
+    # anything reads them (init_db, hydrate, provider registration).
+    _load_env_files()
     settings = get_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     # CRITICAL ORDER: init_db → hydrate_secrets → register_builtins.
