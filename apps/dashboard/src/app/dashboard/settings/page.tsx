@@ -39,7 +39,7 @@
  *   operator knows when to expect the green badge.
  */
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import useSWR from "swr";
 import {
   ShieldCheck,
@@ -170,6 +170,18 @@ export default function SettingsPage() {
   // hint inline so the operator knows what to expect.
   const [recentlySaved, setRecentlySaved] = useState<string | null>(null);
 
+  // The wheel daemon serves the dashboard AND the API on the same
+  // origin — and that origin is NOT always :8000 (the daemon
+  // auto-switches when 8000 is busy). Read the live origin on mount so
+  // the Networking card shows the real URL instead of a hard-coded
+  // :8000 that would be wrong on an auto-switched port. Set in an
+  // effect (not at render) to avoid an SSR/prerender hydration
+  // mismatch — `window` doesn't exist during static export.
+  const [origin, setOrigin] = useState<string>("");
+  useEffect(() => {
+    if (typeof window !== "undefined") setOrigin(window.location.origin);
+  }, []);
+
   return (
     <div className="container py-8 space-y-6 max-w-4xl">
       <div>
@@ -272,9 +284,13 @@ export default function SettingsPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="text-sm space-y-2">
-          <SettingRow label="Core API" value="http://localhost:8000" />
-          <SettingRow label="Gateway (Node)" value="http://localhost:3001" />
-          <SettingRow label="Dashboard" value="http://localhost:3000" />
+          {/* The daemon serves the dashboard + API + WebSocket on this
+              one origin. We show it live (rather than a hard-coded
+              :8000) because the daemon auto-switches ports when 8000 is
+              busy. The Node gateway row was removed — that process was
+              deleted in Phase 1; the dashboard talks to core directly. */}
+          <SettingRow label="Core API / Dashboard" value={origin || "(loading…)"} />
+          <SettingRow label="WebSocket" value={origin ? origin.replace(/^http/, "ws") : "(loading…)"} />
         </CardContent>
       </Card>
     </div>

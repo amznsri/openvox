@@ -115,6 +115,17 @@ def run_cmd(
     # Persist so the next `openvox run` (and the daemon) reuse this port.
     save_runtime(effective_port, host)
 
+    # Sync the port we ACTUALLY bound back into settings. Server-side
+    # code that builds self-referential URLs reads settings.core_port —
+    # the Google OAuth redirect_uri (oauth/google.py), the post-connect
+    # dashboard redirect (routes/integrations/google.py), and `openvox
+    # info`'s health probe. Without this they'd point at the stale
+    # config default (8000) while the daemon is really on, say, 8001 —
+    # silently breaking the Google OAuth callback on any auto-switched
+    # port. get_settings() is an lru_cache singleton, so this single
+    # assignment is visible to every consumer.
+    settings.core_port = effective_port
+
     app = create_app()
 
     # Friendly banner. Mirrors what we'll show in the Phase 4

@@ -63,7 +63,7 @@ async def text_chat(req: TextRequest) -> StreamingResponse:
             400,
             f"LLM provider '{req.provider}' is not configured. "
             f"Add an API key via the dashboard setup wizard "
-            f"(http://localhost:8000/dashboard/setup) "
+            f"(the /dashboard/setup page) "
             f"or set the provider's API key env var (e.g. "
             f"BYTEPLUS_LLM_API_KEY / OPENAI_API_KEY / "
             f"ANTHROPIC_API_KEY) in your .env file.",
@@ -375,7 +375,7 @@ async def audio_analyze(
             400,
             "BytePlus STT is not configured. "
             "Add your BytePlus Voice API key via the dashboard setup wizard "
-            "(http://localhost:8000/dashboard/setup) "
+            "(the /dashboard/setup page) "
             "or set BYTEPLUS_VOICE_API_KEY in your .env file.",
         )
 
@@ -498,7 +498,7 @@ async def transcribe(
             400,
             "BytePlus STT is not configured. "
             "Add your BytePlus Voice API key via the dashboard setup wizard "
-            "(http://localhost:8000/dashboard/setup) "
+            "(the /dashboard/setup page) "
             "or set BYTEPLUS_VOICE_API_KEY in your .env file.",
         )
 
@@ -531,7 +531,7 @@ async def synthesize(req: SynthesizeRequest) -> Response:
             400,
             "BytePlus TTS is not configured. "
             "Add your BytePlus Voice API key via the dashboard setup wizard "
-            "(http://localhost:8000/dashboard/setup) "
+            "(the /dashboard/setup page) "
             "or set BYTEPLUS_VOICE_API_KEY in your .env file.",
         )
 

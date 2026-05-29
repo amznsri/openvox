@@ -32,7 +32,7 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
         raise RuntimeError(
             "BYTEPLUS_LLM_API_KEY is required for document embeddings. "
             "Add a BytePlus LLM API key via the dashboard setup wizard "
-            "(http://localhost:8000/dashboard/setup), or set "
+            "(the /dashboard/setup page), or set "
             "BYTEPLUS_LLM_API_KEY in your .env file. Either way, "
             "restart the core service after configuring."
         )
